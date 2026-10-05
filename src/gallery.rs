@@ -1,6 +1,7 @@
 //! The Recent page: a large preview of the selected screenshot, recording or
 //! upload and a grid of thumbnails. Previews are made on a background thread
-//! (see `thumbnail`); files without a picture get a file icon.
+//! (see `thumbnail`); files without a picture get a file icon. Videos play
+//! in the large preview (see `player`).
 //!
 //! Images can be combined: Ctrl-click several and right-click one, or drag one
 //! onto another and drop it on *Horizontal* or *Vertical*.
@@ -14,6 +15,7 @@ use egui::{Color32, CornerRadius, RichText, Sense, Stroke, StrokeKind, Vec2, vec
 
 use crate::combine::Direction;
 use crate::history::{self, Entry, Remote};
+use crate::player::Player;
 use crate::thumbnail::{self, Kind};
 
 const ACCENT: Color32 = Color32::from_rgb(0x3d, 0x9b, 0xff);
@@ -35,6 +37,8 @@ pub enum Action {
     DeleteRemote(PathBuf, Remote),
     /// Stitch these images together, in order, into a new screenshot.
     Combine(Vec<PathBuf>, Direction),
+    /// Show the image on top of everything, in its own window.
+    Pin(PathBuf),
 }
 
 enum Thumb {
@@ -63,11 +67,16 @@ pub struct Gallery {
     clear_requested: bool,
     /// Result of the last remote delete; `true` = error.
     pub notice: Option<(String, bool)>,
+    ffmpeg: String,
+    /// The video playing in the large preview.
+    player: Option<Player>,
+    /// Where the seek bar is being dragged to, 0-1.
+    scrub: Option<f32>,
 }
 
 impl Gallery {
     /// `wake` is called from the loader thread when a thumbnail is ready.
-    /// `ffmpeg` pulls preview frames out of videos.
+    /// `ffmpeg` decodes videos where the OS can't (Linux).
     pub fn new(folder: &Path, ffmpeg: String, wake: Box<dyn Fn() + Send>) -> Self {
         let mut items = history::load();
         // Only on first run: after "Clear recent" the list should stay empty.
@@ -80,6 +89,7 @@ impl Gallery {
         items.truncate(MAX_ITEMS);
         let (requests, rx) = mpsc::channel::<(PathBuf, bool)>();
         let (tx, results) = mpsc::channel();
+        let player_ffmpeg = ffmpeg.clone();
         std::thread::Builder::new()
             .name("thumbnails".into())
             .spawn(move || {
@@ -104,6 +114,9 @@ impl Gallery {
             results,
             clear_requested: false,
             notice: None,
+            ffmpeg: player_ffmpeg,
+            player: None,
+            scrub: None,
         }
     }
 
@@ -131,6 +144,12 @@ impl Gallery {
         if self.selected.as_deref() == Some(path) {
             self.selected = None;
         }
+    }
+
+    /// Stops the video playing in the preview, if any.
+    pub fn stop_playback(&mut self) {
+        self.player = None;
+        self.scrub = None;
     }
 
     /// Empties the list (and the history file) without touching the files.
@@ -206,9 +225,14 @@ impl Gallery {
             .clone()
             .or_else(|| self.items.first().map(|e| e.path.clone()))
         else {
+            self.stop_playback();
             empty_state(ui, hotkey, actions);
             return;
         };
+        let is_video = thumbnail::kind(&selected) == Kind::Video;
+        if self.player.as_ref().is_some_and(|p| p.path != selected) {
+            self.stop_playback();
+        }
 
         // Large preview of the selected screenshot.
         let preview_h = (ui.available_height() * 0.55).clamp(160.0, 560.0);
@@ -236,6 +260,13 @@ impl Gallery {
             },
             other => other,
         };
+        // A playing video's current frame replaces the poster, at the
+        // poster's size so the picture doesn't jump when it starts.
+        let frame = self
+            .player
+            .as_mut()
+            .and_then(|p| p.update(ui.ctx()))
+            .cloned();
         match picture {
             Ok(Some((texture, size, tex))) => {
                 full_size = Some(size);
@@ -243,12 +274,31 @@ impl Gallery {
                     .min((rect.height() - 16.0) / tex.y)
                     .min(1.0);
                 let img_rect = egui::Rect::from_center_size(rect.center(), tex * scale);
-                egui::Image::new((texture.id(), tex))
+                let shown = frame.as_ref().unwrap_or(&texture);
+                egui::Image::new((shown.id(), tex))
                     .corner_radius(4.0)
                     .paint_at(ui, img_rect);
-                if thumbnail::kind(&selected) == Kind::Video {
-                    thumbnail::draw_play_badge(ui.painter(), img_rect.center(), 28.0);
+                if is_video {
+                    match &self.player {
+                        None => thumbnail::draw_play_badge(ui.painter(), img_rect.center(), 28.0),
+                        Some(p) if p.loading() => egui::Spinner::new().paint_at(
+                            ui,
+                            egui::Rect::from_center_size(img_rect.center(), vec2(28.0, 28.0)),
+                        ),
+                        Some(_) => {}
+                    }
                 }
+            }
+            // No poster, but the video plays anyway.
+            _ if let Some(frame) = &frame => {
+                let tex = frame.size_vec2();
+                let scale = ((rect.width() - 16.0) / tex.x)
+                    .min((rect.height() - 16.0) / tex.y)
+                    .min(1.0);
+                let img_rect = egui::Rect::from_center_size(rect.center(), tex * scale);
+                egui::Image::new((frame.id(), tex))
+                    .corner_radius(4.0)
+                    .paint_at(ui, img_rect);
             }
             // Painted rather than added, so it doesn't move what follows.
             Ok(None) => egui::Spinner::new().paint_at(
@@ -266,7 +316,33 @@ impl Gallery {
             }
             Err(()) => thumbnail::draw_file_icon(ui.painter(), rect, &selected),
         }
-        if resp.on_hover_text("Double-click to open").double_clicked() {
+        let hover = if is_video {
+            "Click to play or pause, double-click to open"
+        } else {
+            "Double-click to open"
+        };
+        let resp = resp.on_hover_text(hover);
+        if is_video && resp.clicked() {
+            match &mut self.player {
+                Some(p) => p.toggle(),
+                None => self.player = Some(Player::new(selected.clone(), &self.ffmpeg)),
+            }
+        }
+        if is_video && let Some(p) = &mut self.player {
+            if ui.rect_contains_pointer(rect) || p.is_paused() || self.scrub.is_some() {
+                video_controls(ui, rect, p, &mut self.scrub);
+            }
+            if p.failed() {
+                ui.painter().text(
+                    rect.center_top() + vec2(0.0, 14.0),
+                    egui::Align2::CENTER_TOP,
+                    "Couldn't play this video",
+                    egui::FontId::proportional(13.0),
+                    crate::settings_ui::ERROR,
+                );
+            }
+        }
+        if resp.double_clicked() {
             actions.push(Action::Open(selected.clone()));
         }
 
@@ -304,6 +380,14 @@ impl Gallery {
                 }
                 if thumbnail::kind(&selected) == Kind::Image
                     && ui
+                        .button("Pin")
+                        .on_hover_text("Pin the image to the screen, on top of other windows")
+                        .clicked()
+                {
+                    actions.push(Action::Pin(selected.clone()));
+                }
+                if thumbnail::kind(&selected) == Kind::Image
+                    && ui
                         .button("Copy")
                         .on_hover_text("Copy the image to the clipboard")
                         .clicked()
@@ -330,18 +414,36 @@ impl Gallery {
         egui::ScrollArea::vertical()
             .auto_shrink(false)
             .show(ui, |ui| {
-                ui.spacing_mut().item_spacing = vec2(10.0, 10.0);
-                ui.horizontal_wrapped(|ui| {
-                    for entry in self.items.clone() {
-                        if let Some(t) = self.card(ui, &entry, &selected, actions) {
-                            drop_target = Some(t);
+                let gap = 10.0;
+                ui.spacing_mut().item_spacing = vec2(gap, gap);
+                // As many columns as fit, centred: the space left over that
+                // isn't enough for another card goes on both sides.
+                let width = ui.available_width();
+                let cols = (((width + gap) / (CARD.x + gap)).floor() as usize).max(1);
+                let used = cols as f32 * CARD.x + (cols - 1) as f32 * gap;
+                let indent = ((width - used) / 2.0).max(0.0);
+                for row in self.items.clone().chunks(cols) {
+                    ui.horizontal(|ui| {
+                        ui.add_space(indent);
+                        for entry in row {
+                            if let Some(t) = self.card(ui, entry, &selected, actions) {
+                                drop_target = Some(t);
+                            }
                         }
-                    }
-                });
+                    });
+                }
             });
         self.finish_drag(ui, drop_target, actions);
         if std::mem::take(&mut self.clear_requested) {
             self.clear();
+        }
+        // Let go of the file before it's opened elsewhere or deleted.
+        if let Some(p) = &self.player
+            && actions
+                .iter()
+                .any(|a| matches!(a, Action::Open(x) | Action::Delete(x) if *x == p.path))
+        {
+            self.stop_playback();
         }
     }
 
@@ -433,7 +535,8 @@ impl Gallery {
             .rect_stroke(rect, CornerRadius::same(6), stroke, StrokeKind::Inside);
         if let Some(i) = order {
             let center = rect.left_top() + vec2(14.0, 14.0);
-            ui.painter().circle(center, 9.0, ACCENT, Stroke::new(1.5, Color32::WHITE));
+            ui.painter()
+                .circle(center, 9.0, ACCENT, Stroke::new(1.5, Color32::WHITE));
             ui.painter().text(
                 center,
                 egui::Align2::CENTER_CENTER,
@@ -526,10 +629,11 @@ impl Gallery {
             for (label, action) in [
                 ("Open", Action::Open(path.to_owned())),
                 ("Copy", Action::Copy(path.to_owned())),
+                ("Pin to screen", Action::Pin(path.to_owned())),
                 ("Show in folder", Action::ShowInFolder(path.to_owned())),
                 ("Delete", Action::Delete(path.to_owned())),
             ] {
-                if label == "Copy" && !is_image {
+                if matches!(label, "Copy" | "Pin to screen") && !is_image {
                     continue;
                 }
                 if ui.button(label).clicked() {
@@ -683,6 +787,114 @@ fn fit(size: [u32; 2], max: (u32, u32)) -> Vec2 {
 }
 
 /// "1920 × 1080 · 1.2 MB · 5 min ago"
+/// Play/pause, a seek bar and the time, along the bottom of the preview.
+fn video_controls(
+    ui: &mut egui::Ui,
+    preview: egui::Rect,
+    player: &mut Player,
+    scrub: &mut Option<f32>,
+) {
+    let bar = egui::Rect::from_min_max(
+        preview.left_bottom() + vec2(12.0, -44.0),
+        preview.right_bottom() - vec2(12.0, 12.0),
+    );
+    ui.painter()
+        .rect_filled(bar, 6.0, Color32::from_black_alpha(170));
+
+    // Play / pause.
+    let button = egui::Rect::from_min_size(bar.min, vec2(bar.height(), bar.height()));
+    let resp = ui.interact(button, ui.id().with("video-play"), Sense::click());
+    let c = button.center();
+    let color = if resp.hovered() {
+        Color32::WHITE
+    } else {
+        Color32::from_gray(210)
+    };
+    if player.is_paused() {
+        ui.painter().add(egui::Shape::convex_polygon(
+            vec![c + vec2(-5.0, -7.0), c + vec2(8.0, 0.0), c + vec2(-5.0, 7.0)],
+            color,
+            Stroke::NONE,
+        ));
+    } else {
+        for dx in [-5.0, 1.5] {
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(c + vec2(dx, -7.0), vec2(3.5, 14.0)),
+                1.0,
+                color,
+            );
+        }
+    }
+    let tip = if player.is_paused() { "Play" } else { "Pause" };
+    if resp.on_hover_text(tip).clicked() {
+        player.toggle();
+    }
+
+    let Some(duration) = player.duration().filter(|d| *d > 0.0) else {
+        return;
+    };
+    // The time, on the right.
+    let at = scrub.map_or(player.position(), |f| f as f64 * duration);
+    let galley = ui.painter().layout_no_wrap(
+        format!("{} / {}", clock(at), clock(duration)),
+        egui::FontId::monospace(12.0),
+        Color32::from_gray(210),
+    );
+    let text_pos = egui::pos2(
+        bar.right() - 10.0 - galley.size().x,
+        bar.center().y - galley.size().y / 2.0,
+    );
+    ui.painter().galley(text_pos, galley, Color32::WHITE);
+
+    // Seek bar: click or drag to jump. Dragging only moves the knob; the
+    // video restarts from there on release.
+    let track = egui::Rect::from_x_y_ranges(
+        (button.right() + 4.0)..=(text_pos.x - 12.0),
+        (bar.center().y - 8.0)..=(bar.center().y + 8.0),
+    );
+    if track.width() < 20.0 {
+        return;
+    }
+    let resp = ui.interact(track, ui.id().with("video-seek"), Sense::click_and_drag());
+    let fraction = |x: f32| ((x - track.left()) / track.width()).clamp(0.0, 1.0);
+    if resp.is_pointer_button_down_on()
+        && let Some(pos) = resp.interact_pointer_pos()
+    {
+        *scrub = Some(fraction(pos.x));
+    }
+    if (resp.drag_stopped() || resp.clicked())
+        && let Some(f) = scrub.take()
+    {
+        player.seek(f as f64 * duration);
+    }
+    let shown = scrub
+        .unwrap_or((player.position() / duration) as f32)
+        .clamp(0.0, 1.0);
+    let line = egui::Rect::from_x_y_ranges(
+        track.x_range(),
+        (track.center().y - 2.0)..=(track.center().y + 2.0),
+    );
+    let played = egui::Rect::from_min_max(
+        line.min,
+        egui::pos2(line.left() + line.width() * shown, line.bottom()),
+    );
+    let painter = ui.painter();
+    painter.rect_filled(line, 2.0, Color32::from_white_alpha(60));
+    painter.rect_filled(played, 2.0, ACCENT);
+    let knob = if resp.hovered() || scrub.is_some() { 6.0 } else { 4.5 };
+    painter.circle_filled(egui::pos2(played.right(), line.center().y), knob, Color32::WHITE);
+}
+
+/// `m:ss`, or `h:mm:ss` for long videos.
+fn clock(secs: f64) -> String {
+    let s = secs.max(0.0) as u64;
+    if s >= 3600 {
+        format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+    } else {
+        format!("{}:{:02}", s / 60, s % 60)
+    }
+}
+
 fn details(path: &Path, size: Option<[u32; 2]>) -> String {
     let mut parts = Vec::new();
     if let Some([w, h]) = size {

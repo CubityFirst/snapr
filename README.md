@@ -34,6 +34,7 @@ region; the screenshot includes your annotations.
 | Highlighter | `H` | translucent marker |
 | Blur | `B` | blurs the dragged area |
 | Pixelate | `X` | pixelates the dragged area |
+| Image redaction | `I` | covers the dragged area with an image chosen in Settings (stretched to fit, or cropped to keep its proportions); black boxes if none is set |
 
 Plus 8 colours, 3 sizes and undo/redo (`Ctrl+Z` / `Ctrl+Y`). **Enter** / ✓
 saves the whole monitor under the cursor, **Ctrl+C** copies it to the clipboard
@@ -43,7 +44,7 @@ plain region capture.
 ## Main window
 
 Open it from the tray (left-click on Windows, or *Recent screenshots…*). The
-bar on the left has *Capture*, *Recent*, *Tools*, *Settings* and, at the
+bar on the left has *Capture*, *Recent*, *Tools*, *Stats*, *Settings* and, at the
 bottom, *Open screenshots folder*.
 
 - **Recent** shows a large preview of the selected screenshot (the newest by
@@ -69,6 +70,29 @@ bottom, *Open screenshots folder*.
     its hex code. Arrow keys move the pointer one pixel (Shift: ten). The
     colour is shown as HEX, `rgb()` and `hsl()`, each with *Copy*, and recent
     picks are kept as swatches while the window is open.
+  - **Pin to screen**: *Pin region…* freezes the screen; drag a region (or
+    click a window) and it's pinned right where it was, in a borderless
+    window that stays on top of everything. *Pin from clipboard* and
+    *Pin image file…* pin other images (in the middle of the screen, shrunk
+    to fit), and *Pin* on the Recent page (or *Pin to screen* in a
+    screenshot's right-click menu) pins a saved screenshot. Drag a pin to
+    move it; scroll, `+` / `-`, or drag a corner to make it bigger or smaller
+    (it keeps its shape and stops at 100% on the way past); double-click or
+    `0` returns it to its real size. Pins start on top of every other
+    window; `T` or the pin button switches that off (it then shows in the
+    taskbar so it can be found again) and back on. Hovering shows the zoom
+    level and buttons for on top, *Copy* and *Close*; **Ctrl+C** copies
+    it, **Ctrl+S** saves it as a PNG, and **right-click** / **Esc** closes
+    it. *Close all* on the tab closes every
+    pin.
+
+  Any tool can have global hotkeys that run it straight away, from any app:
+  add them under *Settings → Hotkeys → Tool hotkeys* (pick the tool, press
+  *Record*, type the combination), or with *Add a hotkey…* on the
+  tool's tab. A tool can have more than one, and *Remove* deletes one.
+- **Stats** counts captures: screenshots vs recordings, charted by time of
+  day and day of the week, plus *Tool Use* (QR scans, codes read, colours
+  picked, images pinned). It's kept in `stats.toml` next to the settings.
 - **Settings** opens by itself on first run, or whenever something needs
   attention (e.g. the hotkey couldn't be registered).
 
@@ -98,6 +122,7 @@ examples. To try a real bucket from the command line, set
 `_SECRET_ACCESS_KEY` (and `_PATH_STYLE=1` for R2/MinIO) and run
 `cargo test live_bucket -- --ignored`.
 
+Changes on the Settings pages save as you make them (once a change is valid).
 Settings are stored in `<config dir>/snapr/config.toml`
 (`%APPDATA%\snapr` on Windows, `~/Library/Application Support/snapr` on macOS,
 `~/.config/snapr` on Linux). Set `SNAPR_CONFIG_DIR` to use another folder, e.g.
@@ -107,7 +132,7 @@ for a portable copy or a second, independent instance.
 |--------------------|--------------------------|
 | Capture hotkey     | `Alt + Shift + KeyS` (or press *Record* and type a combination) |
 | Save folder        | `<Pictures>/snapr`       |
-| Sub-folder         | none                     |
+| Sub-folder         | `%y-%mo` (e.g. `2026-10`) |
 | File name          | `%rna{10}` (+ `.png`)    |
 | Copy to clipboard  | on                       |
 | Annotation toolbar | on                       |
@@ -139,6 +164,26 @@ Unknown `%` tokens are kept as text. Old `{random}`-style templates in
 gives `chrome/2026/10/k3M9x2P7qa.png`. Substituted values are sanitized and
 can't escape the base folder, and existing files are never overwritten.
 
+## Screen recordings
+
+Recordings are saved next to your screenshots as **MP4** (H.264 + AAC; plays
+everywhere) or, on Windows and Linux, **WebM** (VP9 + Opus; smaller, plays in
+browsers), picked under *Settings → General → Recording*. Windows and macOS
+use the system's own encoders; WebM on Windows needs the VP9 Video
+Extensions (installed with Windows 10/11).
+
+On Windows, **MP4 (AV1)** is sharper for the same file size: AV1 + AAC,
+encoded by the graphics card (NVIDIA RTX 40, AMD RX 7000, Intel Arc or
+newer; without one it records H.264 and says so). It plays in browsers,
+Discord and Windows' own apps (with the free AV1 Video Extension), but not
+on older devices. An HDR display is still recorded as HDR10 HEVC.
+
+**HDR displays (Windows):** screenshots of a display in HDR mode are captured
+in full range and mapped to SDR, with your *SDR content brightness* as white,
+so they look like the screen. Recordings of an HDR display are HDR10 MP4s
+(10-bit HEVC, made by the graphics card; they start about a second late
+while it gets ready). Turn off *Record in HDR* for SDR recordings instead.
+
 ## Command line
 
 ```
@@ -154,7 +199,10 @@ snapr --settings   # open the settings window on start
 - **Linux**: the tray uses StatusNotifierItem (KDE and most desktops; GNOME
   needs the AppIndicator extension). Without a tray the settings window is
   shown instead. On Wayland, global hotkeys need the user in the `input` group,
-  or bind `snapr --once` to a compositor shortcut.
+  or bind `snapr --once` to a compositor shortcut. Screen recording and video
+  previews need [FFmpeg](https://ffmpeg.org) (on `PATH`, or set its path in
+  Settings); Windows and macOS encode and play videos with the system's own
+  codecs.
 
 ## License
 

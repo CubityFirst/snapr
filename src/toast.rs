@@ -279,7 +279,7 @@ fn work_area_corner() -> Option<(i32, i32)> {
 
 /// Decodes a screenshot small enough for the preview.
 /// The preview for any saved or uploaded file; `None` for files without a
-/// picture (they get an icon). `ffmpeg` pulls a frame out of videos.
+/// picture (they get an icon). `ffmpeg` decodes videos on Linux.
 pub fn load_preview(path: &std::path::Path, ffmpeg: &str) -> Option<egui::ColorImage> {
     crate::thumbnail::picture(path, ffmpeg).map(preview_of)
 }

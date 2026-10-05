@@ -35,7 +35,8 @@ pub struct Frame {
     pub can_undo: bool,
     pub can_redo: bool,
     pub cursor: egui::CursorIcon,
-    /// Arrows' middle nodes (global pixels), shown as handles to curve them.
+    /// Lines' or arrows' middle nodes (global pixels), shown as handles to
+    /// curve them.
     pub arrow_nodes: Vec<(f64, f64)>,
     /// What to do, shown at the top of this monitor.
     pub hint: Option<&'static str>,
@@ -550,5 +551,195 @@ fn suppress_alt_menu(window: &Window) {
         && let RawWindowHandle::Win32(h) = handle.as_raw()
     {
         unsafe { SetWindowSubclass(h.hwnd.get() as HWND, Some(proc), 1, 0) };
+    }
+}
+
+/// Checks that a recording started the way snapr does it, right after the
+/// capture overlay closes, doesn't begin with the overlay's frozen screen.
+/// Shows a red overlay on the primary monitor and records its middle:
+/// `cargo test recording_after_overlay -- --ignored --nocapture`.
+#[cfg(all(test, windows))]
+mod close_timing {
+    use super::*;
+    use winit::application::ApplicationHandler;
+    use winit::event_loop::{ControlFlow, EventLoop};
+    use winit::platform::windows::EventLoopBuilderExtWindows;
+    use winit::window::WindowId;
+
+    fn red_overlay(event_loop: &ActiveEventLoop, gpu: &Gpu, m: &xcap::Monitor) -> Overlay {
+        let (w, h) = (m.width().unwrap(), m.height().unwrap());
+        let shot = Shot {
+            image: image::RgbaImage::from_pixel(w, h, image::Rgba([255, 0, 0, 255])),
+            pos: (m.x().unwrap(), m.y().unwrap()),
+        };
+        let monitors: Vec<_> = event_loop.available_monitors().collect();
+        let mut overlay = Overlay::new(event_loop, gpu, shot, &monitors, true).unwrap();
+        let frame = Frame {
+            selection: None,
+            crosshair: None,
+            layer: None,
+            dim_all: false,
+            decorate: false,
+            show_toolbar: false,
+            tool: Tool::Select,
+            style: Style::default(),
+            can_undo: false,
+            can_redo: false,
+            cursor: egui::CursorIcon::Default,
+            arrow_nodes: Vec::new(),
+            hint: None,
+            loupe: None,
+        };
+        overlay.show(gpu, &frame);
+        overlay
+    }
+
+    /// Records the middle of the primary monitor right after a red overlay
+    /// closes: started within the same callback (`blocking`), or from a
+    /// later event loop pass, the way snapr does it.
+    struct RecordApp {
+        gpu: Option<Gpu>,
+        monitor: Option<xcap::Monitor>,
+        blocking: bool,
+        overlay: Option<(Overlay, Instant)>,
+        start_at: Option<Instant>,
+        recording: Option<(crate::record::Recording, Instant)>,
+        out: std::path::PathBuf,
+        done: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
+        started: Instant,
+    }
+
+    impl RecordApp {
+        fn start(&mut self) {
+            let m = self.monitor.as_ref().unwrap();
+            let rect = Rect {
+                x: m.x().unwrap() + m.width().unwrap() as i32 / 2 - 160,
+                y: m.y().unwrap() + m.height().unwrap() as i32 / 2 - 120,
+                w: 320,
+                h: 240,
+            };
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.done = Some(rx);
+            let done: crate::record::Done = Box::new(move |r| {
+                let _ = tx.send(r.map(|_| ()));
+            });
+            let rec = crate::record::Recording::start(
+                rect,
+                30,
+                "ffmpeg",
+                &[],
+                false,
+                false,
+                false,
+                self.out.clone(),
+                done,
+            )
+            .unwrap();
+            self.recording = Some((rec, Instant::now()));
+        }
+    }
+
+    impl ApplicationHandler for RecordApp {
+        fn resumed(&mut self, _: &ActiveEventLoop) {}
+
+        fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, _: WindowEvent) {}
+
+        fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+            event_loop.set_control_flow(ControlFlow::Poll);
+            if self.started.elapsed() > Duration::from_secs(20) {
+                self.overlay = None;
+                return event_loop.exit();
+            }
+            if self.gpu.is_none() {
+                self.gpu = Some(Gpu::new().unwrap());
+                self.monitor = xcap::Monitor::all()
+                    .unwrap()
+                    .into_iter()
+                    .find(|m| m.is_primary().unwrap_or(false));
+                let overlay =
+                    red_overlay(event_loop, self.gpu.as_ref().unwrap(), self.monitor.as_ref().unwrap());
+                self.overlay = Some((overlay, Instant::now()));
+                return;
+            }
+            if let Some((_, at)) = &self.overlay
+                && at.elapsed() > Duration::from_millis(600)
+            {
+                self.overlay = None; // closes it
+                if self.blocking {
+                    self.start();
+                } else {
+                    self.start_at = Some(Instant::now() + Duration::from_millis(50));
+                }
+                return;
+            }
+            if self.start_at.is_some_and(|t| t <= Instant::now()) {
+                self.start_at = None;
+                self.start();
+            }
+            if let Some((rec, at)) = &mut self.recording
+                && at.elapsed() > Duration::from_millis(1000)
+            {
+                rec.stop();
+                self.recording = None;
+            }
+            if self.recording.is_none()
+                && let Some(rx) = &self.done
+                && let Ok(result) = rx.try_recv()
+            {
+                result.unwrap();
+                event_loop.exit();
+            }
+        }
+    }
+
+    /// How red each of the first frames of a video is.
+    fn first_frames_redness(video: &std::path::Path) -> Vec<f32> {
+        let info = crate::decode::probe(video, "").unwrap();
+        let mut redness = Vec::new();
+        crate::decode::pictures(video, "", info, 0.0, (8, 8), &mut |p| {
+            let pixels = p.image.pixels();
+            let n = pixels.len() as f32;
+            redness.push(pixels.map(|px| px[0] as f32 - px[1] as f32).sum::<f32>() / n);
+            redness.len() < 8
+        })
+        .unwrap();
+        redness
+    }
+
+    /// `cargo test recording_after_overlay -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn recording_after_overlay() {
+        let mut event_loop = EventLoop::builder().with_any_thread(true).build().unwrap();
+        for blocking in [true, false] {
+            let out = std::env::temp_dir().join(format!("snapr-overlay-test-{blocking}.mp4"));
+            let mut app = RecordApp {
+                gpu: None,
+                monitor: None,
+                blocking,
+                overlay: None,
+                start_at: None,
+                recording: None,
+                out: out.clone(),
+                done: None,
+                started: Instant::now(),
+            };
+            use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
+            event_loop.run_app_on_demand(&mut app).unwrap();
+            let redness = first_frames_redness(&out);
+            let red: Vec<String> = redness.iter().map(|r| format!("{r:.0}")).collect();
+            if !blocking {
+                assert!(
+                    redness.iter().all(|r| *r < 20.0),
+                    "the recording starts with the overlay: {red:?}"
+                );
+            }
+            let _ = std::fs::remove_file(&out);
+            println!(
+                "{}: redness of the first frames: {}",
+                if blocking { "started in the same callback" } else { "started 50 ms later" },
+                red.join(" ")
+            );
+        }
     }
 }

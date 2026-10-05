@@ -1,5 +1,5 @@
-//! The main window: an icon bar on the left (capture, recent, settings, open
-//! folder) and the selected page on the right. egui, rendered through
+//! The main window: an icon bar on the left (capture, recent, tools; open
+//! folder and settings at the bottom) and the selected page on the right. egui, rendered through
 //! egui-wgpu on the shared device.
 
 use std::collections::HashMap;
@@ -15,9 +15,11 @@ use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{ModifiersState, PhysicalKey};
 use winit::window::{Icon, Window};
 
+use crate::capture::{self, DisplayInfo, WindowInfo};
 use crate::gallery::{self, Gallery};
 use crate::gpu::Gpu;
-use crate::settings::{Settings, Upload};
+use crate::output::{Transfer, Transfers};
+use crate::settings::{Settings, SpeedUnit, Upload};
 use crate::settings_ui::{self, Form};
 use crate::tools::{self, Tools};
 
@@ -28,6 +30,7 @@ const NAV_WIDTH: f32 = 60.0;
 pub enum Page {
     Recent,
     Tools,
+    Stats,
     /// The General tab of Settings.
     Settings,
     Hotkeys,
@@ -37,6 +40,9 @@ pub enum Page {
 
 pub enum Action {
     Capture,
+    /// Capture a window, display, everything or the last region, without
+    /// picking a region first.
+    CaptureTarget(capture::Target),
     /// New settings, and new secret keys to store (upload id → key).
     SaveSettings(Settings, HashMap<String, String>),
     TestUpload(Upload, Option<String>),
@@ -59,6 +65,127 @@ pub enum Action {
     UploadFiles(Vec<PathBuf>),
     /// Stitch images together into a new screenshot.
     Combine(Vec<PathBuf>, crate::combine::Direction),
+    /// Pick a region to pin to the screen.
+    PinRegion,
+    PinImage(image::RgbaImage),
+    /// Pin an image file to the screen.
+    PinFile(PathBuf),
+    ClosePins,
+}
+
+impl From<settings_ui::Action> for Action {
+    fn from(a: settings_ui::Action) -> Self {
+        match a {
+            settings_ui::Action::Save(s, secrets) => Action::SaveSettings(s, secrets),
+            settings_ui::Action::Reveal(p) => Action::Reveal(p),
+            settings_ui::Action::TestUpload(u, secret) => Action::TestUpload(u, secret),
+        }
+    }
+}
+
+/// One upload: what's going where, a progress bar with how much is done,
+/// the speed and time left, and a button to cancel it.
+fn transfer_row(ui: &mut egui::Ui, t: &Transfer, unit: SpeedUnit) {
+    use std::sync::atomic::Ordering;
+    let sent = t.progress.sent.load(Ordering::Relaxed);
+    let total = t.progress.total.load(Ordering::Relaxed);
+    let cancelling = t.progress.cancel.load(Ordering::Relaxed);
+    let fraction = if total > 0 {
+        sent as f32 / total as f32
+    } else {
+        0.0
+    };
+    let elapsed = t.started.elapsed().as_secs_f64();
+    // Average speed; steadier than the last moment's, which jumps around
+    // as parts start and finish.
+    let rate = if elapsed > 1.0 { sent as f64 / elapsed } else { 0.0 };
+    let mut text = format!("{:.0}%", fraction * 100.0);
+    if total > 0 {
+        text += &format!(" \u{00b7} {} of {}", bytes(sent), bytes(total));
+    }
+    if cancelling {
+        text += " \u{00b7} cancelling\u{2026}";
+    } else if sent >= total && total > 0 {
+        text += " \u{00b7} finishing\u{2026}";
+    } else if rate > 0.0 && sent > 0 {
+        text += &format!(" \u{00b7} {}", speed(rate, unit));
+        let left = (total - sent) as f64 / rate;
+        text += &format!(" \u{00b7} {} left", duration(left));
+    }
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(format!("Uploading {} to {}", t.file, t.destination)).strong(),
+        );
+    });
+    ui.horizontal(|ui| {
+        let cancel_width = 64.0;
+        let bar_width = (ui.available_width() - cancel_width - 8.0).max(80.0);
+        ui.add(
+            egui::ProgressBar::new(fraction)
+                .desired_width(bar_width)
+                .text(text)
+                .animate(sent == 0 && !cancelling),
+        );
+        if ui
+            .add_enabled(!cancelling, egui::Button::new("Cancel"))
+            .on_hover_text("Stop this upload; nothing is left in the bucket")
+            .clicked()
+        {
+            t.progress.cancel.store(true, Ordering::Relaxed);
+        }
+    });
+    ui.add_space(2.0);
+}
+
+/// A byte count in B, KB, MB or GB.
+fn bytes(n: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut v = n as f64;
+    let mut unit = 0;
+    while v >= 1024.0 && unit < UNITS.len() - 1 {
+        v /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{n} B")
+    } else if v < 10.0 {
+        format!("{v:.1} {}", UNITS[unit])
+    } else {
+        format!("{v:.0} {}", UNITS[unit])
+    }
+}
+
+/// Bytes per second as MB/s (1024-based, like file sizes) or Mbps
+/// (1000-based bits, like network speeds).
+fn speed(bytes_per_sec: f64, unit: SpeedUnit) -> String {
+    match unit {
+        SpeedUnit::Bytes => format!("{}/s", bytes(bytes_per_sec as u64)),
+        SpeedUnit::Bits => {
+            let bits = bytes_per_sec * 8.0;
+            let (v, unit) = if bits >= 1e9 {
+                (bits / 1e9, "Gbps")
+            } else if bits >= 1e6 {
+                (bits / 1e6, "Mbps")
+            } else {
+                (bits / 1e3, "Kbps")
+            };
+            if v < 10.0 {
+                format!("{v:.1} {unit}")
+            } else {
+                format!("{v:.0} {unit}")
+            }
+        }
+    }
+}
+
+/// A rough time left: seconds, minutes, or hours and minutes.
+fn duration(secs: f64) -> String {
+    let s = secs.max(0.0).round() as u64;
+    match s {
+        0..60 => format!("{s} s"),
+        60..3600 => format!("{} min", s.div_ceil(60)),
+        _ => format!("{} h {} min", s / 3600, s % 3600 / 60),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -66,6 +193,7 @@ enum NavIcon {
     Capture,
     Recent,
     Tools,
+    Stats,
     Settings,
     Folder,
 }
@@ -79,12 +207,20 @@ pub struct MainWindow {
     pub form: Form,
     pub gallery: Gallery,
     pub tools: Tools,
+    pub stats: crate::stats::Stats,
     /// The capture hotkey, for hints.
     pub hotkey: String,
     /// Where screenshots are saved, for the folder button.
     pub folder: PathBuf,
     /// When egui asked to be repainted next (e.g. for a blinking cursor).
     pub repaint_at: Option<Instant>,
+    /// Uploads in progress, shown along the bottom.
+    transfers: Transfers,
+    pub speed_unit: SpeedUnit,
+    /// The last screenshot's region, for "Last region".
+    pub last_region: Option<capture::Rect>,
+    /// The windows and displays listed in the capture menu, read when it opens.
+    capture_menu: (Vec<WindowInfo>, Vec<DisplayInfo>),
 }
 
 impl MainWindow {
@@ -94,7 +230,9 @@ impl MainWindow {
         page: Page,
         form: Form,
         gallery: Gallery,
+        transfers: Transfers,
         settings: &Settings,
+        stats: crate::stats::Stats,
     ) -> Result<Self, String> {
         let icon = Icon::from_rgba(crate::tray::icon_rgba(64), 64, 64).ok();
         let attrs = Window::default_attributes()
@@ -131,9 +269,14 @@ impl MainWindow {
             form,
             gallery,
             tools: Tools::new(),
+            stats,
             hotkey: settings.hotkey.clone(),
             folder: PathBuf::from(&settings.folder),
             repaint_at: None,
+            transfers,
+            speed_unit: settings.speed_unit,
+            last_region: None,
+            capture_menu: Default::default(),
         })
     }
 
@@ -194,6 +337,8 @@ impl MainWindow {
                     if nav_button(ui, NavIcon::Capture, false, &capture_tip).clicked() {
                         actions.push(Action::Capture);
                     }
+                    ui.add_space(-4.0);
+                    self.capture_menu_ui(ui, actions);
                     ui.add_space(6.0);
                     if nav_button(
                         ui,
@@ -208,19 +353,42 @@ impl MainWindow {
                     if nav_button(ui, NavIcon::Tools, self.page == Page::Tools, "Tools").clicked() {
                         self.page = Page::Tools;
                     }
-                    let in_settings = !matches!(self.page, Page::Recent | Page::Tools);
+                    if nav_button(ui, NavIcon::Stats, self.page == Page::Stats, "Stats").clicked() {
+                        self.page = Page::Stats;
+                    }
+                });
+                // Bottom-up: the first button added sits lowest.
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                    let in_settings = !matches!(self.page, Page::Recent | Page::Tools | Page::Stats);
                     if nav_button(ui, NavIcon::Settings, in_settings, "Settings").clicked()
                         && !in_settings
                     {
                         self.page = Page::Settings;
                     }
-                });
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
                     if nav_button(ui, NavIcon::Folder, false, "Open screenshots folder").clicked() {
                         actions.push(Action::Reveal(self.folder.clone()));
                     }
                 });
             });
+        if self.page != Page::Recent {
+            self.gallery.stop_playback();
+        }
+        let transfers = self.transfers.lock().unwrap().clone();
+        if !transfers.is_empty() {
+            egui::Panel::bottom("uploads")
+                .resizable(false)
+                .frame(
+                    egui::Frame::side_top_panel(ui.style())
+                        .inner_margin(egui::Margin::symmetric(20, 10)),
+                )
+                .show(ui, |ui| {
+                    for t in &transfers {
+                        transfer_row(ui, t, self.speed_unit);
+                    }
+                });
+            // Keep the numbers moving.
+            ui.ctx().request_repaint_after(Duration::from_millis(250));
+        }
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::central_panel(ui.style())
@@ -239,19 +407,33 @@ impl MainWindow {
                         gallery::Action::Delete(p) => Action::Delete(p),
                         gallery::Action::DeleteRemote(p, r) => Action::DeleteRemote(p, r),
                         gallery::Action::Combine(p, d) => Action::Combine(p, d),
+                        gallery::Action::Pin(p) => Action::PinFile(p),
                     }));
                 }
                 Page::Tools => {
                     let mut tool_actions = Vec::new();
-                    self.tools.ui(ui, &mut tool_actions);
-                    actions.extend(tool_actions.into_iter().map(|a| match a {
-                        tools::Action::ScanQr => Action::ScanQr,
-                        tools::Action::PickColor => Action::PickColor,
-                        tools::Action::CopyText(t) => Action::CopyText(t),
-                        tools::Action::CopyImage(i) => Action::CopyImage(i),
-                        tools::Action::OpenUrl(u) => Action::OpenUrl(u),
-                    }));
+                    self.tools
+                        .ui(ui, &self.form.saved.tool_hotkeys, &mut tool_actions);
+                    for a in tool_actions {
+                        actions.push(match a {
+                            tools::Action::ScanQr => Action::ScanQr,
+                            tools::Action::PickColor => Action::PickColor,
+                            tools::Action::CopyText(t) => Action::CopyText(t),
+                            tools::Action::CopyImage(i) => Action::CopyImage(i),
+                            tools::Action::OpenUrl(u) => Action::OpenUrl(u),
+                            tools::Action::PinRegion => Action::PinRegion,
+                            tools::Action::PinImage(i) => Action::PinImage(i),
+                            tools::Action::PinFile(p) => Action::PinFile(p),
+                            tools::Action::ClosePins => Action::ClosePins,
+                            tools::Action::AddHotkey(tool) => {
+                                self.form.add_tool_hotkey(tool);
+                                self.page = Page::Hotkeys;
+                                continue;
+                            }
+                        });
+                    }
                 }
+                Page::Stats => crate::stats_ui::ui(ui, &self.stats),
                 page => {
                     ui.horizontal(|ui| {
                         ui.heading("Settings");
@@ -276,14 +458,95 @@ impl MainWindow {
                         Page::Destinations => self.form.destinations_ui(ui, &mut form_actions),
                         _ => self.form.ui(ui, &mut form_actions),
                     }
-                    actions.extend(form_actions.into_iter().map(|a| match a {
-                        settings_ui::Action::Save(s, secrets) => Action::SaveSettings(s, secrets),
-                        settings_ui::Action::Reveal(p) => Action::Reveal(p),
-                        settings_ui::Action::TestUpload(u, secret) => Action::TestUpload(u, secret),
-                    }));
+                    actions.extend(form_actions.into_iter().map(Action::from));
                 }
             });
+        let mut form_actions = Vec::new();
+        self.form.autosave(ui.ctx(), &mut form_actions);
+        actions.extend(form_actions.into_iter().map(Action::from));
         self.drop_ui(ui, actions);
+    }
+
+    /// Saves settings edited too recently to have been saved yet.
+    pub fn flush_settings(&mut self) -> Option<Action> {
+        self.form.flush().map(Action::from)
+    }
+
+    /// The arrow under the capture button, and its menu of other things to
+    /// capture: the last region, a window, a display or everything.
+    fn capture_menu_ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        let chevron = chevron_button(ui);
+        if chevron.clicked() {
+            // Read fresh each time it opens: windows come and go.
+            self.capture_menu = (capture::windows(), capture::displays());
+        }
+        let (windows, displays) = &self.capture_menu;
+        egui::Popup::menu(&chevron)
+            .align(egui::RectAlign::RIGHT_START)
+            .gap(4.0)
+            .show(|ui| {
+                let region = egui::Button::new("Region").shortcut_text(self.hotkey.as_str());
+                if ui.add(region).clicked() {
+                    actions.push(Action::Capture);
+                    ui.close();
+                }
+                let last = ui
+                    .add_enabled(self.last_region.is_some(), egui::Button::new("Last region"))
+                    .on_disabled_hover_text("Take a region screenshot first");
+                if last.clicked()
+                    && let Some(r) = self.last_region
+                {
+                    actions.push(Action::CaptureTarget(capture::Target::Region(r)));
+                    ui.close();
+                }
+                ui.separator();
+                ui.menu_button("Window", |ui| {
+                    if windows.is_empty() {
+                        ui.weak("No windows");
+                    }
+                    egui::ScrollArea::vertical()
+                        .max_height(420.0)
+                        .show(ui, |ui| {
+                            for w in windows {
+                                let button = egui::Button::new(ellipsize(&w.title, 60))
+                                    .shortcut_text(w.app.as_str());
+                                if ui.add(button).on_hover_text(&w.title).clicked() {
+                                    let target = capture::Target::Window(w.id);
+                                    actions.push(Action::CaptureTarget(target));
+                                    ui.close();
+                                }
+                            }
+                        });
+                });
+                ui.menu_button("Display", |ui| {
+                    if displays.is_empty() {
+                        ui.weak("No displays");
+                    }
+                    for (i, d) in displays.iter().enumerate() {
+                        let mut label = format!("{}. {}", i + 1, d.name);
+                        if d.primary {
+                            label += " (primary)";
+                        }
+                        let size = format!("{}\u{00d7}{}", d.rect.w, d.rect.h);
+                        if ui
+                            .add(egui::Button::new(label).shortcut_text(size))
+                            .clicked()
+                        {
+                            actions.push(Action::CaptureTarget(capture::Target::Display(d.id)));
+                            ui.close();
+                        }
+                    }
+                });
+                let everything = if displays.len() > 1 {
+                    "Fullscreen (all displays)"
+                } else {
+                    "Fullscreen"
+                };
+                if ui.button(everything).clicked() {
+                    actions.push(Action::CaptureTarget(capture::Target::Everything));
+                    ui.close();
+                }
+            });
     }
 
     /// Uploads files dropped on the window, with a hint while they're dragged over it.
@@ -381,6 +644,38 @@ fn nav_button(ui: &mut egui::Ui, icon: NavIcon, selected: bool, tip: &str) -> eg
         .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+/// A small down arrow under the capture button, for its menu.
+fn chevron_button(ui: &mut egui::Ui) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(40.0, 14.0), Sense::click());
+    let visuals = ui.visuals();
+    let fg = if resp.hovered() {
+        visuals.strong_text_color()
+    } else {
+        visuals.weak_text_color()
+    };
+    let p = ui.painter();
+    if resp.hovered() {
+        p.rect_filled(rect, 4.0, visuals.widgets.hovered.weak_bg_fill);
+    }
+    let c = rect.center();
+    p.add(Shape::line(
+        vec![c + vec2(-4.0, -2.0), c + vec2(0.0, 2.0), c + vec2(4.0, -2.0)],
+        Stroke::new(1.6, fg),
+    ));
+    resp.on_hover_text("More ways to capture")
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// `s` cut to `max` characters, with an ellipsis if it was longer.
+fn ellipsize(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_owned();
+    }
+    let mut out: String = s.chars().take(max - 1).collect();
+    out.push('\u{2026}');
+    out
+}
+
 fn draw_icon(p: &egui::Painter, r: Rect, icon: NavIcon, color: Color32) {
     let s = Stroke::new(1.8, color);
     let at = |x: f32, y: f32| pos2(r.left() + r.width() * x, r.top() + r.height() * y);
@@ -431,6 +726,18 @@ fn draw_icon(p: &egui::Painter, r: Rect, icon: NavIcon, color: Color32) {
             let neck = c + vec2(-1.0, 1.0) * (rad * std::f32::consts::FRAC_1_SQRT_2);
             p.line_segment([neck, at(0.06, 0.94)], Stroke::new(2.6, color));
         }
+        NavIcon::Stats => {
+            // Three columns of rising height on a baseline.
+            let w = r.width() * 0.2;
+            for (x, h) in [(0.12, 0.45), (0.5, 0.75), (0.88, 0.3)] {
+                let col = Rect::from_min_max(
+                    pos2(at(x, 0.0).x - w / 2.0, at(0.0, 0.92 - h).y),
+                    pos2(at(x, 0.0).x + w / 2.0, at(0.0, 0.92).y),
+                );
+                p.rect_filled(col, 1.5, color);
+            }
+            p.line_segment([at(-0.05, 1.0), at(1.05, 1.0)], s);
+        }
         NavIcon::Settings => {
             // A gear: eight teeth around a ring.
             let c = r.center();
@@ -457,5 +764,65 @@ fn draw_icon(p: &egui::Painter, r: Rect, icon: NavIcon, color: Color32) {
             ];
             p.add(Shape::closed_line(pts, s));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_sizes_and_times() {
+        assert_eq!(bytes(512), "512 B");
+        assert_eq!(bytes(1536), "1.5 KB");
+        assert_eq!(bytes(6 * 1024 * 1024 * 1024), "6.0 GB");
+        assert_eq!(bytes(250 * 1024 * 1024), "250 MB");
+        assert_eq!(speed(13.0 * 1024.0 * 1024.0, SpeedUnit::Bytes), "13 MB/s");
+        assert_eq!(speed(12_500_000.0, SpeedUnit::Bits), "100 Mbps");
+        assert_eq!(speed(250_000_000.0, SpeedUnit::Bits), "2.0 Gbps");
+        assert_eq!(speed(50_000.0, SpeedUnit::Bits), "400 Kbps");
+        assert_eq!(duration(42.0), "42 s");
+        assert_eq!(duration(61.0), "2 min");
+        assert_eq!(duration(3.0 * 3600.0 + 125.0), "3 h 2 min");
+    }
+
+    /// Renders the uploads panel to `target/uploads-preview.png`:
+    /// `cargo test uploads_preview -- --ignored`.
+    #[test]
+    #[ignore]
+    fn uploads_preview() {
+        use std::sync::atomic::Ordering;
+        let transfer = |file: &str, dest: &str, sent: u64, total: u64, secs: u64| {
+            let t = Transfer {
+                file: file.into(),
+                destination: dest.into(),
+                progress: Default::default(),
+                started: Instant::now() - Duration::from_secs(secs),
+            };
+            t.progress.sent.store(sent, Ordering::Relaxed);
+            t.progress.total.store(total, Ordering::Relaxed);
+            t
+        };
+        const GB: u64 = 1024 * 1024 * 1024;
+        let list = [
+            transfer("Recording 2026-10-05 14.02.mp4", "R2", 2 * GB + GB / 2, 6 * GB, 200),
+            transfer("Screenshot 2026-10-05 14.10.png", "S3 backup", 0, 900_000, 0),
+        ];
+        crate::preview::render("uploads-preview", [820, 520], 1.0, |root| {
+            egui::Panel::bottom("uploads")
+                .resizable(false)
+                .frame(
+                    egui::Frame::side_top_panel(root.style())
+                        .inner_margin(egui::Margin::symmetric(20, 10)),
+                )
+                .show(root, |ui| {
+                    for (t, unit) in list.iter().zip([SpeedUnit::Bytes, SpeedUnit::Bits]) {
+                        transfer_row(ui, t, unit);
+                    }
+                });
+            egui::CentralPanel::default().show(root, |ui| {
+                ui.heading("Recent");
+            });
+        });
     }
 }

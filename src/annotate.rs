@@ -29,12 +29,13 @@ pub enum Tool {
     Highlighter,
     Blur,
     Pixelate,
+    Image,
     Eraser,
     Clip,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 12] = [
+    pub const ALL: [Tool; 13] = [
         Tool::Select,
         Tool::Pen,
         Tool::Line,
@@ -45,6 +46,7 @@ impl Tool {
         Tool::Highlighter,
         Tool::Blur,
         Tool::Pixelate,
+        Tool::Image,
         Tool::Eraser,
         Tool::Clip,
     ];
@@ -61,6 +63,7 @@ impl Tool {
             Tool::Highlighter => "Highlighter",
             Tool::Blur => "Blur",
             Tool::Pixelate => "Pixelate",
+            Tool::Image => "Image redaction: cover an area with your chosen image (set in Settings)",
             Tool::Eraser => {
                 "Smart eraser: drag a box filled with the colour under where you start (hold Ctrl to move it)"
             }
@@ -83,6 +86,7 @@ impl Tool {
             Tool::Highlighter => 'H',
             Tool::Blur => 'B',
             Tool::Pixelate => 'X',
+            Tool::Image => 'I',
             Tool::Eraser => 'D',
             Tool::Clip => 'C',
         }
@@ -123,13 +127,58 @@ impl Size {
         }
     }
 
-    fn pixel_block(self) -> u32 {
-        match self {
-            Size::Small => 8,
-            Size::Medium => 14,
-            Size::Large => 24,
-        }
+}
+
+/// Block sizes the pixelate tool offers, in pixels.
+pub const PIXEL_BLOCKS: [u32; 4] = [8, 14, 24, 40];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PixelateOptions {
+    /// Side of each block, in pixels.
+    pub block: u32,
+    /// Shuffle the blocks and add noise, so nothing under them can be
+    /// pieced back together, rather than averaging each block in place.
+    pub secure: bool,
+}
+
+/// The picture the image redaction tool covers areas with.
+#[derive(Debug, Clone)]
+pub struct RedactImage {
+    pixmap: Arc<Pixmap>,
+    /// Squash or stretch it to the area's shape, rather than keeping its
+    /// proportions and cropping what overhangs.
+    pub stretch: bool,
+}
+
+impl RedactImage {
+    pub fn load(path: &std::path::Path, stretch: bool) -> Result<Self, String> {
+        let img = image::open(path)
+            .map_err(|e| format!("couldn't open {}: {e}", path.display()))?
+            .into_rgba8();
+        Ok(Self {
+            pixmap: Arc::new(premultiplied_pixmap(&img).ok_or("the image is empty")?),
+            stretch,
+        })
     }
+}
+
+/// Premultiplies an image (which may be partly transparent) into a pixmap.
+fn premultiplied_pixmap(img: &RgbaImage) -> Option<Pixmap> {
+    let mut pm = Pixmap::new(img.width(), img.height())?;
+    for (dst, src) in pm.pixels_mut().iter_mut().zip(img.pixels()) {
+        let [r, g, b, a] = src.0;
+        *dst = tiny_skia::ColorU8::from_rgba(r, g, b, a).premultiply();
+    }
+    Some(pm)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArrowOptions {
+    /// A head at both ends.
+    pub double: bool,
+    /// The head goes where the drag started, pointing back at it, rather
+    /// than where it ends.
+    pub head_at_start: bool,
 }
 
 pub const COLORS: [[u8; 3]; 8] = [
@@ -147,6 +196,10 @@ pub const COLORS: [[u8; 3]; 8] = [
 pub struct Style {
     pub color: [u8; 3],
     pub size: Size,
+    pub pixelate: PixelateOptions,
+    pub arrow: ArrowOptions,
+    /// Clips get a soft drop shadow, lifting them off the screen under them.
+    pub clip_shadow: bool,
 }
 
 impl Default for Style {
@@ -154,6 +207,15 @@ impl Default for Style {
         Self {
             color: COLORS[0],
             size: Size::Medium,
+            pixelate: PixelateOptions {
+                block: 14,
+                secure: false,
+            },
+            arrow: ArrowOptions {
+                double: false,
+                head_at_start: false,
+            },
+            clip_shadow: true,
         }
     }
 }
@@ -162,14 +224,17 @@ impl Default for Style {
 enum Shape {
     Pen(Vec<Point>),
     Highlighter(Vec<Point>),
-    Line(Point, Point),
     /// From, to, and the node in the middle the curve passes through, once
     /// it's been moved off the straight line.
+    Line(Point, Point, Option<Point>),
+    /// Like a line, with a head at the end.
     Arrow(Point, Point, Option<Point>),
     Rect(Point, Point),
     Ellipse(Point, Point),
     Blur(Point, Point),
     Pixelate(Point, Point),
+    /// An area covered with a picture; solid black without one.
+    Image(Point, Point, Option<RedactImage>),
     /// The area being dragged out with the clip tool.
     ClipSelect(Point, Point),
     /// A copied piece of the screen, with its top-left corner.
@@ -189,6 +254,9 @@ const CLIP_SHADOW: i32 = 5;
 pub struct Annotation {
     shape: Shape,
     style: Style,
+    /// Randomness of its own (for secure pixelation), so it looks the same
+    /// every time it's redrawn.
+    seed: u64,
 }
 
 impl Annotation {
@@ -198,19 +266,33 @@ impl Annotation {
             Tool::Select => return None,
             Tool::Pen => Shape::Pen(vec![p]),
             Tool::Highlighter => Shape::Highlighter(vec![p]),
-            Tool::Line => Shape::Line(p, p),
+            Tool::Line => Shape::Line(p, p, None),
             Tool::Arrow => Shape::Arrow(p, p, None),
             Tool::Rect => Shape::Rect(p, p),
             Tool::Ellipse => Shape::Ellipse(p, p),
             Tool::Blur => Shape::Blur(p, p),
             Tool::Pixelate => Shape::Pixelate(p, p),
+            // Its picture is added with `with_image`.
+            Tool::Image => Shape::Image(p, p, None),
             Tool::Clip => Shape::ClipSelect(p, p),
             // Numbered when it's added to the canvas.
             Tool::Step => Shape::Step(p, 0),
             // Its colour is sampled when it's added to the canvas.
             Tool::Eraser => Shape::Erase(p, p, [0, 0, 0, 255]),
         };
-        Some(Self { shape, style })
+        Some(Self {
+            shape,
+            style,
+            seed: fastrand::u64(..),
+        })
+    }
+
+    /// Gives an image redaction its picture.
+    pub fn with_image(mut self, image: Option<RedactImage>) -> Self {
+        if let Shape::Image(_, _, img) = &mut self.shape {
+            *img = image;
+        }
+        self
     }
 
     /// Extends the annotation to `p` while dragging. With `constrain` (Shift),
@@ -223,7 +305,7 @@ impl Annotation {
                     pts.push(p);
                 }
             }
-            Shape::Line(a, b) | Shape::Arrow(a, b, _) => {
+            Shape::Line(a, b, _) | Shape::Arrow(a, b, _) => {
                 *b = if constrain { snap_45(*a, p) } else { p }
             }
             Shape::Rect(a, b) | Shape::Ellipse(a, b) => {
@@ -231,6 +313,7 @@ impl Annotation {
             }
             Shape::Blur(_, b)
             | Shape::Pixelate(_, b)
+            | Shape::Image(_, b, _)
             | Shape::ClipSelect(_, b)
             | Shape::Erase(_, b, _) => *b = p,
             Shape::Clip(..) => {}
@@ -244,18 +327,18 @@ impl Annotation {
         let mv = |p: &mut Point| *p = (p.0 + d.0, p.1 + d.1);
         match &mut self.shape {
             Shape::Pen(pts) | Shape::Highlighter(pts) => pts.iter_mut().for_each(mv),
-            Shape::Arrow(a, b, mid) => {
+            Shape::Line(a, b, mid) | Shape::Arrow(a, b, mid) => {
                 mv(a);
                 mv(b);
                 if let Some(m) = mid {
                     mv(m);
                 }
             }
-            Shape::Line(a, b)
-            | Shape::Rect(a, b)
+            Shape::Rect(a, b)
             | Shape::Ellipse(a, b)
             | Shape::Blur(a, b)
             | Shape::Pixelate(a, b)
+            | Shape::Image(a, b, _)
             | Shape::ClipSelect(a, b)
             | Shape::Erase(a, b, _) => {
                 mv(a);
@@ -271,11 +354,12 @@ impl Annotation {
         match &self.shape {
             Shape::Pen(_) => false,
             Shape::Highlighter(p) => p.len() < 2,
-            Shape::Line(a, b) | Shape::Arrow(a, b, _) => (b.0 - a.0).hypot(b.1 - a.1) < 2.0,
+            Shape::Line(a, b, _) | Shape::Arrow(a, b, _) => (b.0 - a.0).hypot(b.1 - a.1) < 2.0,
             Shape::Rect(a, b)
             | Shape::Ellipse(a, b)
             | Shape::Blur(a, b)
             | Shape::Pixelate(a, b)
+            | Shape::Image(a, b, _)
             | Shape::Erase(a, b, _) => (b.0 - a.0).abs() < 2.0 || (b.1 - a.1).abs() < 2.0,
             Shape::ClipSelect(a, b) => (b.0 - a.0).abs() < 4.0 || (b.1 - a.1).abs() < 4.0,
             Shape::Clip(..) | Shape::Step(..) => false,
@@ -302,6 +386,7 @@ impl Annotation {
             }),
             (Shape::Blur(a, b), Tool::Blur)
             | (Shape::Pixelate(a, b), Tool::Pixelate)
+            | (Shape::Image(a, b, _), Tool::Image)
             | (Shape::Erase(a, b, _), Tool::Eraser) => Some(Rect::from_points(
                 (a.0 as f64, a.1 as f64),
                 (b.0 as f64, b.1 as f64),
@@ -321,7 +406,10 @@ impl Annotation {
         let radius = self.step_radius();
         match &mut self.shape {
             Shape::Clip(_, at) => *at = (p.0 as i32, p.1 as i32),
-            Shape::Blur(a, b) | Shape::Pixelate(a, b) | Shape::Erase(a, b, _) => {
+            Shape::Blur(a, b)
+            | Shape::Pixelate(a, b)
+            | Shape::Image(a, b, _)
+            | Shape::Erase(a, b, _) => {
                 let size = ((b.0 - a.0).abs(), (b.1 - a.1).abs());
                 *a = p;
                 *b = (p.0 + size.0, p.1 + size.1);
@@ -344,18 +432,21 @@ impl Annotation {
         }
     }
 
-    /// An arrow's middle node, which can be dragged to curve it.
-    pub fn arrow_node(&self) -> Option<Point> {
-        match self.shape {
-            Shape::Arrow(a, b, mid) => Some(mid.unwrap_or(midpoint(a, b))),
+    /// The middle node of a line drawn with `tool` (a line or an arrow),
+    /// which can be dragged to curve it.
+    fn bend_node(&self, tool: Tool) -> Option<Point> {
+        match (&self.shape, tool) {
+            (Shape::Line(a, b, mid), Tool::Line) | (Shape::Arrow(a, b, mid), Tool::Arrow) => {
+                Some(mid.unwrap_or(midpoint(*a, *b)))
+            }
             _ => None,
         }
     }
 
-    /// Moves an arrow's middle node to `p`. Close to the straight line, it
-    /// snaps back to straight.
+    /// Moves a line's or an arrow's middle node to `p`. Close to the
+    /// straight line, it snaps back to straight.
     fn bend_to(&mut self, p: Point) {
-        if let Shape::Arrow(a, b, mid) = &mut self.shape {
+        if let Shape::Line(a, b, mid) | Shape::Arrow(a, b, mid) = &mut self.shape {
             let m = midpoint(*a, *b);
             *mid = ((p.0 - m.0).hypot(p.1 - m.1) >= 4.0).then_some(p);
         }
@@ -388,12 +479,14 @@ impl Annotation {
         let pts: Vec<Point> = match &self.shape {
             Shape::Pen(p) | Shape::Highlighter(p) => p.clone(),
             // The curve stays inside the triangle of its control points.
-            Shape::Arrow(a, b, mid) => vec![*a, *b, control(*a, *b, *mid)],
-            Shape::Line(a, b)
-            | Shape::Rect(a, b)
+            Shape::Line(a, b, mid) | Shape::Arrow(a, b, mid) => {
+                vec![*a, *b, control(*a, *b, *mid)]
+            }
+            Shape::Rect(a, b)
             | Shape::Ellipse(a, b)
             | Shape::Blur(a, b)
             | Shape::Pixelate(a, b)
+            | Shape::Image(a, b, _)
             | Shape::ClipSelect(a, b)
             | Shape::Erase(a, b, _) => vec![*a, *b],
             Shape::Clip(..) | Shape::Step(..) => unreachable!("handled above"),
@@ -401,7 +494,7 @@ impl Annotation {
         let pad = match self.shape {
             Shape::Arrow(..) => arrow_head(self.stroke_width()).0 + 2.0,
             Shape::Blur(..) | Shape::Pixelate(..) => 1.0,
-            Shape::ClipSelect(..) | Shape::Erase(..) => 3.0,
+            Shape::ClipSelect(..) | Shape::Erase(..) | Shape::Image(..) => 3.0,
             _ => self.stroke_width() / 2.0 + 2.0,
         };
         let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
@@ -464,11 +557,16 @@ impl Annotation {
                     pm.stroke_path(&path, &paint, &stroke, id, None);
                 }
             }
-            Shape::Line(a, b) => {
+            Shape::Line(a, b, mid) => {
+                let c = local(&control(*a, *b, *mid));
                 let (a, b) = (local(a), local(b));
                 let mut pb = PathBuilder::new();
                 pb.move_to(a.0, a.1);
-                pb.line_to(b.0, b.1);
+                if mid.is_some() {
+                    pb.quad_to(c.0, c.1, b.0, b.1);
+                } else {
+                    pb.line_to(b.0, b.1);
+                }
                 if let Some(path) = pb.finish() {
                     pm.stroke_path(&path, &paint, &stroke, id, None);
                 }
@@ -476,48 +574,58 @@ impl Annotation {
             Shape::Arrow(a, b, mid) => {
                 let c = local(&control(*a, *b, *mid));
                 let (a, b) = (local(a), local(b));
-                if (b.0 - a.0).hypot(b.1 - a.1) < 1.0 {
+                let len = (b.0 - a.0).hypot(b.1 - a.1);
+                if len < 1.0 {
                     return;
                 }
-                let (head_len, head_w) = arrow_head(stroke.width);
-                let head_len = head_len.min((b.0 - a.0).hypot(b.1 - a.1));
-                // The head sits on the curve, pointing from where it meets
-                // the shaft to the tip.
-                let at = |t: f32| bezier(a, c, b, t);
-                let t_base = t_at_distance(a, c, b, head_len);
-                let base_pt = at(t_base);
-                let (dx, dy) = (b.0 - base_pt.0, b.1 - base_pt.1);
-                let len = dx.hypot(dy).max(f32::EPSILON);
-                let (dir, perp) = ((dx / len, dy / len), (-dy / len, dx / len));
-                let base = (b.0 - dir.0 * head_len, b.1 - dir.1 * head_len);
-                // Stop inside the head so the round cap doesn't poke out: the
-                // part of the curve up to `t_end`, by de Casteljau.
-                let t_end = t_at_distance(a, c, b, head_len * 0.7);
-                let end = at(t_end);
-                let mut shaft = PathBuilder::new();
-                shaft.move_to(a.0, a.1);
-                if mid.is_some() {
-                    let c = (a.0 + (c.0 - a.0) * t_end, a.1 + (c.1 - a.1) * t_end);
-                    shaft.quad_to(c.0, c.1, end.0, end.1);
+                let opts = self.style.arrow;
+                let (head_at_start, head_at_end) = if opts.double {
+                    (true, true)
                 } else {
-                    shaft.line_to(end.0, end.1);
+                    (opts.head_at_start, !opts.head_at_start)
+                };
+                let (head_len, head_w) = arrow_head(stroke.width);
+                // Two heads get at most half the line each.
+                let head_len = head_len.min(if opts.double { len / 2.0 } else { len });
+                // The shaft stops inside each head so the round cap doesn't
+                // poke out: the part of the curve from `t0` to `t1`, whose
+                // control points come from blossoming the curve.
+                let t0 = if head_at_start {
+                    1.0 - t_at_distance(b, c, a, head_len * 0.7)
+                } else {
+                    0.0
+                };
+                let t1 = if head_at_end {
+                    t_at_distance(a, c, b, head_len * 0.7)
+                } else {
+                    1.0
+                };
+                let blossom = |u: f32, v: f32| {
+                    let (wa, wb) = ((1.0 - u) * (1.0 - v), u * v);
+                    let wc = 1.0 - wa - wb;
+                    (
+                        wa * a.0 + wc * c.0 + wb * b.0,
+                        wa * a.1 + wc * c.1 + wb * b.1,
+                    )
+                };
+                if t0 < t1 {
+                    let (start, ctrl, end) = (blossom(t0, t0), blossom(t0, t1), blossom(t1, t1));
+                    let mut shaft = PathBuilder::new();
+                    shaft.move_to(start.0, start.1);
+                    if mid.is_some() {
+                        shaft.quad_to(ctrl.0, ctrl.1, end.0, end.1);
+                    } else {
+                        shaft.line_to(end.0, end.1);
+                    }
+                    if let Some(path) = shaft.finish() {
+                        pm.stroke_path(&path, &paint, &stroke, id, None);
+                    }
                 }
-                if let Some(path) = shaft.finish() {
-                    pm.stroke_path(&path, &paint, &stroke, id, None);
+                if head_at_end {
+                    fill_head(pm, &paint, (a, c, b), head_len, head_w);
                 }
-                let mut head = PathBuilder::new();
-                head.move_to(b.0, b.1);
-                head.line_to(
-                    base.0 + perp.0 * head_w / 2.0,
-                    base.1 + perp.1 * head_w / 2.0,
-                );
-                head.line_to(
-                    base.0 - perp.0 * head_w / 2.0,
-                    base.1 - perp.1 * head_w / 2.0,
-                );
-                head.close();
-                if let Some(path) = head.finish() {
-                    pm.fill_path(&path, &paint, FillRule::Winding, id, None);
+                if head_at_start {
+                    fill_head(pm, &paint, (b, c, a), head_len, head_w);
                 }
             }
             Shape::Rect(a, b) | Shape::Ellipse(a, b) => {
@@ -565,10 +673,49 @@ impl Annotation {
                 if matches!(self.shape, Shape::Blur(..)) {
                     blur(pm, r, self.style.size.blur_radius());
                 } else {
-                    pixelate(pm, r, self.style.size.pixel_block());
+                    let opts = self.style.pixelate;
+                    pixelate(pm, r, opts.block, opts.secure.then_some(self.seed));
                 }
             }
             Shape::ClipSelect(a, b) => dashed_outline(pm, local(a), local(b)),
+            Shape::Image(a, b, img) => {
+                let (a, b) = (local(a), local(b));
+                // Whole pixels, so no soft edge lets anything show through.
+                let Some(rect) = tiny_skia::Rect::from_ltrb(
+                    a.0.min(b.0).floor(),
+                    a.1.min(b.1).floor(),
+                    a.0.max(b.0).ceil(),
+                    a.1.max(b.1).ceil(),
+                ) else {
+                    return;
+                };
+                // Black first, so a picture with transparent parts hides
+                // what's under it too.
+                let mut fill = Paint::default();
+                fill.set_color_rgba8(0, 0, 0, 255);
+                pm.fill_rect(rect, &fill, id, None);
+                let Some(img) = img else { return };
+                let (iw, ih) = (img.pixmap.width() as f32, img.pixmap.height() as f32);
+                let (sx, sy) = if img.stretch {
+                    (rect.width() / iw, rect.height() / ih)
+                } else {
+                    // Big enough to cover it, centred, cropping the overhang.
+                    let s = (rect.width() / iw).max(rect.height() / ih);
+                    (s, s)
+                };
+                let at = (
+                    rect.x() + (rect.width() - iw * sx) / 2.0,
+                    rect.y() + (rect.height() - ih * sy) / 2.0,
+                );
+                fill.shader = tiny_skia::Pattern::new(
+                    img.pixmap.as_ref().as_ref(),
+                    tiny_skia::SpreadMode::Pad,
+                    tiny_skia::FilterQuality::Bicubic,
+                    1.0,
+                    Transform::from_row(sx, 0.0, 0.0, sy, at.0, at.1),
+                );
+                pm.fill_rect(rect, &fill, id, None);
+            }
             Shape::Erase(a, b, [r, g, b_, alpha]) => {
                 let (a, b) = (local(a), local(b));
                 // Whole pixels, so no soft edge lets the text show through.
@@ -625,7 +772,8 @@ impl Annotation {
                 let (x, y) = (x - origin.0, y - origin.1);
                 let (w, h) = (img.width() as f32, img.height() as f32);
                 // A soft shadow: rings of faint black, a little lower down.
-                for i in 1..=CLIP_SHADOW {
+                let shadow = if self.style.clip_shadow { CLIP_SHADOW } else { 0 };
+                for i in 1..=shadow {
                     let grow = i as f32;
                     if let Some(r) = tiny_skia::Rect::from_xywh(
                         x as f32 - grow,
@@ -810,6 +958,25 @@ fn arrow_head(stroke: f32) -> (f32, f32) {
     (len, len * 0.85)
 }
 
+/// Fills an arrowhead `len` long and `width` wide at `b`, the end of the
+/// curve from `a` with control `c`. It sits on the curve, pointing from
+/// where it meets the shaft to the tip.
+fn fill_head(pm: &mut Pixmap, paint: &Paint, (a, c, b): (Point, Point, Point), len: f32, width: f32) {
+    let meets = bezier(a, c, b, t_at_distance(a, c, b, len));
+    let (dx, dy) = (b.0 - meets.0, b.1 - meets.1);
+    let d = dx.hypot(dy).max(f32::EPSILON);
+    let (dir, perp) = ((dx / d, dy / d), (-dy / d, dx / d));
+    let base = (b.0 - dir.0 * len, b.1 - dir.1 * len);
+    let mut head = PathBuilder::new();
+    head.move_to(b.0, b.1);
+    head.line_to(base.0 + perp.0 * width / 2.0, base.1 + perp.1 * width / 2.0);
+    head.line_to(base.0 - perp.0 * width / 2.0, base.1 - perp.1 * width / 2.0);
+    head.close();
+    if let Some(path) = head.finish() {
+        pm.fill_path(&path, paint, FillRule::Winding, Transform::identity(), None);
+    }
+}
+
 fn snap_45(a: Point, p: Point) -> Point {
     let (dx, dy) = (p.0 - a.0, p.1 - a.1);
     let len = dx.hypot(dy);
@@ -947,10 +1114,15 @@ fn box_columns(src: &[u32], dst: &mut [u32], w: usize, h: usize, radius: usize) 
     });
 }
 
-/// Replaces each block with its average colour.
-fn pixelate(pm: &mut Pixmap, r: Rect, block: u32) {
+/// Replaces each block with its average colour. With a `seed` (secure), the
+/// averages are shuffled between the blocks and each is nudged by a little
+/// noise, so the area keeps its colours but no block says anything about
+/// what was under it.
+fn pixelate(pm: &mut Pixmap, r: Rect, block: u32, seed: Option<u64>) {
     let stride = pm.width() as usize;
     let data = pm.data_mut();
+    // Each block's pixel span and average colour.
+    let mut blocks = Vec::new();
     for by in (0..r.h).step_by(block as usize) {
         for bx in (0..r.w).step_by(block as usize) {
             let (bw, bh) = (block.min(r.w - bx) as usize, block.min(r.h - by) as usize);
@@ -963,12 +1135,26 @@ fn pixelate(pm: &mut Pixmap, r: Rect, block: u32) {
                 }
             }
             let n = (bw * bh) as u32;
-            let avg = sum.map(|s| (s / n) as u8);
-            for y in y0..y0 + bh {
-                for x in x0..x0 + bw {
-                    let i = (y * stride + x) * 4;
-                    data[i..i + 4].copy_from_slice(&avg);
-                }
+            blocks.push(((x0, y0, bw, bh), sum.map(|s| (s / n) as u8)));
+        }
+    }
+    let mut colors: Vec<[u8; 4]> = blocks.iter().map(|b| b.1).collect();
+    if let Some(seed) = seed {
+        let mut rng = fastrand::Rng::with_seed(seed);
+        rng.shuffle(&mut colors);
+        for c in &mut colors {
+            // Premultiplied: colour can't exceed alpha.
+            let alpha = c[3] as i32;
+            for v in &mut c[..3] {
+                *v = (*v as i32 + rng.i32(-14..=14)).clamp(0, alpha) as u8;
+            }
+        }
+    }
+    for (((x0, y0, bw, bh), _), color) in blocks.into_iter().zip(colors) {
+        for y in y0..y0 + bh {
+            for x in x0..x0 + bw {
+                let i = (y * stride + x) * 4;
+                data[i..i + 4].copy_from_slice(&color);
             }
         }
     }
@@ -1170,11 +1356,12 @@ impl Canvas {
         self.replay();
     }
 
-    /// Picks up the topmost arrow whose middle node is within `radius` of
-    /// `p`, to bend it by dragging. Returns whether there was one.
-    pub fn begin_bend(&mut self, p: Point, radius: f32) -> bool {
+    /// Picks up the topmost line or arrow drawn with `tool` whose middle node
+    /// is within `radius` of `p`, to bend it by dragging. Returns whether
+    /// there was one.
+    pub fn begin_bend(&mut self, p: Point, radius: f32, tool: Tool) -> bool {
         let near = |a: &Annotation| {
-            a.arrow_node()
+            a.bend_node(tool)
                 .is_some_and(|n| (n.0 - p.0).hypot(n.1 - p.1) <= radius)
         };
         let Some(i) = self.annotations.iter().rposition(near) else {
@@ -1215,13 +1402,14 @@ impl Canvas {
         self.editing.is_some()
     }
 
-    /// Middle nodes of the arrows, which can be dragged to curve them.
-    pub fn arrow_nodes(&self) -> Vec<Point> {
+    /// Middle nodes of the lines or arrows drawn with `tool`, which can be
+    /// dragged to curve them.
+    pub fn bend_nodes(&self, tool: Tool) -> Vec<Point> {
         let edited = self.active.as_ref().filter(|_| self.editing.is_some());
         self.annotations
             .iter()
             .chain(edited)
-            .filter_map(Annotation::arrow_node)
+            .filter_map(|a| a.bend_node(tool))
             .collect()
     }
 
@@ -1270,6 +1458,7 @@ impl Canvas {
         Some(Annotation {
             shape: Shape::Clip(Arc::new(img), at),
             style: a.style,
+            seed: a.seed,
         })
     }
 
@@ -1436,23 +1625,41 @@ mod tests {
     fn arrows_bend_through_their_node_and_undo() {
         let mut c = canvas();
         draw(&mut c, Tool::Arrow, (1005.0, 530.0), (1095.0, 530.0));
-        assert_eq!(c.arrow_nodes(), vec![(1050.0, 530.0)]);
+        assert_eq!(c.bend_nodes(Tool::Arrow), vec![(1050.0, 530.0)]);
         let untouched = [200, 200, 200, 255];
         assert_eq!(c.image().get_pixel(50, 10).0, untouched);
 
-        assert!(!c.begin_bend((1050.0, 500.0), 10.0)); // too far from the node
-        assert!(c.begin_bend((1052.0, 531.0), 10.0));
+        assert!(!c.begin_bend((1050.0, 500.0), 10.0, Tool::Arrow)); // too far from the node
+        assert!(c.begin_bend((1052.0, 531.0), 10.0, Tool::Arrow));
         c.drag_to((1050.0, 510.0), false);
         c.commit();
-        assert_eq!(c.arrow_nodes(), vec![(1050.0, 510.0)]);
+        assert_eq!(c.bend_nodes(Tool::Arrow), vec![(1050.0, 510.0)]);
         assert_ne!(c.image().get_pixel(50, 10).0, untouched); // the curve's peak
         assert_eq!(c.image().get_pixel(50, 30).0, untouched); // no straight shaft
 
         c.undo();
-        assert_eq!(c.arrow_nodes(), vec![(1050.0, 530.0)]);
+        assert_eq!(c.bend_nodes(Tool::Arrow), vec![(1050.0, 530.0)]);
         assert_eq!(c.image().get_pixel(50, 10).0, untouched);
         c.undo();
-        assert!(c.arrow_nodes().is_empty());
+        assert!(c.bend_nodes(Tool::Arrow).is_empty());
+    }
+
+    #[test]
+    fn lines_bend_through_their_node() {
+        let mut c = canvas();
+        draw(&mut c, Tool::Line, (1005.0, 530.0), (1095.0, 530.0));
+        // Each tool only offers its own shapes' nodes.
+        assert!(c.bend_nodes(Tool::Arrow).is_empty());
+        assert!(!c.begin_bend((1050.0, 530.0), 10.0, Tool::Arrow));
+        assert_eq!(c.bend_nodes(Tool::Line), vec![(1050.0, 530.0)]);
+        let untouched = [200, 200, 200, 255];
+
+        assert!(c.begin_bend((1050.0, 530.0), 10.0, Tool::Line));
+        c.drag_to((1050.0, 510.0), false);
+        c.commit();
+        assert_eq!(c.bend_nodes(Tool::Line), vec![(1050.0, 510.0)]);
+        assert_ne!(c.image().get_pixel(50, 10).0, untouched); // the curve's peak
+        assert_eq!(c.image().get_pixel(50, 30).0, untouched); // no straight line
     }
 
     #[test]
@@ -1478,6 +1685,24 @@ mod tests {
         c.undo(); // back where it was copied
         assert!(c.movable_at((1020.0, 520.0), Tool::Clip));
         assert_ne!(c.image().get_pixel(70, 30).0, red);
+    }
+
+    #[test]
+    fn clip_shadow_can_be_turned_off() {
+        let below_clip = |clip_shadow| {
+            let mut c = canvas();
+            let style = Style {
+                clip_shadow,
+                ..Style::default()
+            };
+            c.begin(Annotation::new(Tool::Clip, style, (1005.0, 505.0)).unwrap());
+            c.drag_to((1035.0, 535.0), false);
+            c.commit();
+            c.image().get_pixel(20, 37).0
+        };
+        let untouched = [200, 200, 200, 255];
+        assert_ne!(below_clip(true), untouched);
+        assert_eq!(below_clip(false), untouched);
     }
 
     #[test]
@@ -1600,6 +1825,64 @@ mod tests {
         assert!(!c.movable_at((10.0, 30.0), Tool::Eraser));
     }
 
+    /// Covers (1010, 510)-(1030, 530), a 20 px square, with `image`.
+    fn redact(image: Option<RedactImage>) -> RgbaImage {
+        let mut c = canvas();
+        c.begin(
+            Annotation::new(Tool::Image, Style::default(), (1010.0, 510.0))
+                .unwrap()
+                .with_image(image),
+        );
+        c.drag_to((1030.0, 530.0), false);
+        c.commit();
+        c.image()
+    }
+
+    /// A 5x1 picture: red, three greens, blue.
+    fn stripes(stretch: bool) -> RedactImage {
+        let mut img = RgbaImage::from_pixel(5, 1, image::Rgba([0, 255, 0, 255]));
+        img.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
+        img.put_pixel(4, 0, image::Rgba([0, 0, 255, 255]));
+        RedactImage {
+            pixmap: Arc::new(premultiplied_pixmap(&img).unwrap()),
+            stretch,
+        }
+    }
+
+    #[test]
+    fn image_redaction_stretches_to_fill() {
+        let img = redact(Some(stripes(true)));
+        let [r, g, _, a] = img.get_pixel(10, 20).0;
+        assert!(r > g && a == 255, "left edge should be red: {r} {g}");
+        let [_, g, b, _] = img.get_pixel(29, 20).0;
+        assert!(b > g, "right edge should be blue: {g} {b}");
+        assert_eq!(img.get_pixel(9, 20).0, [200, 200, 200, 255]); // outside
+        assert_eq!(img.get_pixel(30, 20).0, [200, 200, 200, 255]);
+    }
+
+    #[test]
+    fn image_redaction_keeps_proportions_by_cropping() {
+        // Scaled up to cover the square, only the middle green is left.
+        let img = redact(Some(stripes(false)));
+        for x in [10, 20, 29] {
+            let [r, g, b, a] = img.get_pixel(x, 20).0;
+            assert!(g > r && g > b && a == 255, "{x}: {r} {g} {b}");
+        }
+    }
+
+    #[test]
+    fn image_redaction_never_shows_through() {
+        // No picture: a black box.
+        assert_eq!(redact(None).get_pixel(20, 20).0, [0, 0, 0, 255]);
+        // A see-through one goes over black.
+        let clear = RgbaImage::from_pixel(4, 4, image::Rgba([255, 255, 255, 0]));
+        let img = RedactImage {
+            pixmap: Arc::new(premultiplied_pixmap(&clear).unwrap()),
+            stretch: true,
+        };
+        assert_eq!(redact(Some(img)).get_pixel(20, 20).0, [0, 0, 0, 255]);
+    }
+
     #[test]
     fn pixelate_averages_blocks() {
         let mut img = RgbaImage::from_pixel(28, 28, image::Rgba([0, 0, 0, 255]));
@@ -1618,6 +1901,69 @@ mod tests {
         draw(&mut c, Tool::Pixelate, (0.0, 0.0), (28.0, 28.0));
         let block = c.image().get_pixel(5, 5).0;
         assert_eq!(block, [18, 18, 18, 255]); // 14 white of 196 pixels
+    }
+
+    #[test]
+    fn secure_pixelate_shuffles_blocks_the_same_way_every_redraw() {
+        // Blocks alternately black and white along the top row.
+        let img = RgbaImage::from_fn(80, 8, |x, _| {
+            let v = if (x / 8) % 2 == 0 { 0 } else { 255 };
+            image::Rgba([v, v, v, 255])
+        });
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            w: 80,
+            h: 8,
+        };
+        let mut c = Canvas::new(rect, img.clone());
+        let mut style = Style::default();
+        style.pixelate = PixelateOptions {
+            block: 8,
+            secure: true,
+        };
+        c.begin(Annotation::new(Tool::Pixelate, style, (0.0, 0.0)).unwrap());
+        c.drag_to((80.0, 8.0), false);
+        c.commit();
+        let out = c.image();
+        let tops: Vec<u8> = (0..10).map(|i| out.get_pixel(i * 8, 0).0[0]).collect();
+        // Still five dark and five light blocks, just not where they were.
+        assert_eq!(tops.iter().filter(|&&v| v < 128).count(), 5);
+        assert_ne!(
+            tops,
+            (0..10).map(|i| if i % 2 == 0 { 0 } else { 255 }).collect::<Vec<u8>>(),
+            "blocks should be shuffled (1 in 252 chance of a false failure)"
+        );
+        // Undo and redo redraws it identically.
+        c.undo();
+        c.redo();
+        assert_eq!(c.image(), out);
+    }
+
+    #[test]
+    fn arrow_heads_go_where_the_options_say() {
+        let head_at = |arrow: ArrowOptions| {
+            let mut c = canvas();
+            let mut style = Style::default();
+            style.arrow = arrow;
+            c.begin(Annotation::new(Tool::Arrow, style, (1010.0, 530.0)).unwrap());
+            c.drag_to((1090.0, 530.0), false);
+            c.commit();
+            let img = c.image();
+            let untouched = [200, 200, 200, 255];
+            // Off the shaft, but inside a head's width.
+            (
+                img.get_pixel(30, 36).0 != untouched,
+                img.get_pixel(70, 36).0 != untouched,
+            )
+        };
+        let opts = |double, head_at_start| ArrowOptions {
+            double,
+            head_at_start,
+        };
+        assert_eq!(head_at(opts(false, false)), (false, true));
+        assert_eq!(head_at(opts(false, true)), (true, false));
+        assert_eq!(head_at(opts(true, false)), (true, true));
     }
 
     #[test]

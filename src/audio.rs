@@ -1,12 +1,9 @@
 //! Audio for screen recordings: what's playing (WASAPI loopback on Windows)
-//! and/or a microphone, each written to a raw 32-bit float file that FFmpeg
-//! muxes with the video when the recording stops.
+//! and/or a microphone. Each source's samples are padded to follow the
+//! recording clock and sent on to be mixed and encoded with the video.
 
-use std::fs::File;
-use std::io::{BufWriter, Write};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -68,9 +65,11 @@ impl Clock {
     }
 }
 
-/// One source being captured to a file.
+/// Interleaved f32 samples from the source with this index.
+pub type Chunk = (usize, Vec<f32>);
+
+/// One source being captured.
 pub struct Capture {
-    pub path: PathBuf,
     pub sample_rate: u32,
     pub channels: u16,
     stop: Arc<AtomicBool>,
@@ -78,8 +77,14 @@ pub struct Capture {
 }
 
 impl Capture {
-    /// Starts capturing `source` into `path`, following `clock`.
-    pub fn start(source: &Source, path: PathBuf, clock: Arc<Mutex<Clock>>) -> Result<Self, String> {
+    /// Starts capturing `source`, sending its samples to `out` tagged with
+    /// `index`, following `clock`.
+    pub fn start(
+        source: &Source,
+        index: usize,
+        out: Sender<Chunk>,
+        clock: Arc<Mutex<Clock>>,
+    ) -> Result<Self, String> {
         let host = cpal::default_host();
         let device = match source {
             Source::System => host
@@ -101,8 +106,6 @@ impl Capture {
         }
         .map_err(|e| format!("audio device unavailable: {e}"))?;
         let (sample_rate, channels) = (supported.sample_rate(), supported.channels());
-        let file =
-            File::create(&path).map_err(|e| format!("couldn't create {}: {e}", path.display()))?;
 
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = stop.clone();
@@ -125,9 +128,13 @@ impl Capture {
                             return Err(e);
                         }
                     };
+                let send = |samples: Vec<f32>| {
+                    out.send((index, samples))
+                        .map_err(|_| "the recording stopped taking audio".to_string())
+                };
                 let result = write_samples(
                     rx,
-                    BufWriter::new(file),
+                    send,
                     &clock,
                     &stopping,
                     sample_rate,
@@ -141,7 +148,6 @@ impl Capture {
             .recv()
             .map_err(|_| "audio thread stopped".to_string())??;
         Ok(Self {
-            path,
             sample_rate,
             channels,
             stop,
@@ -149,7 +155,7 @@ impl Capture {
         })
     }
 
-    /// Stops capturing and finishes the file.
+    /// Stops capturing, once the samples up to now are sent.
     pub fn finish(mut self) -> Result<(), String> {
         self.stop.store(true, Ordering::Relaxed);
         self.thread
@@ -214,11 +220,11 @@ where
     )
 }
 
-/// Writes incoming samples as little-endian f32, dropping them while paused
-/// and filling gaps with silence so the audio keeps pace with `clock`.
+/// Passes incoming samples on to `out`, dropping them while paused and
+/// filling gaps with silence so the audio keeps pace with `clock`.
 fn write_samples(
     rx: Receiver<Vec<f32>>,
-    mut out: impl Write,
+    mut out: impl FnMut(Vec<f32>) -> Result<(), String>,
     clock: &Mutex<Clock>,
     stop: &AtomicBool,
     sample_rate: u32,
@@ -228,15 +234,17 @@ fn write_samples(
     let tolerance = (GAP_TOLERANCE.as_secs_f64() * sample_rate as f64) as u64;
     let mut written: u64 = 0; // frames
     // Pads with silence up to `target` if it's more than `slack` frames ahead.
-    let pad_to =
-        |out: &mut dyn Write, written: &mut u64, target: u64, slack: u64| -> Result<(), String> {
-            if target > *written + slack {
-                let silence = vec![0u8; ((target - *written) * channels * 4) as usize];
-                out.write_all(&silence).map_err(|e| e.to_string())?;
-                *written = target;
-            }
-            Ok(())
-        };
+    let pad_to = |out: &mut dyn FnMut(Vec<f32>) -> Result<(), String>,
+                  written: &mut u64,
+                  target: u64,
+                  slack: u64|
+     -> Result<(), String> {
+        if target > *written + slack {
+            out(vec![0.0; ((target - *written) * channels) as usize])?;
+            *written = target;
+        }
+        Ok(())
+    };
     loop {
         let chunk = match rx.recv_timeout(Duration::from_millis(50)) {
             Ok(c) => Some(c),
@@ -260,8 +268,7 @@ fn write_samples(
                 due.saturating_sub(frames),
                 tolerance,
             )?;
-            let bytes: Vec<u8> = chunk.iter().flat_map(|s| s.to_le_bytes()).collect();
-            out.write_all(&bytes).map_err(|e| e.to_string())?;
+            out(chunk)?;
             written += frames;
         } else if !paused {
             pad_to(&mut out, &mut written, due, tolerance)?;
@@ -273,8 +280,7 @@ fn write_samples(
             break;
         }
     }
-    out.flush()
-        .map_err(|e| format!("couldn't write audio: {e}"))
+    Ok(())
 }
 
 #[cfg(test)]
@@ -314,9 +320,13 @@ mod tests {
                 stop.store(true, Ordering::Relaxed);
                 drop(tx);
             });
-            write_samples(rx, &mut out, &clock, &stop, 1000, 2).unwrap();
+            let collect = |samples: Vec<f32>| {
+                out.extend(samples);
+                Ok(())
+            };
+            write_samples(rx, collect, &clock, &stop, 1000, 2).unwrap();
         });
-        let frames = out.len() / 8;
+        let frames = out.len() / 2;
         assert!((200..=320).contains(&frames), "{frames} frames");
     }
 }

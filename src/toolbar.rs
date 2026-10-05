@@ -6,7 +6,7 @@ use egui::{
     StrokeKind, Vec2, pos2, vec2,
 };
 
-use crate::annotate::{COLORS, Size, Style, Tool};
+use crate::annotate::{ArrowOptions, COLORS, PIXEL_BLOCKS, PixelateOptions, Size, Style, Tool};
 
 const ACCENT: Color32 = Color32::from_rgb(0x3d, 0x9b, 0xff);
 const PANEL: Color32 = Color32::from_rgba_premultiplied(28, 29, 32, 245);
@@ -22,6 +22,9 @@ pub enum Action {
     Tool(Tool),
     Color([u8; 3]),
     Size(Size),
+    Pixelate(PixelateOptions),
+    Arrow(ArrowOptions),
+    ClipShadow(bool),
     Undo,
     Redo,
 }
@@ -36,7 +39,7 @@ pub struct View {
     /// The selection on this monitor, and its size in pixels.
     pub selection: Option<(Rect, [u32; 2])>,
     pub cursor: CursorIcon,
-    /// Handles for curving arrows, in points.
+    /// Handles for curving lines or arrows, in points.
     pub arrow_nodes: Vec<egui::Pos2>,
     /// What to do, shown at the top of the screen.
     pub hint: Option<&'static str>,
@@ -251,12 +254,15 @@ fn draw_loupe(painter: &egui::Painter, at: egui::Pos2, pixels: &image::RgbaImage
 enum Popup {
     Color,
     Size,
+    /// The current tool's settings.
+    Options,
 }
 
 /// Where the popup buttons are, for hanging their popups from.
 struct PopupButtons {
     color: Rect,
     size: Rect,
+    options: Rect,
 }
 
 fn popup_id() -> egui::Id {
@@ -283,6 +289,7 @@ fn show_popup(
     let button = match popup {
         Popup::Color => buttons.color,
         Popup::Size => buttons.size,
+        Popup::Options => buttons.options,
     };
     let mut picked = false;
     let area = egui::Area::new(egui::Id::new("toolbar-popup-area"))
@@ -319,6 +326,8 @@ fn show_popup(
                                 }
                             }
                         }
+                        // Stays open, to change more than one setting.
+                        Popup::Options => tool_options(ui, view, actions),
                     }
                 });
         });
@@ -392,17 +401,29 @@ fn size_option(ui: &mut egui::Ui, size: Size, selected: bool) -> egui::Response 
 }
 
 /// A toolbar button that toggles `popup`, with a chevron to show it opens.
-/// `paint` draws the current choice in the space left of the chevron.
+/// `paint` draws the current choice, in the given colour, in the space left
+/// of the chevron. Disabled, it can't be opened (and closes if it was).
 fn popup_button(
     ui: &mut egui::Ui,
     popup: Popup,
+    enabled: bool,
     tip: &str,
-    paint: impl FnOnce(&egui::Painter, Pos2),
+    paint: impl FnOnce(&egui::Painter, Pos2, Color32),
 ) -> Rect {
-    let (rect, resp) = ui.allocate_exact_size(vec2(40.0, BUTTON), Sense::click());
-    let open = open_popup(ui.ctx()) == Some(popup);
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, resp) = ui.allocate_exact_size(vec2(40.0, BUTTON), sense);
+    let mut open = open_popup(ui.ctx()) == Some(popup);
+    if open && !enabled {
+        set_popup(ui.ctx(), None);
+        open = false;
+    }
+    let color = if enabled { ICON } else { ICON_DISABLED };
     let p = ui.painter();
-    if open || resp.hovered() {
+    if open || (enabled && resp.hovered()) {
         let bg = if open {
             Color32::from_white_alpha(28)
         } else {
@@ -410,7 +431,7 @@ fn popup_button(
         };
         p.rect_filled(rect.shrink2(vec2(1.0, 3.0)), 6.0, bg);
     }
-    paint(p, pos2(rect.left() + 14.0, rect.center().y));
+    paint(p, pos2(rect.left() + 14.0, rect.center().y), color);
     let c = pos2(rect.right() - 10.0, rect.center().y);
     p.add(Shape::line(
         vec![
@@ -418,13 +439,10 @@ fn popup_button(
             c + vec2(0.0, 1.75),
             c + vec2(3.5, -1.75),
         ],
-        Stroke::new(1.5, ICON),
+        Stroke::new(1.5, color),
     ));
-    if resp
-        .on_hover_text(tip)
-        .on_hover_cursor(CursorIcon::PointingHand)
-        .clicked()
-    {
+    let resp = resp.on_hover_text(tip);
+    if enabled && resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
         set_popup(ui.ctx(), if open { None } else { Some(popup) });
     }
     rect
@@ -440,13 +458,37 @@ fn toolbar_contents(ui: &mut egui::Ui, view: &View, actions: &mut Vec<Action>) -
     }
     divider(ui);
     let [r, g, b] = view.style.color;
-    let color = popup_button(ui, Popup::Color, "Colour", |p, at| {
+    let color = popup_button(ui, Popup::Color, true, "Colour", |p, at, _| {
         p.circle_filled(at, 8.0, Color32::from_rgb(r, g, b));
         p.circle_stroke(at, 8.0, Stroke::new(1.0, Color32::from_white_alpha(60)));
     });
     let (radius, label) = size_look(view.style.size);
-    let size = popup_button(ui, Popup::Size, &format!("Thickness: {label}"), |p, at| {
-        p.circle_filled(at, radius, ICON);
+    let sized = uses_size(view.tool);
+    let tip = if sized {
+        format!("Thickness: {label}")
+    } else {
+        "This tool has no thickness".into()
+    };
+    let size = popup_button(ui, Popup::Size, sized, &tip, |p, at, color| {
+        p.circle_filled(at, radius, color);
+    });
+    let has_options = has_options(view.tool);
+    let tip = if has_options {
+        "Tool settings"
+    } else {
+        "No settings for this tool"
+    };
+    let options = popup_button(ui, Popup::Options, has_options, tip, |p, at, color| {
+        // Two sliders.
+        for (dy, knob) in [(-3.5, -2.5), (3.5, 2.5)] {
+            let y = at.y + dy;
+            p.line_segment(
+                [pos2(at.x - 7.0, y), pos2(at.x + 7.0, y)],
+                Stroke::new(1.5, color),
+            );
+            p.circle_filled(pos2(at.x + knob, y), 2.6, PANEL);
+            p.circle_stroke(pos2(at.x + knob, y), 2.6, Stroke::new(1.5, color));
+        }
     });
     divider(ui);
     if icon_button(ui, Icon::Undo, false, view.can_undo, "Undo  (Ctrl+Z)").clicked() {
@@ -455,7 +497,151 @@ fn toolbar_contents(ui: &mut egui::Ui, view: &View, actions: &mut Vec<Action>) -
     if icon_button(ui, Icon::Redo, false, view.can_redo, "Redo  (Ctrl+Y)").clicked() {
         actions.push(Action::Redo);
     }
-    PopupButtons { color, size }
+    PopupButtons {
+        color,
+        size,
+        options,
+    }
+}
+
+/// Whether the thickness setting changes what `tool` draws.
+fn uses_size(tool: Tool) -> bool {
+    !matches!(
+        tool,
+        Tool::Select | Tool::Pixelate | Tool::Image | Tool::Eraser | Tool::Clip
+    )
+}
+
+/// Whether `tool` has settings of its own.
+fn has_options(tool: Tool) -> bool {
+    matches!(tool, Tool::Pixelate | Tool::Arrow | Tool::Clip)
+}
+
+/// The current tool's settings, in the options popup.
+fn tool_options(ui: &mut egui::Ui, view: &View, actions: &mut Vec<Action>) {
+    match view.tool {
+        Tool::Pixelate => {
+            let opts = view.style.pixelate;
+            option_heading(ui, "Pixel size");
+            ui.horizontal(|ui| {
+                for block in PIXEL_BLOCKS {
+                    let label = format!("{block} px");
+                    if option(ui, &label, 56.0, opts.block == block, true).clicked() {
+                        actions.push(Action::Pixelate(PixelateOptions { block, ..opts }));
+                    }
+                }
+            });
+            option_heading(ui, "Pixelation");
+            for (secure, label, tip) in [
+                (
+                    false,
+                    "Average of what\u{2019}s behind",
+                    "Each block is the average colour of the pixels under it",
+                ),
+                (
+                    true,
+                    "Secure: shuffled noise",
+                    "The blocks\u{2019} colours are shuffled and noised, so nothing \
+                     under them can be recovered",
+                ),
+            ] {
+                if option(ui, label, 230.0, opts.secure == secure, true)
+                    .on_hover_text(tip)
+                    .clicked()
+                {
+                    actions.push(Action::Pixelate(PixelateOptions { secure, ..opts }));
+                }
+            }
+        }
+        Tool::Arrow => {
+            let opts = view.style.arrow;
+            option_heading(ui, "Heads");
+            ui.horizontal(|ui| {
+                for (double, label) in [(false, "One"), (true, "Two")] {
+                    if option(ui, label, 114.0, opts.double == double, true).clicked() {
+                        actions.push(Action::Arrow(ArrowOptions { double, ..opts }));
+                    }
+                }
+            });
+            option_heading(ui, "Point the head at");
+            for (head_at_start, label) in [
+                (false, "Where you let go"),
+                (true, "Where you start dragging"),
+            ] {
+                let selected = !opts.double && opts.head_at_start == head_at_start;
+                if option(ui, label, 230.0, selected, !opts.double).clicked() {
+                    actions.push(Action::Arrow(ArrowOptions {
+                        head_at_start,
+                        ..opts
+                    }));
+                }
+            }
+        }
+        Tool::Clip => {
+            option_heading(ui, "Drop shadow");
+            ui.horizontal(|ui| {
+                for (shadow, label) in [(true, "On"), (false, "Off")] {
+                    let selected = view.style.clip_shadow == shadow;
+                    if option(ui, label, 114.0, selected, true).clicked() {
+                        actions.push(Action::ClipShadow(shadow));
+                    }
+                }
+            });
+        }
+        _ => {}
+    }
+}
+
+/// A small heading over a group of settings.
+fn option_heading(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(4.0);
+    ui.label(
+        egui::RichText::new(text)
+            .size(11.5)
+            .color(Color32::from_gray(150)),
+    );
+    ui.add_space(1.0);
+}
+
+/// One choice in the settings popup: its label, highlighted when selected.
+fn option(
+    ui: &mut egui::Ui,
+    label: &str,
+    width: f32,
+    selected: bool,
+    enabled: bool,
+) -> egui::Response {
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, 28.0), sense);
+    let p = ui.painter();
+    if selected {
+        p.rect_filled(rect, 6.0, ACCENT);
+    } else if enabled && resp.hovered() {
+        p.rect_filled(rect, 6.0, Color32::from_white_alpha(14));
+    }
+    let color = if !enabled {
+        ICON_DISABLED
+    } else if selected {
+        Color32::WHITE
+    } else {
+        ICON
+    };
+    p.text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        label,
+        FontId::proportional(13.0),
+        color,
+    );
+    if enabled {
+        resp.on_hover_cursor(CursorIcon::PointingHand)
+    } else {
+        resp
+    }
 }
 
 fn divider(ui: &mut egui::Ui) {
@@ -655,6 +841,22 @@ fn draw_icon(p: &egui::Painter, r: Rect, icon: Icon, color: Color32) {
                 }
             }
         }
+        Icon::Tool(Tool::Image) => {
+            // A picture: a frame with a sun and a mountain.
+            let frame = Rect::from_min_max(at(0.0, 0.1), at(1.0, 0.9));
+            p.rect_stroke(frame, 2.0, Stroke::new(1.7, color), StrokeKind::Inside);
+            p.circle_filled(at(0.7, 0.33), r.width() * 0.1, color);
+            p.add(Shape::convex_polygon(
+                vec![at(0.12, 0.78), at(0.4, 0.42), at(0.68, 0.78)],
+                color,
+                Stroke::NONE,
+            ));
+            p.add(Shape::convex_polygon(
+                vec![at(0.5, 0.78), at(0.7, 0.55), at(0.88, 0.78)],
+                color.gamma_multiply(0.6),
+                Stroke::NONE,
+            ));
+        }
         Icon::Undo | Icon::Redo => {
             // An arc over the top, ending in a downward arrowhead: like a
             // counter-clockwise arrow for undo, mirrored for redo.
@@ -715,6 +917,34 @@ mod tests {
             laid_out |= ui(root, &view).1.is_some();
         });
         assert!(laid_out, "toolbar should be laid out");
+    }
+
+    /// Renders the toolbar with each tool's settings popup open, to
+    /// `target/options-preview-*.png`: `cargo test options_preview -- --ignored`.
+    #[test]
+    #[ignore]
+    fn options_preview() {
+        for tool in [Tool::Pixelate, Tool::Arrow, Tool::Clip] {
+            let mut style = Style::default();
+            style.arrow.double = true;
+            let view = View {
+                tool,
+                style,
+                can_undo: true,
+                can_redo: false,
+                show_toolbar: true,
+                selection: None,
+                cursor: CursorIcon::Crosshair,
+                arrow_nodes: Vec::new(),
+                hint: None,
+                loupe: None,
+            };
+            let name = format!("options-preview-{tool:?}").to_lowercase();
+            crate::preview::render(&name, [1200, 300], 1.5, |root| {
+                set_popup(root.ctx(), Some(Popup::Options));
+                ui(root, &view);
+            });
+        }
     }
 
     /// Renders the colour picker's hint and loupe, near the bottom-right

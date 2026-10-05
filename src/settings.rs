@@ -39,9 +39,20 @@ pub struct Settings {
     pub show_toast: bool,
     /// Overlay frame-rate limit; 0 matches each monitor's refresh rate.
     pub overlay_fps: u32,
+    /// The picture the image redaction tool covers areas with; empty draws
+    /// black boxes.
+    pub redact_image: String,
+    /// Squash or stretch the redaction image to each area's shape, rather
+    /// than keeping its proportions and cropping it.
+    pub redact_stretch: bool,
     /// Frame rate of screen recordings.
     pub record_fps: u32,
-    /// The FFmpeg program recordings are encoded with; empty finds it on PATH.
+    /// File format of screen recordings.
+    pub record_format: RecordFormat,
+    /// Record displays in HDR mode in HDR (HDR10; Windows, MP4 only).
+    pub record_hdr: bool,
+    /// The FFmpeg program videos are encoded and decoded with on Linux;
+    /// empty finds it on PATH. Windows and macOS don't need it.
     pub ffmpeg_path: String,
     /// Record what's playing along with the screen.
     pub record_system_audio: bool,
@@ -51,6 +62,75 @@ pub struct Settings {
     pub record_microphone: bool,
     /// The microphone's name; empty for the system default.
     pub microphone: String,
+    /// Global hotkeys that run a tool straight away.
+    pub tool_hotkeys: Vec<ToolHotkey>,
+    /// How upload speeds are shown.
+    pub speed_unit: SpeedUnit,
+}
+
+/// Recordings as MP4 (H.264 + AAC; plays everywhere), MP4 with AV1 video
+/// (sharper for the size; Windows with a GPU that encodes AV1) or WebM
+/// (VP9 + Opus; Windows and Linux only).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordFormat {
+    #[default]
+    Mp4,
+    Av1,
+    Webm,
+}
+
+impl RecordFormat {
+    /// The file extension, falling back to MP4 where WebM can't be made.
+    pub fn extension(self) -> &'static str {
+        match self {
+            RecordFormat::Webm if crate::encode::webm_supported() => "webm",
+            _ => "mp4",
+        }
+    }
+}
+
+/// Upload speeds in bytes (MB/s, like file sizes) or bits (Mbps, like
+/// internet plans).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpeedUnit {
+    #[default]
+    Bytes,
+    Bits,
+}
+
+/// A global hotkey that runs one of the tools.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolHotkey {
+    pub action: ToolAction,
+    /// e.g. `Ctrl + Shift + KeyC`.
+    pub hotkey: String,
+}
+
+/// A tool that can be given a hotkey.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolAction {
+    PickColor,
+    ScanQr,
+    PinRegion,
+}
+
+impl ToolAction {
+    pub const ALL: [ToolAction; 3] = [
+        ToolAction::PickColor,
+        ToolAction::ScanQr,
+        ToolAction::PinRegion,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ToolAction::PickColor => "Pick a colour",
+            ToolAction::ScanQr => "Read a QR code",
+            ToolAction::PinRegion => "Pin a region to the screen",
+        }
+    }
 }
 
 impl Default for Settings {
@@ -59,7 +139,7 @@ impl Default for Settings {
             hotkey: DEFAULT_HOTKEY.into(),
             record_hotkey: DEFAULT_RECORD_HOTKEY.into(),
             folder: default_folder().display().to_string(),
-            subfolder: String::new(),
+            subfolder: "%y-%mo".into(),
             file_name: "%rna{10}".into(),
             save_to_folder: true,
             copy_to_clipboard: true,
@@ -69,12 +149,18 @@ impl Default for Settings {
             play_sounds: true,
             show_toast: true,
             overlay_fps: 0,
+            redact_image: String::new(),
+            redact_stretch: false,
             record_fps: 30,
+            record_format: RecordFormat::default(),
+            record_hdr: true,
             ffmpeg_path: String::new(),
             record_cursor: true,
             record_system_audio: false,
             record_microphone: false,
             microphone: String::new(),
+            tool_hotkeys: Vec::new(),
+            speed_unit: SpeedUnit::default(),
         }
     }
 }
@@ -194,6 +280,8 @@ pub struct Upload {
     pub path_style: bool,
     /// Include a hash of the file in the request signature.
     pub signed_payload: bool,
+    /// Parts of a large upload sent at the same time.
+    pub parallel_parts: u32,
 }
 
 impl Default for Upload {
@@ -213,6 +301,7 @@ impl Default for Upload {
             public_url: String::new(),
             path_style: false,
             signed_payload: false,
+            parallel_parts: crate::upload::DEFAULT_CONCURRENCY,
         }
     }
 }
@@ -253,6 +342,7 @@ impl Upload {
             secret_access_key: secret_access_key.trim().to_string(),
             path_style: self.path_style,
             sign_payload: self.signed_payload,
+            concurrency: self.parallel_parts,
         }
     }
 
@@ -277,4 +367,27 @@ pub fn default_folder() -> PathBuf {
         .or_else(dirs::home_dir)
         .unwrap_or_else(|| PathBuf::from("."))
         .join("snapr")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_hotkeys_round_trip() {
+        let settings = Settings {
+            tool_hotkeys: vec![ToolHotkey {
+                action: ToolAction::PickColor,
+                hotkey: "Ctrl + Shift + KeyC".into(),
+            }],
+            ..Settings::default()
+        };
+        let text = toml::to_string_pretty(&settings).unwrap();
+        assert!(text.contains("[[tool_hotkeys]]"), "{text}");
+        assert!(text.contains("action = \"pick_color\""), "{text}");
+        assert_eq!(toml::from_str::<Settings>(&text).unwrap(), settings);
+        // Older config files have none.
+        let old: Settings = toml::from_str("hotkey = \"Alt + Shift + KeyS\"").unwrap();
+        assert!(old.tool_hotkeys.is_empty());
+    }
 }

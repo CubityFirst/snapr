@@ -12,7 +12,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
 use winit::window::WindowId;
 
-use crate::annotate::{Annotation, Canvas, Style, Tool};
+use crate::annotate::{Annotation, Canvas, RedactImage, Style, Tool};
 use crate::capture::{self, Rect};
 use crate::gpu::Gpu;
 use crate::naming::Context;
@@ -25,6 +25,8 @@ pub enum Outcome {
     Done {
         image: RgbaImage,
         save_file: bool,
+        /// The region taken, for capturing it again.
+        rect: Rect,
     },
     /// A region was picked for screen recording.
     Record(Rect),
@@ -32,6 +34,8 @@ pub enum Outcome {
     Scan(RgbaImage),
     /// A pixel's colour was picked (the colour picker).
     Color([u8; 3]),
+    /// A region was picked to pin to the screen, where it was.
+    Pin(RgbaImage, Rect),
 }
 
 /// What the region being picked is for.
@@ -43,6 +47,8 @@ pub enum Purpose {
     Scan,
     /// Picking a pixel's colour: a click picks, there's no region.
     PickColor,
+    /// Pinning a region to the screen.
+    Pin,
 }
 
 impl Purpose {
@@ -54,6 +60,7 @@ impl Purpose {
             Purpose::Record => Some("Select a region to record"),
             Purpose::Scan => Some("Select a QR code to read"),
             Purpose::PickColor => Some("Click to pick a colour \u{2014} arrow keys move one pixel"),
+            Purpose::Pin => Some("Select a region to pin to the screen"),
         }
     }
 }
@@ -73,7 +80,8 @@ enum Grab {
 /// the middle).
 pub const LOUPE_SIZE: u32 = 15;
 
-/// How close (in pixels) a press must be to an arrow's middle node to grab it.
+/// How close (in pixels) a press must be to a line's or an arrow's middle
+/// node to grab it.
 const NODE_RADIUS: f64 = 9.0;
 
 fn node_hit(node: (f32, f32), p: (f64, f64)) -> bool {
@@ -127,6 +135,8 @@ pub struct Session {
     layer: Option<Layer>,
     pub tool: Tool,
     pub style: Style,
+    /// What the image redaction tool covers areas with; black boxes without.
+    pub redact_image: Option<RedactImage>,
     modifiers: ModifiersState,
     /// A right-click that will close the capture when the button is released,
     /// so the release doesn't reach the window underneath (and, say, open
@@ -189,6 +199,7 @@ impl Session {
             layer: None,
             tool,
             style,
+            redact_image: None,
             modifiers: ModifiersState::empty(),
             close_on_right_release: false,
             keys_down: HashSet::new(),
@@ -324,8 +335,11 @@ impl Session {
         let canvas = self.canvas.as_ref();
         let editing = canvas.is_some_and(Canvas::is_editing);
         let arrow_nodes = match canvas {
-            Some(c) if self.tool == Tool::Arrow && (editing || self.grab == Grab::None) => {
-                c.arrow_nodes()
+            Some(c)
+                if matches!(self.tool, Tool::Line | Tool::Arrow)
+                    && (editing || self.grab == Grab::None) =>
+            {
+                c.bend_nodes(self.tool)
             }
             _ => Vec::new(),
         };
@@ -373,7 +387,17 @@ impl Session {
                 .map(|(x, y)| (x as f64, y as f64))
                 .collect(),
             // On the monitor with the cursor, unless the region covers it.
-            hint: self.purpose.hint().filter(|_| !dragging && on_this_monitor),
+            hint: self
+                .purpose
+                .hint()
+                .or_else(|| {
+                    (self.annotate && self.tool == Tool::Image && self.redact_image.is_none())
+                        .then_some(
+                            "No redaction image chosen \u{2014} pick one in Settings. \
+                             Drawing black boxes for now.",
+                        )
+                })
+                .filter(|_| !dragging && on_this_monitor),
             loupe: self
                 .cursor
                 .filter(|_| picking && on_this_monitor)
@@ -637,6 +661,9 @@ impl Session {
             Action::Tool(t) => self.tool = t,
             Action::Color(c) => self.style.color = c,
             Action::Size(s) => self.style.size = s,
+            Action::Pixelate(o) => self.style.pixelate = o,
+            Action::Arrow(o) => self.style.arrow = o,
+            Action::ClipShadow(on) => self.style.clip_shadow = on,
             Action::Undo => self.canvas.iter_mut().for_each(Canvas::undo),
             Action::Redo => self.canvas.iter_mut().for_each(Canvas::redo),
         }
@@ -691,6 +718,7 @@ impl Session {
             Purpose::Record => return Outcome::Record(rect),
             Purpose::Scan => return Outcome::Scan(self.crop(rect)),
             Purpose::PickColor => return self.pick_color(),
+            Purpose::Pin => return Outcome::Pin(self.crop(rect), rect),
             Purpose::Screenshot => {}
         }
         let mut image = self.crop(rect);
@@ -698,7 +726,11 @@ impl Session {
             canvas.commit();
             canvas.copy_into(&mut image, rect);
         }
-        Outcome::Done { image, save_file }
+        Outcome::Done {
+            image,
+            save_file,
+            rect,
+        }
     }
 
     /// Takes the whole monitor under the cursor.
@@ -743,11 +775,10 @@ impl Session {
         let before = self.snap();
         if self.tool == Tool::Select || !self.annotate {
             self.grab = Grab::Region { anchor: p };
-        } else if self.tool == Tool::Arrow
-            && let Some(canvas) = &mut self.canvas
-            && canvas.begin_bend((p.0 as f32, p.1 as f32), NODE_RADIUS as f32)
+        } else if let Some(canvas) = &mut self.canvas
+            && canvas.begin_bend((p.0 as f32, p.1 as f32), NODE_RADIUS as f32, self.tool)
         {
-            // Grabbed an arrow's middle node: drag to curve it.
+            // Grabbed a line's or an arrow's middle node: drag to curve it.
             self.grab = Grab::Draw;
         } else if let Some(canvas) = &mut self.canvas
             && canvas.begin_move((p.0 as f32, p.1 as f32), self.tool)
@@ -757,7 +788,8 @@ impl Session {
         } else if self.ensure_canvas_at(p)
             && let (Some(canvas), Some(a)) = (
                 &mut self.canvas,
-                Annotation::new(self.tool, self.style, (p.0 as f32, p.1 as f32)),
+                Annotation::new(self.tool, self.style, (p.0 as f32, p.1 as f32))
+                    .map(|a| a.with_image(self.redact_image.clone())),
             )
         {
             canvas.begin(a);

@@ -1,15 +1,17 @@
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::mpsc::{self, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Instant;
 
 use image::RgbaImage;
 
 use crate::history::Remote;
 use crate::naming::{Context, Naming, Template};
 use crate::settings::{Settings, Upload};
-use crate::upload::S3Target;
+use crate::upload::{self, Body, Progress, S3Target};
 
 /// An upload destination, ready to use (secret key included).
 pub struct UploadTarget {
@@ -30,7 +32,11 @@ pub struct Config {
 /// What happened to a screenshot, reported back to the app.
 #[derive(Debug)]
 pub enum Event {
-    Saved(PathBuf),
+    /// A screenshot was saved, and whether it's going to be uploaded.
+    Saved {
+        path: PathBuf,
+        uploading: bool,
+    },
     /// Copied to the clipboard without saving (or a file copied from Recent).
     Copied,
     Uploaded {
@@ -39,8 +45,25 @@ pub enum Event {
         url: String,
         remote: Remote,
     },
+    /// An upload was cancelled (the destination's name).
+    Cancelled(String),
     Failed(String),
+    /// Every upload of this file has finished, whether it worked or not.
+    UploadsFinished(PathBuf),
 }
+
+/// An upload in progress.
+pub struct Transfer {
+    /// The file's name.
+    pub file: String,
+    /// The destination's name.
+    pub destination: String,
+    pub progress: Progress,
+    pub started: Instant,
+}
+
+/// The uploads in progress, oldest first.
+pub type Transfers = Arc<Mutex<Vec<Arc<Transfer>>>>;
 
 enum Job {
     /// The image, naming context, and whether this is a normal capture
@@ -71,29 +94,38 @@ pub type Notify = Box<dyn Fn(Event) + Send>;
 /// contents to remain pasteable.
 pub struct Output {
     tx: Sender<Job>,
+    transfers: Transfers,
 }
 
 impl Output {
     pub fn spawn(config: Config, notify: Notify) -> Self {
         let (tx, rx) = mpsc::channel::<Job>();
         let uploads_tx = tx.clone();
+        let transfers = Transfers::default();
+        let in_progress = transfers.clone();
         thread::spawn(move || {
             let mut config = config;
             let mut clipboard = None;
             let mut in_flight = 0usize;
+            // Uploads still running for each file.
+            let mut pending: HashMap<PathBuf, usize> = HashMap::new();
             let mut waiting: Vec<Sender<()>> = Vec::new();
             for job in rx {
                 match job {
                     Job::Save(img, mut ctx, capture) => {
                         (ctx.width, ctx.height) = img.dimensions();
                         let mut path = None;
+                        let uploading = capture && !config.uploads.is_empty();
                         if capture && config.save_to_folder {
                             if config.naming.uses_counter() {
                                 ctx.counter = next_counter();
                             }
                             match save(&config.naming.path_for(&ctx), &img) {
                                 Ok(p) => {
-                                    notify(Event::Saved(p.clone()));
+                                    notify(Event::Saved {
+                                        path: p.clone(),
+                                        uploading,
+                                    });
                                     path = Some(p);
                                 }
                                 Err(e) => notify(Event::Failed(e)),
@@ -106,7 +138,7 @@ impl Output {
                                 Err(e) => notify(Event::Failed(e)),
                             }
                         }
-                        if capture && !config.uploads.is_empty() {
+                        if uploading {
                             // Upload the saved file as-is, or encode it now.
                             let png = path
                                 .as_ref()
@@ -116,15 +148,22 @@ impl Output {
                                 notify(Event::Failed(
                                     "couldn't encode the screenshot for uploading".into(),
                                 ));
+                                if let Some(p) = path {
+                                    notify(Event::UploadsFinished(p));
+                                }
                                 continue;
                             };
+                            if let Some(p) = &path {
+                                *pending.entry(p.clone()).or_default() += config.uploads.len();
+                            }
                             in_flight += upload_all(
                                 &config.uploads,
                                 &mut ctx,
-                                Arc::new(png),
+                                Body::Bytes(Arc::new(png)),
                                 "png",
                                 path,
                                 &uploads_tx,
+                                &in_progress,
                             );
                         }
                     }
@@ -134,18 +173,18 @@ impl Output {
                                 "upload failed: no upload destinations are set up and enabled"
                                     .into(),
                             ));
+                            notify(Event::UploadsFinished(file));
                             continue;
                         }
-                        let body = match std::fs::read(&file) {
-                            Ok(b) => b,
-                            Err(e) => {
-                                notify(Event::Failed(format!(
-                                    "upload failed: couldn't read {}: {e}",
-                                    file.display()
-                                )));
-                                continue;
-                            }
-                        };
+                        // Read as it's sent, so big recordings aren't
+                        // loaded whole.
+                        let body = Body::File(file.clone());
+                        if let Err(e) = body.len() {
+                            notify(Event::Failed(format!("upload failed: {e}")));
+                            notify(Event::UploadsFinished(file));
+                            continue;
+                        }
+                        *pending.entry(file.clone()).or_default() += config.uploads.len();
                         let ext = file
                             .extension()
                             .and_then(|e| e.to_str())
@@ -154,10 +193,11 @@ impl Output {
                         in_flight += upload_all(
                             &config.uploads,
                             &mut ctx,
-                            Arc::new(body),
+                            body,
                             &ext,
                             Some(file),
                             &uploads_tx,
+                            &in_progress,
                         );
                     }
                     Job::Uploaded {
@@ -175,14 +215,24 @@ impl Output {
                                     notify(Event::Failed(e));
                                 }
                                 notify(Event::Uploaded {
-                                    path,
+                                    path: path.clone(),
                                     name,
                                     url,
                                     remote,
                                 });
                             }
+                            Err(e) if e == upload::CANCELLED => notify(Event::Cancelled(name)),
                             Err(e) => {
                                 notify(Event::Failed(format!("upload to {name} failed: {e}")))
+                            }
+                        }
+                        if let Some(p) = path
+                            && let Some(left) = pending.get_mut(&p)
+                        {
+                            *left -= 1;
+                            if *left == 0 {
+                                pending.remove(&p);
+                                notify(Event::UploadsFinished(p));
                             }
                         }
                         if in_flight == 0 {
@@ -223,7 +273,12 @@ impl Output {
                 }
             }
         });
-        Self { tx }
+        Self { tx, transfers }
+    }
+
+    /// The uploads in progress, kept up to date.
+    pub fn transfers(&self) -> Transfers {
+        self.transfers.clone()
     }
 
     pub fn submit(&self, img: RgbaImage, ctx: Context, capture: bool) {
@@ -259,16 +314,22 @@ impl Output {
     }
 }
 
-/// Uploads `body` to each destination on threads of its own, reporting back
-/// with `Job::Uploaded`. Returns how many uploads were started.
+/// Uploads `body` to each destination on threads of its own, listed in
+/// `transfers` while they run, reporting back with `Job::Uploaded`. Returns
+/// how many uploads were started.
 fn upload_all(
     uploads: &[UploadTarget],
     ctx: &mut Context,
-    body: Arc<Vec<u8>>,
+    body: Body,
     ext: &str,
     path: Option<PathBuf>,
     tx: &Sender<Job>,
+    transfers: &Transfers,
 ) -> usize {
+    let file = match &path {
+        Some(p) => p.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+        None => format!("Screenshot.{ext}"),
+    };
     let content_type = content_type(ext);
     for u in uploads {
         if u.key.uses_counter() && ctx.counter == 0 {
@@ -282,10 +343,22 @@ fn upload_all(
             tx.clone(),
             path.clone(),
         );
+        let transfer = Arc::new(Transfer {
+            file: file.clone(),
+            destination: upload.name.clone(),
+            progress: Progress::default(),
+            started: Instant::now(),
+        });
+        transfers.lock().unwrap().push(transfer.clone());
+        let transfers = transfers.clone();
         thread::spawn(move || {
             let result = target
-                .put_object(&key, &body, content_type)
+                .put_object(&key, &body, content_type, &transfer.progress)
                 .and_then(|()| upload.link(&key));
+            transfers
+                .lock()
+                .unwrap()
+                .retain(|t| !Arc::ptr_eq(t, &transfer));
             let _ = tx.send(Job::Uploaded {
                 path,
                 name: upload.name,

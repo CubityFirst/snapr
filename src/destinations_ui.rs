@@ -4,8 +4,9 @@
 use egui::{RichText, TextEdit};
 
 use crate::naming::Context;
-use crate::settings::Upload;
+use crate::settings::{SpeedUnit, Upload};
 use crate::settings_ui::{Action, ERROR, Form, SUCCESS, Test, template_field};
+use crate::upload::{DEFAULT_CONCURRENCY, MAX_CONCURRENCY};
 
 impl Form {
     pub fn destinations_ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
@@ -63,6 +64,13 @@ impl Form {
                     &mut self.draft.copy_link,
                     "Copy the link to the clipboard after uploading (instead of the image)",
                 );
+                ui.horizontal(|ui| {
+                    ui.label("Show upload speed in");
+                    ui.selectable_value(&mut self.draft.speed_unit, SpeedUnit::Bytes, "MB/s")
+                        .on_hover_text("Megabytes per second, like file sizes");
+                    ui.selectable_value(&mut self.draft.speed_unit, SpeedUnit::Bits, "Mbps")
+                        .on_hover_text("Megabits per second, like internet speeds");
+                });
 
                 self.save_bar(ui, actions);
             });
@@ -215,6 +223,26 @@ impl Form {
                         &mut u.signed_payload,
                         "Signed payload (hash the file into the signature)",
                     );
+                    ui.end_row();
+
+                    ui.label("Parallel parts");
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut u.parallel_parts)
+                                .range(1..=MAX_CONCURRENCY)
+                                .speed(0.1),
+                        )
+                        .on_hover_text(
+                            "How many pieces of a large file (over 16 MB) are sent at once. \
+                             More can be faster on a fast connection; each one holds \
+                             8 MB or more in memory while it's sent.",
+                        );
+                        ui.label(
+                            RichText::new(format!("for files over 16 MB (default {DEFAULT_CONCURRENCY})"))
+                                .weak()
+                                .small(),
+                        );
+                    });
                     ui.end_row();
 
                     ui.label("");

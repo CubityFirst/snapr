@@ -6,15 +6,23 @@ mod audio;
 mod capture;
 mod combine;
 mod cursor;
+mod decode;
 mod destinations_ui;
+mod encode;
 mod gallery;
 mod gpu;
+#[cfg(windows)]
+mod hdr;
 mod history;
 mod hotkey;
 mod main_window;
+#[cfg(windows)]
+mod mf;
 mod naming;
 mod output;
 mod overlay;
+mod pin;
+mod player;
 #[cfg(test)]
 mod preview;
 mod qr;
@@ -25,6 +33,8 @@ mod session;
 mod settings;
 mod settings_ui;
 mod sound;
+mod stats;
+mod stats_ui;
 mod thumbnail;
 mod toast;
 mod toolbar;
@@ -42,14 +52,15 @@ use winit::event::{StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::WindowId;
 
-use crate::annotate::{Style, Tool};
+use crate::annotate::{RedactImage, Style, Tool};
 use crate::gallery::Gallery;
 use crate::gpu::Gpu;
 use crate::hotkey::GlobalHotkey;
 use crate::main_window::{Action, MainWindow, Page};
 use crate::output::Output;
+use crate::pin::{Pin, Place};
 use crate::session::{Outcome, Purpose, Session};
-use crate::settings::{Loaded, Settings, Upload};
+use crate::settings::{Loaded, RecordFormat, Settings, ToolAction, ToolHotkey, Upload};
 use crate::settings_ui::Form;
 use crate::settings_ui::Test;
 use crate::sound::Sound;
@@ -76,8 +87,12 @@ enum UserEvent {
     ToastReady(PathBuf, Option<egui::ColorImage>),
     /// A region was read for QR codes: their text, and a preview of it.
     QrScanned(Vec<String>, egui::ColorImage),
+    /// A tool's global hotkey was pressed.
+    ToolHotkey(ToolAction),
     /// Images from Recent were stitched together (how many, the result).
     Combined(usize, Result<image::RgbaImage, String>),
+    /// An image file to pin to the screen was read.
+    PinLoaded(PathBuf, Result<image::RgbaImage, String>),
 }
 
 /// A global hotkey, or why it's unavailable.
@@ -85,7 +100,10 @@ struct Hotkeys(Result<GlobalHotkey, String>);
 
 impl Hotkeys {
     /// A hotkey that sends `event` (made fresh each time) when pressed.
-    fn new(proxy: EventLoopProxy<UserEvent>, event: fn() -> UserEvent) -> Self {
+    fn new(
+        proxy: EventLoopProxy<UserEvent>,
+        event: impl Fn() -> UserEvent + Send + 'static,
+    ) -> Self {
         let proxy = Mutex::new(proxy);
         Self(GlobalHotkey::new(Box::new(move || {
             let _ = proxy.lock().unwrap().send_event(event());
@@ -106,9 +124,25 @@ impl Hotkeys {
         h.set(spec)
     }
 
+    /// Unregisters the hotkey and waits until it's free for another.
+    fn clear(&mut self) {
+        if let Ok(h) = &mut self.0 {
+            h.clear();
+        }
+    }
+
     fn is_registered(&self) -> bool {
         self.0.as_ref().is_ok_and(|h| h.current().is_some())
     }
+}
+
+/// A capture started from the main window.
+#[derive(Debug, Clone, Copy)]
+enum Start {
+    /// Pick a region (or pixel) on the frozen screen.
+    Pick(Purpose),
+    /// Take this straight away.
+    Grab(capture::Target),
 }
 
 /// A recording in progress and its border and buttons.
@@ -127,6 +161,8 @@ struct App {
     gpu: Result<Gpu, String>,
     hotkeys: Option<Hotkeys>,
     record_hotkeys: Option<Hotkeys>,
+    /// The tools' hotkeys (none with `--once`).
+    tool_hotkeys: Vec<Hotkeys>,
     /// The screen recording in progress.
     recording: Option<ActiveRecording>,
     tray: Option<Tray>,
@@ -139,11 +175,23 @@ struct App {
     main_window: Option<MainWindow>,
     /// The preview in the corner of the screen after a capture.
     toast: Option<Toast>,
+    /// Images pinned to the screen.
+    pins: Vec<Pin>,
     /// The latest upload's screenshot and link, for a preview that's still
     /// being decoded when the upload finishes.
     last_upload: Option<(PathBuf, String)>,
+    /// Files whose corner preview waits until their uploads finish, so it
+    /// can carry the link: with the preview already made (recordings), or
+    /// `None` to decode it then.
+    toast_after_upload: HashMap<PathBuf, Option<egui::ColorImage>>,
+    /// The image redaction tool's picture, with the file and its modified
+    /// time when it was loaded, so it's only decoded again when it changes.
+    redact_image: Option<(PathBuf, Option<std::time::SystemTime>, RedactImage)>,
     /// A capture started from the main window, delayed until it's hidden.
-    capture_at: Option<(Instant, Purpose)>,
+    capture_at: Option<(Instant, Start)>,
+    /// A recording of this region, started once the capture overlay that
+    /// chose it is off the screen.
+    record_at: Option<(Instant, capture::Rect, naming::Context)>,
     /// Show the main window again once the capture it started is over.
     restore_main_window: bool,
     /// Chime when the next copy-to-clipboard finishes (copies from the
@@ -152,7 +200,11 @@ struct App {
     /// Shown in the settings page, e.g. a startup error.
     status: Option<(String, bool)>,
     last_capture: Option<PathBuf>,
+    /// The last screenshot's region, for capturing it again.
+    last_region: Option<capture::Rect>,
     open_settings_on_start: bool,
+    /// What's been captured and which tools were used, for the Stats page.
+    stats: stats::Stats,
 }
 
 impl App {
@@ -166,7 +218,7 @@ impl App {
         if self.recording.is_some() {
             return self.recording_action(event_loop, record_ui::Action::Stop);
         }
-        if self.sessions.is_empty() {
+        if self.sessions.is_empty() && self.record_at.is_none() {
             self.open_session(event_loop, Purpose::Record);
         }
     }
@@ -229,7 +281,9 @@ impl App {
             Ok(n) => n,
             Err(e) => return self.report_on(event_loop, e, true, Page::Naming),
         };
-        let out = naming.path_for(&ctx).with_extension("mp4");
+        let out = naming
+            .path_for(&ctx)
+            .with_extension(self.settings.record_format.extension());
         let proxy = Mutex::new(self.proxy.clone());
         let done_ctx = ctx.clone();
         let done: record::Done = Box::new(move |result| {
@@ -244,6 +298,8 @@ impl App {
             &self.settings.ffmpeg_path,
             &self.settings.audio_sources(),
             self.settings.record_cursor,
+            self.settings.record_hdr,
+            self.settings.record_format == RecordFormat::Av1,
             out,
             done,
         ) {
@@ -288,8 +344,10 @@ impl App {
         };
         println!("recorded {}", path.display());
         self.play(Sound::Done);
+        self.count(|s| s.count(stats::Kind::Recording, chrono::Local::now()));
         self.last_capture = Some(path.clone());
-        if self.settings.uploads.iter().any(|u| u.enabled) {
+        let uploading = self.settings.uploads.iter().any(|u| u.enabled);
+        if uploading {
             self.output.upload_file(path.clone(), ctx);
         }
         self.status = Some((format!("Recording saved to {}", path.display()), false));
@@ -303,7 +361,12 @@ impl App {
             w.gallery.add(path.clone());
         }
         if self.settings.show_toast {
-            self.show_toast(event_loop, path, Some(toast::preview_of(first_frame)));
+            let preview = toast::preview_of(first_frame);
+            if uploading {
+                self.toast_after_upload.insert(path, Some(preview));
+            } else {
+                self.show_toast(event_loop, path, Some(preview));
+            }
         }
     }
 
@@ -332,6 +395,9 @@ impl App {
         ) {
             Ok(mut session) => {
                 session.purpose = purpose;
+                if purpose == Purpose::Screenshot && self.settings.annotate {
+                    session.redact_image = self.load_redact_image();
+                }
                 self.sessions.push(session);
             }
             Err(e) => {
@@ -343,6 +409,32 @@ impl App {
         }
     }
 
+    /// The image redaction tool's picture, if one is set and can be read.
+    fn load_redact_image(&mut self) -> Option<RedactImage> {
+        let path = PathBuf::from(self.settings.redact_image.trim());
+        if path.as_os_str().is_empty() {
+            return None;
+        }
+        let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        let cached = self
+            .redact_image
+            .as_ref()
+            .is_some_and(|(p, m, _)| *p == path && *m == modified);
+        if !cached {
+            match RedactImage::load(&path, false) {
+                Ok(img) => self.redact_image = Some((path, modified, img)),
+                Err(e) => {
+                    eprintln!("redaction image: {e}");
+                    self.redact_image = None;
+                    return None;
+                }
+            }
+        }
+        let mut img = self.redact_image.as_ref()?.2.clone();
+        img.stretch = self.settings.redact_stretch;
+        Some(img)
+    }
+
     fn end_capture(&mut self, event_loop: &ActiveEventLoop, index: usize, outcome: Outcome) {
         if index >= self.sessions.len() {
             return;
@@ -352,23 +444,39 @@ impl App {
             let session = self.sessions.remove(index);
             self.style = session.style;
             match outcome {
-                Outcome::Done { image, save_file } => {
+                Outcome::Done {
+                    image,
+                    save_file,
+                    rect,
+                } => {
+                    self.last_region = Some(rect);
+                    if let Some(w) = &mut self.main_window {
+                        w.last_region = Some(rect);
+                    }
                     self.play(Sound::Capture);
+                    self.count(|s| s.count(stats::Kind::Screenshot, chrono::Local::now()));
                     self.output.submit(image, session.context, save_file);
                 }
                 Outcome::Record(rect) => {
                     self.play(Sound::Capture);
-                    // Close the overlay first, or the frozen screen would
-                    // be the start of the recording.
-                    let context = session.context.clone();
-                    drop(session);
-                    self.start_recording(event_loop, rect, context);
+                    // The overlay only leaves the screen once the event
+                    // loop has handled its windows closing; starting now
+                    // would put the frozen screen at the start of the
+                    // recording.
+                    let at = Instant::now() + Duration::from_millis(50);
+                    self.record_at = Some((at, rect, session.context));
                 }
                 Outcome::Scan(image) => {
                     self.play(Sound::Capture);
+                    self.count(|s| s.qr_scans += 1);
                     self.read_qr(image);
                 }
                 Outcome::Color(rgb) => self.color_picked(event_loop, rgb),
+                Outcome::Pin(image, rect) => {
+                    self.play(Sound::Capture);
+                    let at = winit::dpi::PhysicalPosition::new(rect.x, rect.y);
+                    self.pin(event_loop, image, Place::At(at));
+                }
                 _ => {}
             }
         }
@@ -409,9 +517,36 @@ impl App {
             self.settings.ffmpeg_path.clone(),
             wake,
         );
-        match MainWindow::open(event_loop, gpu, page, form, gallery, &self.settings) {
-            Ok(w) => self.main_window = Some(w),
+        let transfers = self.output.transfers();
+        let stats = self.stats.clone();
+        match MainWindow::open(
+            event_loop,
+            gpu,
+            page,
+            form,
+            gallery,
+            transfers,
+            &self.settings,
+            stats,
+        ) {
+            Ok(mut w) => {
+                w.last_region = self.last_region;
+                w.tools.pinned = self.pins.len();
+                self.main_window = Some(w);
+            }
             Err(e) => eprintln!("{e}"),
+        }
+    }
+
+    /// Updates the stats, saves them and shows them on the Stats page.
+    fn count(&mut self, update: impl FnOnce(&mut stats::Stats)) {
+        update(&mut self.stats);
+        self.stats.save();
+        if let Some(w) = &mut self.main_window {
+            w.stats = self.stats.clone();
+            if w.page == Page::Stats {
+                w.window.request_redraw();
+            }
         }
     }
 
@@ -472,6 +607,15 @@ impl App {
                 Page::Hotkeys,
             );
         }
+        if !self.once
+            && new.tool_hotkeys != self.settings.tool_hotkeys
+            && let Err(e) = self.set_tool_hotkeys(&new.tool_hotkeys)
+        {
+            // Put the old ones back.
+            let old = self.settings.tool_hotkeys.clone();
+            let _ = self.set_tool_hotkeys(&old);
+            return self.report_on(event_loop, e, true, Page::Hotkeys);
+        }
         if let Err(e) = new.save() {
             return self.report(event_loop, e, true);
         }
@@ -490,18 +634,52 @@ impl App {
             w.form.saved(&self.settings);
             w.hotkey = self.settings.hotkey.clone();
             w.folder = PathBuf::from(&self.settings.folder);
+            w.speed_unit = self.settings.speed_unit;
         }
         self.report(event_loop, "Settings saved".into(), false);
     }
 
+    /// Replaces the tools' hotkeys. Returns the first that couldn't be
+    /// registered; the others still are.
+    fn set_tool_hotkeys(&mut self, list: &[ToolHotkey]) -> Result<(), String> {
+        // Free the old keys first: one may move to another tool.
+        for h in &mut self.tool_hotkeys {
+            h.clear();
+        }
+        let (hotkeys, result) = tool_hotkeys(&self.proxy, list);
+        self.tool_hotkeys = hotkeys;
+        result
+    }
+
     /// Starts a capture from the main window, once it's hidden so it isn't
     /// in the screenshot.
-    fn capture_from_main_window(&mut self, purpose: Purpose) {
-        if let Some(w) = &self.main_window {
+    fn capture_from_main_window(&mut self, start: Start) {
+        if let Some(w) = &mut self.main_window {
+            // Its sound would end up in a recording.
+            w.gallery.stop_playback();
             w.window.set_visible(false);
             self.restore_main_window = true;
         }
-        self.capture_at = Some((Instant::now() + Duration::from_millis(250), purpose));
+        self.capture_at = Some((Instant::now() + Duration::from_millis(250), start));
+    }
+
+    /// Captures a window, display, everything or a known region straight
+    /// away, with no overlay to pick or annotate on.
+    fn grab(&mut self, event_loop: &ActiveEventLoop, target: capture::Target) {
+        let time = chrono::Local::now();
+        match capture::grab(&target) {
+            Ok((image, process, title)) => {
+                self.play(Sound::Capture);
+                self.count(|s| s.count(stats::Kind::Screenshot, time));
+                let ctx = naming::Context {
+                    process,
+                    title,
+                    ..naming::Context::new(time)
+                };
+                self.output.submit(image, ctx, true);
+            }
+            Err(e) => self.report(event_loop, e, true),
+        }
     }
 
     /// Looks for QR codes in a captured region, off the event loop, and
@@ -521,6 +699,7 @@ impl App {
     /// Copies a picked colour's hex code and shows it on the Tools page.
     fn color_picked(&mut self, event_loop: &ActiveEventLoop, rgb: [u8; 3]) {
         let [r, g, b] = rgb;
+        self.count(|s| s.colors_picked += 1);
         self.chime_on_copy = true;
         self.output.copy_text(format!("#{r:02X}{g:02X}{b:02X}"));
         self.open_main_window(event_loop, Page::Tools);
@@ -532,9 +711,31 @@ impl App {
 
     fn main_window_action(&mut self, event_loop: &ActiveEventLoop, action: Action) {
         match action {
-            Action::Capture => self.capture_from_main_window(Purpose::Screenshot),
-            Action::ScanQr => self.capture_from_main_window(Purpose::Scan),
-            Action::PickColor => self.capture_from_main_window(Purpose::PickColor),
+            Action::Capture => self.capture_from_main_window(Start::Pick(Purpose::Screenshot)),
+            Action::CaptureTarget(t) => self.capture_from_main_window(Start::Grab(t)),
+            Action::ScanQr => self.capture_from_main_window(Start::Pick(Purpose::Scan)),
+            Action::PickColor => self.capture_from_main_window(Start::Pick(Purpose::PickColor)),
+            Action::PinRegion => self.capture_from_main_window(Start::Pick(Purpose::Pin)),
+            Action::PinImage(image) => {
+                let monitor = self.main_window.as_ref().and_then(|w| w.window.current_monitor());
+                self.pin(event_loop, image, Place::Center(monitor));
+            }
+            Action::PinFile(path) => {
+                let proxy = Mutex::new(self.proxy.clone());
+                std::thread::spawn(move || {
+                    let image = image::open(&path)
+                        .map(|i| i.to_rgba8())
+                        .map_err(|e| e.to_string());
+                    let _ = proxy
+                        .lock()
+                        .unwrap()
+                        .send_event(UserEvent::PinLoaded(path, image));
+                });
+            }
+            Action::ClosePins => {
+                self.pins.clear();
+                self.pins_changed();
+            }
             Action::SaveSettings(s, secrets) => self.apply_settings(event_loop, s, secrets),
             Action::TestUpload(upload, secret) => self.test_upload(upload, secret),
             Action::CopyText(text) => {
@@ -602,7 +803,7 @@ impl App {
                 w.gallery.add(path.clone());
             }
             if self.settings.show_toast {
-                self.prepare_toast(path.clone());
+                self.toast_after_upload.insert(path.clone(), None);
             }
             let name = path.file_name().unwrap_or_default().to_string_lossy();
             self.status = Some((format!("Uploading {name}\u{2026}"), false));
@@ -670,7 +871,9 @@ impl App {
                     "snapr-test-{}.txt",
                     (0..8).map(|_| fastrand::alphanumeric()).collect::<String>()
                 );
-                target.put_object(&key, b"snapr upload test", "text/plain")?;
+                let body = crate::upload::Body::Bytes(Arc::new(b"snapr upload test".to_vec()));
+                let progress = crate::upload::Progress::default();
+                target.put_object(&key, &body, "text/plain", &progress)?;
                 let deleted = target.delete_object(&key);
                 let link = upload.link(&key)?;
                 Ok(match deleted {
@@ -748,12 +951,58 @@ impl App {
         }
     }
 
+    /// Pins an image to the screen, on top of everything.
+    fn pin(&mut self, event_loop: &ActiveEventLoop, image: image::RgbaImage, place: Place) {
+        let gpu = match &self.gpu {
+            Ok(g) => g,
+            Err(e) => return self.report(event_loop, e.clone(), true),
+        };
+        match Pin::open(event_loop, gpu, image, place) {
+            Ok(pin) => {
+                self.pins.push(pin);
+                self.count(|s| s.pins += 1);
+                self.pins_changed();
+            }
+            Err(e) => self.report(event_loop, e, true),
+        }
+    }
+
+    /// Shows how many images are pinned on the Tools page.
+    fn pins_changed(&mut self) {
+        if let Some(w) = &mut self.main_window {
+            w.tools.pinned = self.pins.len();
+            if w.page == Page::Tools {
+                w.window.request_redraw();
+            }
+        }
+    }
+
+    fn pin_event(&mut self, index: usize, event: WindowEvent) {
+        match self.pins[index].on_event(&event) {
+            None => {}
+            Some(pin::Action::Copy(image)) => {
+                self.chime_on_copy = true;
+                self.output.copy_image(image);
+            }
+            Some(pin::Action::Close) => {
+                self.pins.remove(index);
+                self.pins_changed();
+            }
+        }
+    }
+
     fn main_window_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
         let Some(w) = &mut self.main_window else {
             return;
         };
         match event {
-            WindowEvent::CloseRequested => self.main_window = None,
+            WindowEvent::CloseRequested => {
+                let save = w.flush_settings();
+                self.main_window = None;
+                if let Some(save) = save {
+                    self.main_window_action(event_loop, save);
+                }
+            }
             WindowEvent::RedrawRequested => {
                 for action in w.paint() {
                     self.main_window_action(event_loop, action);
@@ -825,13 +1074,17 @@ impl ApplicationHandler<UserEvent> for App {
                     self.play(Sound::Done);
                 }
             }
-            UserEvent::Output(output::Event::Saved(path)) => {
+            UserEvent::Output(output::Event::Saved { path, uploading }) => {
                 println!("saved {}", path.display());
                 history::add(&path);
                 self.status = None;
                 self.last_capture = Some(path.clone());
                 if self.settings.show_toast && !self.once {
-                    self.prepare_toast(path.clone());
+                    if uploading {
+                        self.toast_after_upload.insert(path.clone(), None);
+                    } else {
+                        self.prepare_toast(path.clone());
+                    }
                 }
                 if let Some(w) = &mut self.main_window {
                     w.form.status = None;
@@ -869,6 +1122,16 @@ impl ApplicationHandler<UserEvent> for App {
                     w.window.request_redraw();
                 }
             }
+            UserEvent::Output(output::Event::UploadsFinished(path)) => {
+                match self.toast_after_upload.remove(&path) {
+                    Some(Some(preview)) => self.show_toast(event_loop, path, Some(preview)),
+                    Some(None) => self.prepare_toast(path),
+                    None => {}
+                }
+            }
+            UserEvent::Output(output::Event::Cancelled(name)) => {
+                self.set_status(format!("Upload to {name} cancelled"));
+            }
             UserEvent::Output(output::Event::Failed(e)) => {
                 let page = if e.starts_with("upload") {
                     Page::Destinations
@@ -901,6 +1164,14 @@ impl ApplicationHandler<UserEvent> for App {
                 self.gallery_notice(event_loop, msg, is_error);
             }
             UserEvent::ToastReady(path, image) => self.show_toast(event_loop, path, image),
+            UserEvent::ToolHotkey(action) => {
+                let purpose = match action {
+                    ToolAction::PickColor => Purpose::PickColor,
+                    ToolAction::ScanQr => Purpose::Scan,
+                    ToolAction::PinRegion => Purpose::Pin,
+                };
+                self.open_session(event_loop, purpose);
+            }
             UserEvent::Combined(count, Ok(image)) => {
                 // A new screenshot: saved, copied and uploaded like a capture.
                 let mut ctx = naming::Context::new(chrono::Local::now());
@@ -908,10 +1179,20 @@ impl ApplicationHandler<UserEvent> for App {
                 self.output.submit(image, ctx, true);
                 self.gallery_notice(event_loop, format!("Combined {count} images"), false);
             }
+            UserEvent::PinLoaded(_, Ok(image)) => {
+                let monitor = self.main_window.as_ref().and_then(|w| w.window.current_monitor());
+                self.pin(event_loop, image, Place::Center(monitor));
+            }
+            UserEvent::PinLoaded(path, Err(e)) => self.report(
+                event_loop,
+                format!("couldn't pin {}: {e}", path.display()),
+                true,
+            ),
             UserEvent::Combined(_, Err(e)) => {
                 self.gallery_notice(event_loop, format!("Couldn't combine: {e}"), true)
             }
             UserEvent::QrScanned(texts, preview) => {
+                self.count(|s| s.qr_codes += texts.len() as u64);
                 self.play(if texts.is_empty() {
                     Sound::Error
                 } else {
@@ -933,11 +1214,14 @@ impl ApplicationHandler<UserEvent> for App {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
-        if let Some((at, purpose)) = self.capture_at
+        if let Some((at, start)) = self.capture_at
             && at <= now
         {
             self.capture_at = None;
-            self.open_session(event_loop, purpose);
+            match start {
+                Start::Pick(purpose) => self.open_session(event_loop, purpose),
+                Start::Grab(target) => self.grab(event_loop, target),
+            }
             if self.sessions.is_empty()
                 && std::mem::take(&mut self.restore_main_window)
                 && let Some(w) = &self.main_window
@@ -945,9 +1229,18 @@ impl ApplicationHandler<UserEvent> for App {
                 w.window.set_visible(true);
             }
         }
+        if self.record_at.as_ref().is_some_and(|(at, ..)| *at <= now)
+            && let Some((_, rect, context)) = self.record_at.take()
+        {
+            self.start_recording(event_loop, rect, context);
+        }
         let mut wake = self.sessions.iter_mut().filter_map(|s| s.poll(now)).min();
-        wake = [wake, self.capture_at.map(|(t, _)| t)]
-            .into_iter()
+        wake = [
+            wake,
+            self.capture_at.map(|(t, _)| t),
+            self.record_at.as_ref().map(|(t, ..)| *t),
+        ]
+        .into_iter()
             .flatten()
             .min();
         match self.toast.as_ref().and_then(|t| t.expires_at) {
@@ -984,6 +1277,9 @@ impl ApplicationHandler<UserEvent> for App {
         }
         if self.toast.as_ref().is_some_and(|t| t.window.id() == id) {
             return self.toast_event(event);
+        }
+        if let Some(index) = self.pins.iter().position(|p| p.window.id() == id) {
+            return self.pin_event(index, event);
         }
         let Ok(gpu) = &self.gpu else { return };
         if let Some(ui) = self.recording.as_mut().and_then(|r| r.ui.as_mut())
@@ -1033,6 +1329,29 @@ fn output_config(settings: &Settings) -> Result<output::Config, String> {
         copy_link: settings.copy_link,
         uploads,
     })
+}
+
+/// Registers a hotkey for each tool hotkey setting. Returns those that
+/// worked, and the first error.
+fn tool_hotkeys(
+    proxy: &EventLoopProxy<UserEvent>,
+    list: &[ToolHotkey],
+) -> (Vec<Hotkeys>, Result<(), String>) {
+    let mut result = Ok(());
+    let mut hotkeys = Vec::new();
+    for t in list {
+        let action = t.action;
+        let mut h = Hotkeys::new(proxy.clone(), move || UserEvent::ToolHotkey(action));
+        match h.set(&t.hotkey) {
+            Ok(()) => hotkeys.push(h),
+            Err(e) => {
+                if result.is_ok() {
+                    result = Err(format!("{} hotkey: {e}", action.label()));
+                }
+            }
+        }
+    }
+    (hotkeys, result)
 }
 
 /// How many captures can be stacked by pressing the hotkey during a capture.
@@ -1132,6 +1451,16 @@ fn main() {
         }
         h
     });
+    let tool_hotkeys = if once {
+        Vec::new()
+    } else {
+        let (hotkeys, result) = tool_hotkeys(&proxy, &settings.tool_hotkeys);
+        if let Err(e) = result {
+            status.get_or_insert((e, true));
+            open_settings = true;
+        }
+        hotkeys
+    };
 
     let config = output_config(&settings).unwrap_or_else(|e| {
         status = Some((format!("{e} \u{2014} using default naming"), true));
@@ -1165,6 +1494,7 @@ fn main() {
         gpu,
         hotkeys,
         record_hotkeys,
+        tool_hotkeys,
         recording: None,
         tray: None,
         output,
@@ -1172,13 +1502,19 @@ fn main() {
         style: Style::default(),
         main_window: None,
         toast: None,
+        pins: Vec::new(),
         last_upload: None,
+        toast_after_upload: HashMap::new(),
+        redact_image: None,
         capture_at: None,
+        record_at: None,
         restore_main_window: false,
         chime_on_copy: false,
         status,
         last_capture: None,
+        last_region: None,
         open_settings_on_start: open_settings,
+        stats: stats::Stats::load(),
     };
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("event loop error: {e}");

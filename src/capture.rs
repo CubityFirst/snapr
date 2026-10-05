@@ -80,11 +80,23 @@ pub struct PlacedShot<'a> {
 }
 
 pub fn capture_all() -> Result<Vec<Shot>, xcap::XCapError> {
+    // Displays in HDR mode are captured in full range and mapped to SDR.
+    #[cfg(windows)]
+    let hdr = crate::hdr::displays();
     xcap::Monitor::all()?
         .iter()
         .map(|m| {
-            let image = m.capture_image()?;
             let (x, y) = (m.x()?, m.y()?);
+            #[cfg(windows)]
+            let image = match hdr.iter().find(|d| (d.rect.x, d.rect.y) == (x, y)) {
+                Some(d) => d.capture().or_else(|e| {
+                    eprintln!("{e}; capturing it as SDR");
+                    m.capture_image()
+                })?,
+                None => m.capture_image()?,
+            };
+            #[cfg(not(windows))]
+            let image = m.capture_image()?;
             // macOS reports monitor positions in points rather than pixels.
             let scale = if cfg!(target_os = "macos") {
                 m.scale_factor()?
@@ -199,6 +211,155 @@ fn process_name(pid: u32) -> Option<String> {
 #[cfg(not(any(windows, target_os = "linux")))]
 fn process_name(_pid: u32) -> Option<String> {
     None
+}
+
+/// What to capture without picking a region on the frozen screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    /// The same region as the last screenshot.
+    Region(Rect),
+    /// One window, by its xcap id.
+    Window(u32),
+    /// One monitor, by its xcap id.
+    Display(u32),
+    /// Every monitor, stitched together.
+    Everything,
+}
+
+/// An app's window, for the capture menu.
+#[derive(Debug, Clone)]
+pub struct WindowInfo {
+    pub id: u32,
+    pub app: String,
+    pub title: String,
+}
+
+/// A monitor, for the capture menu.
+#[derive(Debug, Clone)]
+pub struct DisplayInfo {
+    pub id: u32,
+    pub name: String,
+    pub rect: Rect,
+    pub primary: bool,
+}
+
+/// Other apps' visible windows, topmost first.
+pub fn windows() -> Vec<WindowInfo> {
+    let Ok(windows) = xcap::Window::all() else {
+        return Vec::new();
+    };
+    let me = std::process::id();
+    windows
+        .into_iter()
+        .filter(|w| !w.is_minimized().unwrap_or(true))
+        .filter(|w| w.pid().is_ok_and(|p| p != me))
+        .filter(|w| w.width().unwrap_or(0) >= 8 && w.height().unwrap_or(0) >= 8)
+        .filter_map(|w| {
+            let title = w.title().ok().filter(|t| !t.trim().is_empty())?;
+            let app = w
+                .pid()
+                .ok()
+                .and_then(process_name)
+                .or_else(|| w.app_name().ok())
+                .unwrap_or_default();
+            Some(WindowInfo {
+                id: w.id().ok()?,
+                app,
+                title,
+            })
+        })
+        .collect()
+}
+
+/// The monitors, left to right.
+pub fn displays() -> Vec<DisplayInfo> {
+    let Ok(monitors) = xcap::Monitor::all() else {
+        return Vec::new();
+    };
+    let mut list: Vec<_> = monitors
+        .iter()
+        .filter_map(|m| {
+            let name = m
+                .friendly_name()
+                .ok()
+                .filter(|n| !n.trim().is_empty())
+                .or_else(|| m.name().ok())
+                .unwrap_or_default();
+            Some(DisplayInfo {
+                id: m.id().ok()?,
+                name,
+                rect: Rect {
+                    x: m.x().ok()?,
+                    y: m.y().ok()?,
+                    w: m.width().ok()?,
+                    h: m.height().ok()?,
+                },
+                primary: m.is_primary().unwrap_or(false),
+            })
+        })
+        .collect();
+    list.sort_by_key(|d| (d.rect.x, d.rect.y));
+    list
+}
+
+/// Captures `target` straight away, with the naming details of what was
+/// captured (process and title).
+pub fn grab(target: &Target) -> Result<(RgbaImage, Option<String>, Option<String>), String> {
+    let failed = |e: xcap::XCapError| format!("screen capture failed: {e}");
+    match target {
+        Target::Window(id) => {
+            let window = xcap::Window::all()
+                .map_err(failed)?
+                .into_iter()
+                .find(|w| w.id().is_ok_and(|i| i == *id))
+                .ok_or("that window has closed")?;
+            let image = window.capture_image().map_err(failed)?;
+            let process = window
+                .pid()
+                .ok()
+                .and_then(process_name)
+                .or_else(|| window.app_name().ok())
+                .filter(|n| !n.is_empty());
+            let title = window.title().ok().filter(|t| !t.is_empty());
+            Ok((image, process, title))
+        }
+        Target::Display(id) => {
+            let monitor = xcap::Monitor::all()
+                .map_err(failed)?
+                .into_iter()
+                .find(|m| m.id().is_ok_and(|i| i == *id))
+                .ok_or("that display is no longer connected")?;
+            let image = monitor.capture_image().map_err(failed)?;
+            let (process, title) = foreground_window();
+            Ok((image, process, title))
+        }
+        Target::Region(_) | Target::Everything => {
+            let (process, title) = foreground_window();
+            let shots = capture_all().map_err(failed)?;
+            let placed: Vec<_> = shots
+                .iter()
+                .map(|s| PlacedShot {
+                    image: &s.image,
+                    rect: Rect {
+                        x: s.pos.0,
+                        y: s.pos.1,
+                        w: s.image.width(),
+                        h: s.image.height(),
+                    },
+                })
+                .collect();
+            let region = match target {
+                Target::Region(r) => *r,
+                _ => placed
+                    .iter()
+                    .map(|s| s.rect)
+                    .reduce(|a, b| a.union(&b))
+                    .ok_or("no monitors found")?,
+            };
+            let image = crop(&placed, region).ok_or("that region is off the screen")?;
+            Ok((image, process, title))
+        }
+    }
 }
 
 /// Builds the final screenshot for `region`, stitching together every monitor

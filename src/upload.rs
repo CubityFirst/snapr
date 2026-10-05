@@ -2,8 +2,10 @@
 //! B2, ...), with requests signed using AWS Signature Version 4.
 
 use std::fmt::Write as _;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::io::{Read, Seek, SeekFrom};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -12,14 +14,94 @@ use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
 
 /// Bodies larger than this are sent as a multipart upload.
-const MULTIPART_THRESHOLD: usize = 16 * 1024 * 1024;
+const MULTIPART_THRESHOLD: u64 = 16 * 1024 * 1024;
 /// Size of every part but the last: S3 needs at least 5 MiB, and R2 needs
-/// all but the last part to be the same size.
-const PART_SIZE: usize = 8 * 1024 * 1024;
+/// all but the last part to be the same size. Bigger for huge files, which
+/// would otherwise need more than `MAX_PARTS`.
+const PART_SIZE: u64 = 8 * 1024 * 1024;
+const MAX_PARTS: u64 = 10_000;
+/// The error an upload ends with when it's cancelled.
+pub const CANCELLED: &str = "cancelled";
+
+/// What to upload: bytes in memory, or a file, read a part at a time so
+/// big ones aren't loaded whole.
+#[derive(Debug, Clone)]
+pub enum Body {
+    Bytes(Arc<Vec<u8>>),
+    File(PathBuf),
+}
+
+impl Body {
+    pub fn len(&self) -> Result<u64, String> {
+        match self {
+            Body::Bytes(b) => Ok(b.len() as u64),
+            Body::File(p) => std::fs::metadata(p)
+                .map(|m| m.len())
+                .map_err(|e| format!("couldn't read {}: {e}", p.display())),
+        }
+    }
+
+    /// `len` bytes from `start`.
+    fn read(&self, start: u64, len: u64) -> Result<Vec<u8>, String> {
+        match self {
+            Body::Bytes(b) => Ok(b[start as usize..(start + len) as usize].to_vec()),
+            Body::File(p) => {
+                let read = || -> std::io::Result<Vec<u8>> {
+                    let mut f = std::fs::File::open(p)?;
+                    f.seek(SeekFrom::Start(start))?;
+                    let mut buf = vec![0; len as usize];
+                    f.read_exact(&mut buf)?;
+                    Ok(buf)
+                };
+                read().map_err(|e| format!("couldn't read {}: {e}", p.display()))
+            }
+        }
+    }
+}
+
+/// How far an upload has got; shared with whoever shows it, who can also
+/// cancel it.
+#[derive(Debug, Default)]
+pub struct Progress {
+    pub sent: AtomicU64,
+    pub total: AtomicU64,
+    pub cancel: AtomicBool,
+}
+
+impl Progress {
+    fn cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
+    }
+}
+
+/// Hands a request body to ureq, counting it into `progress` as it goes.
+struct Counting<'a> {
+    data: &'a [u8],
+    sent: usize,
+    progress: &'a Progress,
+}
+
+impl Read for Counting<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.progress.cancelled() {
+            return Err(std::io::Error::other(CANCELLED));
+        }
+        // Small steps, so the count follows the network rather than
+        // jumping by whole buffers.
+        let n = buf.len().min(64 * 1024).min(self.data.len() - self.sent);
+        buf[..n].copy_from_slice(&self.data[self.sent..self.sent + n]);
+        self.sent += n;
+        self.progress.sent.fetch_add(n as u64, Ordering::Relaxed);
+        Ok(n)
+    }
+}
 /// Tries per part before the upload is given up.
 const PART_ATTEMPTS: u32 = 3;
-/// Parts uploaded at the same time.
-const PART_CONCURRENCY: usize = 4;
+/// Parts uploaded at the same time, unless set otherwise.
+pub const DEFAULT_CONCURRENCY: u32 = 4;
+/// The most parts at once a destination can be set to; each one holds its
+/// part in memory while it's sent.
+pub const MAX_CONCURRENCY: u32 = 32;
 
 /// Where and how to upload.
 #[derive(Debug, Clone)]
@@ -35,6 +117,8 @@ pub struct S3Target {
     /// Sign a hash of the body; otherwise it's sent as `UNSIGNED-PAYLOAD`,
     /// which skips hashing it (HTTPS already protects it in transit).
     pub sign_payload: bool,
+    /// Parts of a multipart upload sent at the same time.
+    pub concurrency: u32,
 }
 
 /// The parts of a URL the signer needs.
@@ -92,35 +176,59 @@ impl S3Target {
             .into()
     }
 
-    /// Uploads an object, as a multipart upload if it's large.
-    pub fn put_object(&self, key: &str, body: &[u8], content_type: &str) -> Result<(), String> {
-        if body.len() > MULTIPART_THRESHOLD {
-            return self.put_multipart(key, body, content_type, PART_SIZE);
+    /// Uploads an object, as a multipart upload if it's large, following
+    /// along in `progress`.
+    pub fn put_object(
+        &self,
+        key: &str,
+        body: &Body,
+        content_type: &str,
+        progress: &Progress,
+    ) -> Result<(), String> {
+        let len = body.len()?;
+        progress.total.store(len, Ordering::Relaxed);
+        let result = if len > MULTIPART_THRESHOLD {
+            let part_size = PART_SIZE.max(len.div_ceil(MAX_PARTS).next_multiple_of(1024 * 1024));
+            self.put_multipart(key, body, len, content_type, part_size, progress)
+        } else {
+            let data = body.read(0, len)?;
+            self.send("PUT", key, &[], &data, Some(content_type), Some(progress))
+                .map(drop)
+        };
+        match result {
+            Err(_) if progress.cancelled() => Err(CANCELLED.into()),
+            r => r,
         }
-        self.send("PUT", key, &[], body, Some(content_type))
-            .map(drop)
     }
 
     pub fn delete_object(&self, key: &str) -> Result<(), String> {
-        self.send("DELETE", key, &[], &[], None).map(drop)
+        self.send("DELETE", key, &[], &[], None, None).map(drop)
     }
 
-    /// Uploads `body` in `part_size` pieces, several at a time.
-    /// If it fails, the upload is aborted so its parts don't linger (and get
-    /// billed) in the bucket.
+    /// Uploads `body` (`len` bytes) in `part_size` pieces, several at a
+    /// time. If it fails, the upload is aborted so its parts don't linger
+    /// (and get billed) in the bucket.
     fn put_multipart(
         &self,
         key: &str,
-        body: &[u8],
+        body: &Body,
+        len: u64,
         content_type: &str,
-        part_size: usize,
+        part_size: u64,
+        progress: &Progress,
     ) -> Result<(), String> {
-        let created = self.send("POST", key, &[("uploads", "")], &[], Some(content_type))?;
+        let created =
+            self.send("POST", key, &[("uploads", "")], &[], Some(content_type), None)?;
         let upload_id = xml_tag(&created.body, "UploadId")
             .ok_or("starting multipart upload: no UploadId in the response")?;
         let result = (|| {
-            let chunks: Vec<&[u8]> = body.chunks(part_size).collect();
-            let etags = self.upload_parts(key, &upload_id, &chunks)?;
+            let parts: Vec<(u64, u64)> = (0..len.div_ceil(part_size))
+                .map(|i| {
+                    let start = i * part_size;
+                    (start, part_size.min(len - start))
+                })
+                .collect();
+            let etags = self.upload_parts(key, &upload_id, body, &parts, progress)?;
             let mut parts = String::new();
             for (i, etag) in etags.iter().enumerate() {
                 let _ = write!(
@@ -136,6 +244,7 @@ impl S3Target {
                 &[("uploadId", &upload_id)],
                 xml.as_bytes(),
                 Some("application/xml"),
+                None,
             )?;
             // A completion can fail after the 200 status has been sent.
             if done.body.contains("<Error>") {
@@ -144,30 +253,37 @@ impl S3Target {
             Ok(())
         })();
         if result.is_err() {
-            let _ = self.send("DELETE", key, &[("uploadId", &upload_id)], &[], None);
+            let _ = self.send("DELETE", key, &[("uploadId", &upload_id)], &[], None, None);
         }
         result
     }
 
-    /// Uploads the parts, up to `PART_CONCURRENCY` at a time, and returns
-    /// their ETags in order. Stops handing out parts after the first failure.
+    /// Uploads the parts (start, length), up to `concurrency` at a
+    /// time, and returns their ETags in order. Stops handing out parts after
+    /// the first failure or a cancel.
     fn upload_parts(
         &self,
         key: &str,
         upload_id: &str,
-        chunks: &[&[u8]],
+        body: &Body,
+        parts: &[(u64, u64)],
+        progress: &Progress,
     ) -> Result<Vec<String>, String> {
         let next = AtomicUsize::new(0);
         let failed = AtomicBool::new(false);
-        let etags: Vec<Mutex<Option<String>>> = chunks.iter().map(|_| Mutex::new(None)).collect();
+        let etags: Vec<Mutex<Option<String>>> = parts.iter().map(|_| Mutex::new(None)).collect();
         let error = Mutex::new(None);
         thread::scope(|scope| {
-            for _ in 0..PART_CONCURRENCY.min(chunks.len()) {
+            let workers = self.concurrency.clamp(1, MAX_CONCURRENCY) as usize;
+            for _ in 0..workers.min(parts.len()) {
                 scope.spawn(|| {
-                    while !failed.load(Ordering::Relaxed) {
+                    while !failed.load(Ordering::Relaxed) && !progress.cancelled() {
                         let i = next.fetch_add(1, Ordering::Relaxed);
-                        let Some(chunk) = chunks.get(i) else { break };
-                        match self.upload_part(key, upload_id, i + 1, chunk) {
+                        let Some(&(start, len)) = parts.get(i) else { break };
+                        let part = body
+                            .read(start, len)
+                            .and_then(|data| self.upload_part(key, upload_id, i + 1, &data, progress));
+                        match part {
                             Ok(etag) => *etags[i].lock().unwrap() = Some(etag),
                             Err(e) => {
                                 failed.store(true, Ordering::Relaxed);
@@ -180,6 +296,9 @@ impl S3Target {
         });
         if let Some(e) = error.into_inner().unwrap() {
             return Err(e);
+        }
+        if progress.cancelled() {
+            return Err(CANCELLED.into());
         }
         Ok(etags
             .into_iter()
@@ -194,13 +313,15 @@ impl S3Target {
         upload_id: &str,
         n: usize,
         chunk: &[u8],
+        progress: &Progress,
     ) -> Result<String, String> {
         let n = n.to_string();
         let query = [("partNumber", n.as_str()), ("uploadId", upload_id)];
         let mut attempt = 1;
         loop {
-            match self.send("PUT", key, &query, chunk, None) {
+            match self.send("PUT", key, &query, chunk, None, Some(progress)) {
                 Ok(r) => return r.etag.ok_or_else(|| format!("part {n}: no ETag")),
+                Err(_) if progress.cancelled() => return Err(CANCELLED.into()),
                 Err(_) if attempt < PART_ATTEMPTS => {
                     thread::sleep(Duration::from_secs(attempt as u64));
                     attempt += 1;
@@ -210,6 +331,8 @@ impl S3Target {
         }
     }
 
+    /// Sends one signed request. With `progress`, the body is counted into
+    /// it as it's sent (and taken back out if the request fails).
     fn send(
         &self,
         method: &str,
@@ -217,6 +340,7 @@ impl S3Target {
         query: &[(&str, &str)],
         body: &[u8],
         content_type: Option<&str>,
+        progress: Option<&Progress>,
     ) -> Result<Response, String> {
         let url = self.url(key)?;
         let query = canonical_query(query);
@@ -258,11 +382,36 @@ impl S3Target {
             request = request.header(name, value);
         }
         let request = request.header("authorization", auth);
-        let response = match method {
-            "DELETE" => agent.run(request.body(()).map_err(|e| e.to_string())?),
-            _ => agent.run(request.body(body.to_vec()).map_err(|e| e.to_string())?),
+        let mut counting = progress.map(|progress| Counting {
+            data: body,
+            sent: 0,
+            progress,
+        });
+        let response = match (method, &mut counting) {
+            ("DELETE", _) => agent.run(request.body(()).map_err(|e| e.to_string())?),
+            // A set length, as S3 doesn't take chunked uploads.
+            (_, Some(c)) => agent.run(
+                request
+                    .header("content-length", body.len())
+                    .body(ureq::SendBody::from_reader(c))
+                    .map_err(|e| e.to_string())?,
+            ),
+            (_, None) => agent.run(request.body(body).map_err(|e| e.to_string())?),
         };
-        let mut response = response.map_err(|e| format!("couldn't reach {}: {e}", url.host))?;
+        let result = Self::read_response(response, &url.host);
+        if result.is_err()
+            && let Some(c) = &counting
+        {
+            c.progress.sent.fetch_sub(c.sent as u64, Ordering::Relaxed);
+        }
+        result
+    }
+
+    fn read_response(
+        response: Result<ureq::http::Response<ureq::Body>, ureq::Error>,
+        host: &str,
+    ) -> Result<Response, String> {
+        let mut response = response.map_err(|e| format!("couldn't reach {host}: {e}"))?;
         let status = response.status();
         let etag = response
             .headers()
@@ -539,6 +688,7 @@ mod tests {
             secret_access_key: String::new(),
             path_style: true,
             sign_payload: true,
+            concurrency: DEFAULT_CONCURRENCY,
         };
         assert_eq!(
             t.object_url("2026-10/a b.png").unwrap(),
@@ -590,19 +740,168 @@ mod live {
             secret_access_key: var("SECRET_ACCESS_KEY"),
             path_style: std::env::var("SNAPR_TEST_S3_PATH_STYLE").is_ok_and(|v| v == "1"),
             sign_payload: std::env::var("SNAPR_TEST_S3_SIGN_PAYLOAD").is_ok_and(|v| v == "1"),
+            concurrency: DEFAULT_CONCURRENCY,
         };
         let key = format!("snapr-live-test/{} file.txt", fastrand::u32(..));
+        let body = Body::Bytes(Arc::new(b"hello from snapr".to_vec()));
         target
-            .put_object(&key, b"hello from snapr", "text/plain")
+            .put_object(&key, &body, "text/plain", &Progress::default())
             .unwrap();
         target.delete_object(&key).unwrap();
 
         // Three parts at S3's 5 MiB minimum, the last one shorter.
-        let body: Vec<u8> = (0..11 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+        let len = 11 * 1024 * 1024;
+        let body = Body::Bytes(Arc::new((0..len).map(|i| (i % 251) as u8).collect()));
         let key = format!("snapr-live-test/{} multipart.bin", fastrand::u32(..));
+        let progress = Progress::default();
         target
-            .put_multipart(&key, &body, "application/octet-stream", 5 * 1024 * 1024)
+            .put_multipart(
+                &key,
+                &body,
+                len as u64,
+                "application/octet-stream",
+                5 * 1024 * 1024,
+                &progress,
+            )
             .unwrap();
+        assert_eq!(progress.sent.load(Ordering::Relaxed), len as u64);
         target.delete_object(&key).unwrap();
+    }
+}
+
+/// Uploads against a fake S3 on localhost.
+#[cfg(test)]
+mod fake {
+    use super::*;
+
+    /// Enough of S3 for uploads: multipart create/part/complete/abort and
+    /// plain PUTs. Records each request's method, query and body length,
+    /// and fails any body that isn't sent with a Content-Length.
+    /// Each request: method, query, body length.
+    type Log = Arc<Mutex<Vec<(String, String, usize)>>>;
+
+    fn fake_s3() -> (S3Target, Log) {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let requests = log.clone();
+        thread::spawn(move || {
+            for conn in listener.incoming() {
+                let Ok(conn) = conn else { break };
+                let requests = requests.clone();
+                thread::spawn(move || {
+                    let mut out = conn.try_clone().unwrap();
+                    let mut r = BufReader::new(conn);
+                    loop {
+                        let mut line = String::new();
+                        if r.read_line(&mut line).unwrap_or(0) == 0 {
+                            return;
+                        }
+                        let mut words = line.split_whitespace();
+                        let method = words.next().unwrap_or("").to_string();
+                        let target = words.next().unwrap_or("").to_string();
+                        let query = target.split_once('?').map_or("", |(_, q)| q).to_string();
+                        let (mut len, mut chunked) = (0usize, false);
+                        loop {
+                            let mut h = String::new();
+                            r.read_line(&mut h).unwrap();
+                            let h = h.trim_end().to_ascii_lowercase();
+                            if h.is_empty() {
+                                break;
+                            }
+                            if let Some(v) = h.strip_prefix("content-length:") {
+                                len = v.trim().parse().unwrap();
+                            }
+                            chunked |= h.starts_with("transfer-encoding:");
+                        }
+                        let mut body = vec![0; len];
+                        r.read_exact(&mut body).unwrap();
+                        requests.lock().unwrap().push((method.clone(), query.clone(), len));
+                        let (status, extra, text) = if chunked {
+                            ("411 Length Required", String::new(), String::new())
+                        } else if method == "POST" && query == "uploads=" {
+                            let xml = "<InitiateMultipartUploadResult><UploadId>up1</UploadId></InitiateMultipartUploadResult>";
+                            ("200 OK", String::new(), xml.to_string())
+                        } else if method == "PUT" {
+                            ("200 OK", format!("ETag: \"e{len}\"\r\n"), String::new())
+                        } else if method == "DELETE" {
+                            ("204 No Content", String::new(), String::new())
+                        } else {
+                            ("200 OK", String::new(), "<CompleteMultipartUploadResult/>".into())
+                        };
+                        let _ = write!(
+                            out,
+                            "HTTP/1.1 {status}\r\n{extra}Content-Length: {}\r\n\r\n{text}",
+                            text.len()
+                        );
+                    }
+                });
+            }
+        });
+        let target = S3Target {
+            endpoint: format!("http://127.0.0.1:{port}"),
+            region: "auto".into(),
+            bucket: "b".into(),
+            access_key_id: "test".into(),
+            secret_access_key: "test".into(),
+            path_style: true,
+            sign_payload: false,
+            concurrency: DEFAULT_CONCURRENCY,
+        };
+        (target, log)
+    }
+
+    #[test]
+    fn streams_a_big_file_in_parts_with_progress() {
+        let (target, log) = fake_s3();
+        let path = std::env::temp_dir().join(format!("snapr-upload-{}.bin", fastrand::u32(..)));
+        let len = 3 * PART_SIZE + 12345;
+        std::fs::write(&path, vec![7u8; len as usize]).unwrap();
+        let progress = Progress::default();
+        let result = target.put_object("big.bin", &Body::File(path.clone()), "x/y", &progress);
+        std::fs::remove_file(&path).unwrap();
+        result.unwrap();
+        assert_eq!(progress.total.load(Ordering::Relaxed), len);
+        assert_eq!(progress.sent.load(Ordering::Relaxed), len);
+        let log = log.lock().unwrap();
+        let parts: Vec<usize> = log
+            .iter()
+            .filter(|(m, q, _)| m == "PUT" && q.contains("partNumber"))
+            .map(|r| r.2)
+            .collect();
+        assert_eq!(parts.len(), 4, "{log:?}");
+        assert_eq!(parts.iter().sum::<usize>() as u64, len);
+        assert!(log.iter().any(|(m, q, _)| m == "POST" && q.starts_with("uploadId")));
+    }
+
+    #[test]
+    fn small_upload_is_counted() {
+        let (target, _) = fake_s3();
+        let progress = Progress::default();
+        let body = Body::Bytes(Arc::new(vec![1; 300_000]));
+        target.put_object("small.png", &body, "image/png", &progress).unwrap();
+        assert_eq!(progress.sent.load(Ordering::Relaxed), 300_000);
+    }
+
+    #[test]
+    fn cancelling_aborts_the_multipart_upload() {
+        let (target, log) = fake_s3();
+        let progress = Progress::default();
+        progress.cancel.store(true, Ordering::Relaxed);
+        let body = Body::Bytes(Arc::new(vec![0; (MULTIPART_THRESHOLD + 1) as usize]));
+        let err = target.put_object("big.bin", &body, "x/y", &progress).unwrap_err();
+        assert_eq!(err, CANCELLED);
+        let log = log.lock().unwrap();
+        assert!(!log.iter().any(|(_, q, _)| q.contains("partNumber")), "{log:?}");
+        assert!(log.iter().any(|(m, q, _)| m == "DELETE" && q.starts_with("uploadId")));
+    }
+
+    #[test]
+    fn huge_files_get_bigger_parts() {
+        let len: u64 = 200 * 1024 * 1024 * 1024; // 200 GB
+        let part = PART_SIZE.max(len.div_ceil(MAX_PARTS).next_multiple_of(1024 * 1024));
+        assert!(len.div_ceil(part) <= MAX_PARTS);
+        assert_eq!(PART_SIZE.max(6_000_000_000u64.div_ceil(MAX_PARTS)), PART_SIZE);
     }
 }

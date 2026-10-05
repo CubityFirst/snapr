@@ -1,10 +1,9 @@
 //! Previews for any file snapr saved or uploaded: images are decoded, videos
-//! show a poster frame (cached; FFmpeg pulls one out of videos snapr didn't
-//! record), and everything else gets a generic file icon.
+//! show a poster frame (cached; decoded from videos snapr didn't record),
+//! and everything else gets a generic file icon.
 
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 
 use egui::{Color32, FontId, Pos2, Rect, Stroke, pos2, vec2};
 use image::{DynamicImage, RgbaImage};
@@ -76,32 +75,12 @@ fn poster_path(video: &Path) -> Option<PathBuf> {
     )
 }
 
-/// Pulls the first frame out of a video with FFmpeg.
+/// Saves the first frame of a video, at most 1920 pixels wide, as `out`.
+/// `ffmpeg` decodes it where the OS can't (Linux).
 fn extract_frame(video: &Path, out: &Path, ffmpeg: &str) -> Option<()> {
     std::fs::create_dir_all(out.parent()?).ok()?;
-    let ffmpeg = if ffmpeg.trim().is_empty() {
-        "ffmpeg"
-    } else {
-        ffmpeg.trim()
-    };
-    #[allow(unused_mut)]
-    let mut cmd = std::process::Command::new(ffmpeg);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
-    let status = cmd
-        .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
-        .arg(video)
-        .args(["-frames:v", "1", "-vf", "scale='min(1920,iw)':-2"])
-        .arg(out)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .ok()?;
-    status.success().then_some(())
+    let frame = crate::decode::first_picture(video, ffmpeg, (1920, u32::MAX))?;
+    frame.save(out).ok()
 }
 
 /// Shrinks a picture to fit `max` and converts it for egui, with its

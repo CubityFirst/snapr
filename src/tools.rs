@@ -1,11 +1,14 @@
 //! The Tools page: small capture-related utilities, one tab each: the QR
-//! code tool (read codes from a region of the screen, or make one) and the
-//! colour picker.
+//! code tool (read codes from a region of the screen, or make one), the
+//! colour picker, and pinning images to the screen.
+
+use std::path::PathBuf;
 
 use egui::{Color32, RichText, Sense, Stroke, TextEdit, TextureHandle, TextureOptions, vec2};
 use image::RgbaImage;
 
 use crate::qr;
+use crate::settings::{ToolAction, ToolHotkey};
 use crate::settings_ui::ERROR;
 
 const ACCENT: Color32 = Color32::from_rgb(0x3d, 0x9b, 0xff);
@@ -24,12 +27,22 @@ pub enum Action {
     CopyText(String),
     OpenUrl(String),
     CopyImage(RgbaImage),
+    /// Give a tool a global hotkey (on the Hotkeys settings tab).
+    AddHotkey(ToolAction),
+    /// Pick a region of the screen to pin on top of everything.
+    PinRegion,
+    /// Pin this image (from the clipboard) to the screen.
+    PinImage(RgbaImage),
+    PinFile(PathBuf),
+    /// Close every pinned image.
+    ClosePins,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tool {
     Qr,
     Color,
+    Pin,
 }
 
 /// What reading a region found.
@@ -57,6 +70,10 @@ pub struct Tools {
     colors: Vec<[u8; 3]>,
     /// The colour shown in full.
     color: Option<[u8; 3]>,
+    /// How many images are pinned to the screen.
+    pub pinned: usize,
+    /// Why the last pin didn't work, e.g. no image on the clipboard.
+    pin_error: Option<String>,
 }
 
 impl Tools {
@@ -69,6 +86,8 @@ impl Tools {
             notice: None,
             colors: Vec::new(),
             color: None,
+            pinned: 0,
+            pin_error: None,
         }
     }
 
@@ -91,23 +110,119 @@ impl Tools {
         });
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+    /// `hotkeys` are the saved tool hotkeys, shown on their tools' tabs.
+    pub fn ui(&mut self, ui: &mut egui::Ui, hotkeys: &[ToolHotkey], actions: &mut Vec<Action>) {
         ui.horizontal(|ui| {
             ui.heading("Tools");
             ui.add_space(12.0);
             ui.selectable_value(&mut self.tool, Tool::Qr, "QR code");
             ui.selectable_value(&mut self.tool, Tool::Color, "Colour picker");
+            ui.selectable_value(&mut self.tool, Tool::Pin, "Pin to screen");
         });
         ui.add_space(4.0);
         egui::ScrollArea::vertical()
             .auto_shrink(false)
             .show(ui, |ui| match self.tool {
-                Tool::Qr => self.qr_ui(ui, actions),
-                Tool::Color => self.color_ui(ui, actions),
+                Tool::Qr => self.qr_ui(ui, hotkeys, actions),
+                Tool::Color => self.color_ui(ui, hotkeys, actions),
+                Tool::Pin => self.pin_ui(ui, hotkeys, actions),
             });
     }
 
-    fn color_ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+    fn pin_ui(&mut self, ui: &mut egui::Ui, hotkeys: &[ToolHotkey], actions: &mut Vec<Action>) {
+        ui.label(RichText::new("Pin an image to the screen").strong());
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            let pin = egui::Button::new(
+                RichText::new("Pin region\u{2026}")
+                    .strong()
+                    .color(Color32::WHITE),
+            )
+            .fill(ACCENT);
+            if ui.add(pin).clicked() {
+                self.pin_error = None;
+                actions.push(Action::PinRegion);
+            }
+            ui.label(
+                RichText::new(
+                    "Drag a region (or click a window); it stays on top of everything, right where it was.",
+                )
+                .weak(),
+            );
+        });
+        hotkey_line(ui, hotkeys, ToolAction::PinRegion, actions);
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if ui
+                .button("Pin from clipboard")
+                .on_hover_text("Pin the image on the clipboard")
+                .clicked()
+            {
+                match clipboard_image() {
+                    Ok(image) => {
+                        self.pin_error = None;
+                        actions.push(Action::PinImage(image));
+                    }
+                    Err(e) => self.pin_error = Some(e),
+                }
+            }
+            if ui.button("Pin image file\u{2026}").clicked()
+                && let Some(path) = rfd::FileDialog::new()
+                    .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp", "bmp"])
+                    .pick_file()
+            {
+                self.pin_error = None;
+                actions.push(Action::PinFile(path));
+            }
+        });
+        if let Some(e) = &self.pin_error {
+            ui.colored_label(ERROR, e);
+        }
+        ui.label(
+            RichText::new("Screenshots on the Recent page can be pinned too: right-click one.")
+                .weak(),
+        );
+
+        ui.add_space(16.0);
+        ui.separator();
+        ui.add_space(8.0);
+        ui.label(RichText::new("Pinned images").strong());
+        ui.add_space(4.0);
+        egui::Grid::new("pin-help")
+            .num_columns(2)
+            .spacing([16.0, 4.0])
+            .show(ui, |ui| {
+                for (how, what) in [
+                    ("Drag", "move it"),
+                    ("Scroll, or drag a corner", "make it bigger or smaller"),
+                    ("Double-click, or 0", "back to its real size"),
+                    ("T, or the pin button", "keep it on top of other windows, or not"),
+                    ("Ctrl+C", "copy it"),
+                    ("Ctrl+S", "save it as a PNG"),
+                    ("Right-click, or Esc", "close it"),
+                ] {
+                    ui.label(how);
+                    ui.label(RichText::new(what).weak());
+                    ui.end_row();
+                }
+            });
+        if self.pinned > 0 {
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let n = self.pinned;
+                ui.label(if n == 1 {
+                    "1 image is pinned.".to_string()
+                } else {
+                    format!("{n} images are pinned.")
+                });
+                if ui.button("Close all").clicked() {
+                    actions.push(Action::ClosePins);
+                }
+            });
+        }
+    }
+
+    fn color_ui(&mut self, ui: &mut egui::Ui, hotkeys: &[ToolHotkey], actions: &mut Vec<Action>) {
         ui.label(RichText::new("Pick a colour from the screen").strong());
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -127,6 +242,7 @@ impl Tools {
                 .weak(),
             );
         });
+        hotkey_line(ui, hotkeys, ToolAction::PickColor, actions);
         let Some(rgb) = self.color else {
             return;
         };
@@ -190,7 +306,7 @@ impl Tools {
         });
     }
 
-    fn qr_ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+    fn qr_ui(&mut self, ui: &mut egui::Ui, hotkeys: &[ToolHotkey], actions: &mut Vec<Action>) {
         ui.label(RichText::new("Read a QR code").strong());
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -210,6 +326,7 @@ impl Tools {
                 .weak(),
             );
         });
+        hotkey_line(ui, hotkeys, ToolAction::ScanQr, actions);
         if let Some(scan) = &mut self.scan {
             ui.add_space(10.0);
             scan_ui(ui, scan, actions);
@@ -295,6 +412,35 @@ impl Tools {
         });
         self.notice = None;
     }
+}
+
+/// The tool's global hotkeys, with a link to add one.
+fn hotkey_line(
+    ui: &mut egui::Ui,
+    hotkeys: &[ToolHotkey],
+    action: ToolAction,
+    actions: &mut Vec<Action>,
+) {
+    let keys: Vec<&str> = hotkeys
+        .iter()
+        .filter(|h| h.action == action)
+        .map(|h| h.hotkey.as_str())
+        .collect();
+    ui.horizontal(|ui| {
+        if keys.is_empty() {
+            ui.label(RichText::new("No hotkey.").weak());
+        } else {
+            ui.label(RichText::new(format!("Hotkey: {}", keys.join(", "))).weak());
+        }
+        let link = if keys.is_empty() {
+            "Add a hotkey\u{2026}"
+        } else {
+            "Add another\u{2026}"
+        };
+        if ui.link(link).clicked() {
+            actions.push(Action::AddHotkey(action));
+        }
+    });
 }
 
 fn scan_ui(ui: &mut egui::Ui, scan: &mut Scan, actions: &mut Vec<Action>) {
@@ -395,6 +541,19 @@ fn hsl(rgb: [u8; 3]) -> (u32, u32, u32) {
     )
 }
 
+/// The image on the clipboard, if there is one.
+fn clipboard_image() -> Result<RgbaImage, String> {
+    let image = arboard::Clipboard::new()
+        .and_then(|mut c| c.get_image())
+        .map_err(|_| "There's no image on the clipboard.".to_string())?;
+    RgbaImage::from_raw(
+        image.width as u32,
+        image.height as u32,
+        image.bytes.into_owned(),
+    )
+    .ok_or_else(|| "Couldn't read the image on the clipboard.".to_string())
+}
+
 /// Asks where to save a generated code and writes it as a PNG.
 fn save(image: &RgbaImage) -> Option<(String, bool)> {
     let mut path = rfd::FileDialog::new()
@@ -443,7 +602,24 @@ mod tests {
             tools.picked(c);
         }
         crate::preview::render("tools-color-preview", [920, 420], 1.0, |root| {
-            egui::CentralPanel::default().show(root, |ui| tools.ui(ui, &mut Vec::new()));
+            let hotkeys = [crate::settings::ToolHotkey {
+                action: ToolAction::PickColor,
+                hotkey: "Ctrl + Shift + KeyC".into(),
+            }];
+            egui::CentralPanel::default().show(root, |ui| tools.ui(ui, &hotkeys, &mut Vec::new()));
+        });
+    }
+
+    /// Renders the pin tab with two images pinned to
+    /// `target/tools-pin-preview.png`: `cargo test tools_pin_preview -- --ignored`.
+    #[test]
+    #[ignore]
+    fn tools_pin_preview() {
+        let mut tools = Tools::new();
+        tools.tool = Tool::Pin;
+        tools.pinned = 2;
+        crate::preview::render("tools-pin-preview", [920, 520], 1.0, |root| {
+            egui::CentralPanel::default().show(root, |ui| tools.ui(ui, &[], &mut Vec::new()));
         });
     }
 
@@ -458,7 +634,7 @@ mod tests {
         tools.scanned(qr::decode(&region), preview);
         tools.text = "Hello from snapr".into();
         crate::preview::render("tools-preview", [920, 760], 1.0, |root| {
-            egui::CentralPanel::default().show(root, |ui| tools.ui(ui, &mut Vec::new()));
+            egui::CentralPanel::default().show(root, |ui| tools.ui(ui, &[], &mut Vec::new()));
         });
     }
 }

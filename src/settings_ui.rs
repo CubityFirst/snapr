@@ -3,6 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use egui::{Color32, RichText, TextEdit};
 use winit::event::ElementState;
@@ -11,7 +12,7 @@ use winit::keyboard::{KeyCode, ModifiersState};
 use crate::naming::{CATEGORIES, Context};
 use crate::output;
 use crate::secrets;
-use crate::settings::{Settings, Upload, parse_hotkey};
+use crate::settings::{Settings, ToolAction, ToolHotkey, Upload, parse_hotkey};
 
 pub enum Action {
     /// Apply these settings and store these new secret keys (upload id → key).
@@ -26,7 +27,13 @@ pub enum Action {
 enum HotkeyField {
     Capture,
     Record,
+    /// A tool hotkey, by its index in `tool_hotkeys`.
+    Tool(usize),
 }
+
+/// How long the form waits after the last edit before saving, so typing
+/// doesn't save (and re-register hotkeys) on every keystroke.
+const AUTOSAVE_DELAY: Duration = Duration::from_millis(600);
 
 pub const ERROR: Color32 = Color32::from_rgb(0xe5, 0x48, 0x4d);
 pub const SUCCESS: Color32 = Color32::from_rgb(0x34, 0xc7, 0x59);
@@ -57,6 +64,11 @@ pub struct Form {
     pub(crate) expanded: Option<String>,
     /// Connected microphones, listed when the General tab first shows.
     microphones: Option<Vec<String>>,
+    /// The draft and secret keys as last seen, and when they last changed.
+    seen: (Settings, HashMap<String, String>, Instant),
+    /// The last edit handed to the app to save, so one that failed isn't
+    /// retried until something changes.
+    submitted: Option<(Settings, HashMap<String, String>)>,
 }
 
 impl Form {
@@ -78,6 +90,8 @@ impl Form {
             tests: HashMap::new(),
             expanded: None,
             microphones: None,
+            seen: (settings.clone(), HashMap::new(), Instant::now()),
+            submitted: None,
         }
     }
 
@@ -103,8 +117,17 @@ impl Form {
         if let Some(e) = self.record_hotkey_problem() {
             return Some(format!("Record hotkey: {e}"));
         }
+        for (i, t) in self.draft.tool_hotkeys.iter().enumerate() {
+            if let Some(e) = self.tool_hotkey_problem(i) {
+                return Some(format!("{} hotkey: {e}", t.action.label()));
+            }
+        }
         if let Err(e) = self.draft.naming() {
             return Some(e);
+        }
+        let redact = self.draft.redact_image.trim();
+        if !redact.is_empty() && !std::path::Path::new(redact).is_file() {
+            return Some("Redaction image: no such file".into());
         }
         for u in self.draft.uploads.iter().filter(|u| u.enabled) {
             if let Err(e) = u.validate() {
@@ -117,34 +140,65 @@ impl Form {
         None
     }
 
-    /// Save / Revert, and the latest status message.
+    fn dirty(&self) -> bool {
+        self.draft != self.saved || !self.secrets.is_empty()
+    }
+
+    /// The edit to save, if there is one that can be and it hasn't been
+    /// tried already.
+    fn unsaved(&self) -> Option<Action> {
+        if !self.dirty()
+            || self.recording
+            || self
+                .submitted
+                .as_ref()
+                .is_some_and(|(d, s)| *d == self.draft && *s == self.secrets)
+            || self.problem().is_some()
+        {
+            return None;
+        }
+        let secrets = self
+            .secrets
+            .iter()
+            .filter(|(_, s)| !s.is_empty())
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        Some(Action::Save(self.draft.clone(), secrets))
+    }
+
+    /// Saves the form once it's valid and hasn't changed for a moment. Call
+    /// every frame, whichever page is showing.
+    pub fn autosave(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        let now = Instant::now();
+        if self.seen.0 != self.draft || self.seen.1 != self.secrets {
+            self.seen = (self.draft.clone(), self.secrets.clone(), now);
+        }
+        let Some(save) = self.unsaved() else {
+            return;
+        };
+        let wait = AUTOSAVE_DELAY.saturating_sub(now - self.seen.2);
+        if !wait.is_zero() {
+            ctx.request_repaint_after(wait);
+            return;
+        }
+        self.submitted = Some((self.draft.clone(), self.secrets.clone()));
+        actions.push(save);
+    }
+
+    /// Saves any edit still waiting out the delay, e.g. as the window closes.
+    pub fn flush(&mut self) -> Option<Action> {
+        let save = self.unsaved()?;
+        self.submitted = Some((self.draft.clone(), self.secrets.clone()));
+        Some(save)
+    }
+
+    /// The latest status message, or why the changes can't be saved.
     pub(crate) fn save_bar(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         ui.add_space(10.0);
         ui.separator();
         ui.horizontal(|ui| {
-            let dirty = self.draft != self.saved || !self.secrets.is_empty();
-            let problem = self.problem();
-            let save = ui.add_enabled(dirty && problem.is_none(), egui::Button::new("Save"));
-            let save = match &problem {
-                Some(p) if dirty => save.on_disabled_hover_text(p),
-                _ => save,
-            };
-            if save.clicked() {
-                let secrets = self
-                    .secrets
-                    .iter()
-                    .filter(|(_, s)| !s.is_empty())
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect();
-                actions.push(Action::Save(self.draft.clone(), secrets));
-            }
-            if ui.add_enabled(dirty, egui::Button::new("Revert")).clicked() {
-                self.draft = self.saved.clone();
-                self.secrets.clear();
-                self.recording = false;
-            }
-            if let (Some(p), true) = (&problem, dirty) {
-                ui.colored_label(ERROR, p);
+            if let Some(p) = self.problem().filter(|_| self.dirty()) {
+                ui.colored_label(ERROR, format!("Not saved \u{2014} {p}"));
             } else if let Some((msg, is_err)) = &self.status {
                 let color = if *is_err {
                     ERROR
@@ -199,6 +253,36 @@ impl Form {
                 });
                 ui.end_row();
 
+                ui.label("Redaction image").on_hover_text(
+                    "The image redaction tool (I) covers areas with this picture",
+                );
+                ui.horizontal(|ui| {
+                    ui.add(
+                        TextEdit::singleline(&mut self.draft.redact_image)
+                            .hint_text("None (black boxes)")
+                            .desired_width(300.0),
+                    );
+                    if ui.button("Browse\u{2026}").clicked()
+                        && let Some(file) = rfd::FileDialog::new()
+                            .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp", "bmp"])
+                            .pick_file()
+                    {
+                        self.draft.redact_image = file.display().to_string();
+                    }
+                    if !self.draft.redact_image.is_empty() && ui.button("Clear").clicked() {
+                        self.draft.redact_image.clear();
+                    }
+                });
+                ui.end_row();
+
+                ui.label("");
+                ui.checkbox(&mut self.draft.redact_stretch, "Stretch the image to fill each area")
+                    .on_hover_text(
+                        "Squash or stretch it to the area's shape. Off, it keeps its proportions \
+                         and is cropped to cover the area",
+                    );
+                ui.end_row();
+
                 ui.label(RichText::new("Recording").strong());
                 ui.end_row();
 
@@ -206,23 +290,52 @@ impl Form {
                 ui.add(egui::DragValue::new(&mut self.draft.record_fps).range(1..=120).suffix(" fps"));
                 ui.end_row();
 
-                ui.label("FFmpeg");
-                ui.horizontal(|ui| {
-                    ui.add(
-                        TextEdit::singleline(&mut self.draft.ffmpeg_path)
-                            .hint_text("ffmpeg (found on PATH)")
-                            .desired_width(300.0),
-                    );
-                    if ui.button("Browse\u{2026}").clicked()
-                        && let Some(file) = rfd::FileDialog::new().pick_file()
-                    {
-                        self.draft.ffmpeg_path = file.display().to_string();
-                    }
-                });
-                ui.end_row();
+                if crate::encode::webm_supported() {
+                    use crate::settings::RecordFormat;
+                    ui.label("Format");
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut self.draft.record_format, RecordFormat::Mp4, "MP4")
+                            .on_hover_text("H.264 and AAC: plays everywhere");
+                        if cfg!(windows) {
+                            ui.selectable_value(&mut self.draft.record_format, RecordFormat::Av1, "MP4 (AV1)")
+                                .on_hover_text(
+                                    "AV1 and AAC, made by the graphics card (NVIDIA RTX 40, AMD RX 7000, Intel Arc or newer):                                      sharper for the size. Plays in browsers, Discord and Windows' apps; not on older devices.                                      Falls back to H.264 without such a card.",
+                                );
+                        }
+                        ui.selectable_value(&mut self.draft.record_format, RecordFormat::Webm, "WebM")
+                            .on_hover_text("VP9 and Opus: smaller files, plays in browsers");
+                    });
+                    ui.end_row();
+                }
+
+                // Windows and macOS encode and play videos themselves.
+                if cfg!(target_os = "linux") {
+                    ui.label("FFmpeg");
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            TextEdit::singleline(&mut self.draft.ffmpeg_path)
+                                .hint_text("ffmpeg (found on PATH)")
+                                .desired_width(300.0),
+                        );
+                        if ui.button("Browse\u{2026}").clicked()
+                            && let Some(file) = rfd::FileDialog::new().pick_file()
+                        {
+                            self.draft.ffmpeg_path = file.display().to_string();
+                        }
+                    });
+                    ui.end_row();
+                }
                 ui.label("");
                 ui.checkbox(&mut self.draft.record_cursor, "Show the mouse pointer");
                 ui.end_row();
+                if cfg!(windows) {
+                    ui.label("");
+                    ui.checkbox(&mut self.draft.record_hdr, "Record in HDR when the display is in HDR mode")
+                        .on_hover_text(
+                            "HDR10 MP4 (10-bit HEVC) made by the graphics card. Recordings start about a second later.",
+                        );
+                    ui.end_row();
+                }
 
                 ui.label("Sound");
                 ui.vertical(|ui| {
@@ -253,7 +366,11 @@ impl Form {
 
                 ui.label("");
                 ui.label(
-                    RichText::new("Recordings are encoded with FFmpeg and saved as MP4 next to your screenshots.")
+                    RichText::new(if cfg!(target_os = "linux") {
+                        "Recordings are encoded with FFmpeg and saved next to your screenshots."
+                    } else {
+                        "Recordings are saved next to your screenshots."
+                    })
                         .weak()
                         .small(),
                 );
@@ -276,13 +393,48 @@ impl Form {
         }
     }
 
-    /// A hotkey text box with a Record button that captures the next key combination.
-    fn hotkey_row(&mut self, ui: &mut egui::Ui, label: &str, field: HotkeyField) {
-        let err = match field {
-            HotkeyField::Capture => parse_hotkey(&self.draft.hotkey).err(),
-            HotkeyField::Record => self.record_hotkey_problem(),
+    /// Why a tool hotkey can't be used: it's missing, invalid, or taken by
+    /// another hotkey (only the later of two equal tool hotkeys complains).
+    fn tool_hotkey_problem(&self, i: usize) -> Option<String> {
+        let spec = self.draft.tool_hotkeys[i].hotkey.trim();
+        if spec.is_empty() {
+            return Some("press Record, then the key combination".into());
+        }
+        let key = match parse_hotkey(spec) {
+            Ok(k) => k,
+            Err(e) => return Some(e),
         };
-        ui.label(label);
+        let same = |s: &str| !s.trim().is_empty() && parse_hotkey(s).is_ok_and(|k| k == key);
+        if same(&self.draft.hotkey) {
+            Some("same as the capture hotkey".into())
+        } else if same(&self.draft.record_hotkey) {
+            Some("same as the record hotkey".into())
+        } else {
+            self.draft.tool_hotkeys[..i]
+                .iter()
+                .find(|t| same(&t.hotkey))
+                .map(|t| format!("same as the {} hotkey", t.action.label().to_lowercase()))
+        }
+    }
+
+    /// Adds a tool hotkey and starts recording its key combination.
+    pub fn add_tool_hotkey(&mut self, action: ToolAction) {
+        self.draft.tool_hotkeys.push(ToolHotkey {
+            action,
+            hotkey: String::new(),
+        });
+        self.recording = true;
+        self.recording_field = HotkeyField::Tool(self.draft.tool_hotkeys.len() - 1);
+    }
+
+    /// A hotkey text box with a Record button that captures the next key
+    /// combination, and anything `extra` adds after them.
+    fn hotkey_editor(
+        &mut self,
+        ui: &mut egui::Ui,
+        field: HotkeyField,
+        extra: impl FnOnce(&mut egui::Ui),
+    ) {
         ui.horizontal(|ui| {
             if self.recording && self.recording_field == field {
                 ui.add(egui::Button::new("Press a key combination\u{2026}").selected(true));
@@ -293,16 +445,54 @@ impl Form {
                 let value = match field {
                     HotkeyField::Capture => &mut self.draft.hotkey,
                     HotkeyField::Record => &mut self.draft.record_hotkey,
+                    HotkeyField::Tool(i) => &mut self.draft.tool_hotkeys[i].hotkey,
                 };
-                ui.add(TextEdit::singleline(value).desired_width(220.0));
+                ui.add(
+                    TextEdit::singleline(value)
+                        .hint_text("none")
+                        .desired_width(220.0),
+                );
                 if ui.button("Record").clicked() {
                     self.recording = true;
                     self.recording_field = field;
                 }
             }
+            extra(ui);
+        });
+    }
+
+    fn hotkey_row(&mut self, ui: &mut egui::Ui, label: &str, field: HotkeyField) {
+        let err = match field {
+            HotkeyField::Capture => parse_hotkey(&self.draft.hotkey).err(),
+            HotkeyField::Record => self.record_hotkey_problem(),
+            HotkeyField::Tool(i) => self.tool_hotkey_problem(i),
+        };
+        ui.label(label);
+        self.hotkey_editor(ui, field, |_| {});
+        ui.end_row();
+        error_row(ui, err.as_deref());
+    }
+
+    /// A tool hotkey: which tool, its key combination, and a remove button.
+    /// Returns whether it was removed.
+    fn tool_hotkey_row(&mut self, ui: &mut egui::Ui, i: usize) -> bool {
+        let err = self.tool_hotkey_problem(i);
+        let action = &mut self.draft.tool_hotkeys[i].action;
+        egui::ComboBox::from_id_salt(("tool-hotkey", i))
+            .selected_text(action.label())
+            .width(150.0)
+            .show_ui(ui, |ui| {
+                for a in ToolAction::ALL {
+                    ui.selectable_value(action, a, a.label());
+                }
+            });
+        let mut remove = false;
+        self.hotkey_editor(ui, HotkeyField::Tool(i), |ui| {
+            remove = ui.button("Remove").clicked();
         });
         ui.end_row();
         error_row(ui, err.as_deref());
+        remove
     }
 
     /// The Hotkeys tab: one row per action that can have a global hotkey.
@@ -328,6 +518,37 @@ impl Form {
                         .weak()
                         .small(),
                 );
+
+                ui.add_space(16.0);
+                ui.label(RichText::new("Tool hotkeys").strong());
+                ui.label(
+                    RichText::new("Run a tool straight away from anywhere, e.g. pick a colour without opening snapr.")
+                        .weak(),
+                );
+                ui.add_space(6.0);
+                let mut removed = None;
+                egui::Grid::new("tool-hotkeys")
+                    .num_columns(2)
+                    .spacing([14.0, 8.0])
+                    .show(ui, |ui| {
+                        for i in 0..self.draft.tool_hotkeys.len() {
+                            if self.tool_hotkey_row(ui, i) {
+                                removed = Some(i);
+                            }
+                        }
+                    });
+                if let Some(i) = removed {
+                    self.draft.tool_hotkeys.remove(i);
+                    self.recording = false;
+                }
+                if ui.button("+ Add hotkey").clicked() {
+                    // The first tool without one, else the first tool.
+                    let action = ToolAction::ALL
+                        .into_iter()
+                        .find(|a| !self.draft.tool_hotkeys.iter().any(|t| t.action == *a))
+                        .unwrap_or(ToolAction::ALL[0]);
+                    self.add_tool_hotkey(action);
+                }
 
                 self.save_bar(ui, actions);
             });
@@ -449,6 +670,11 @@ impl Form {
         match self.recording_field {
             HotkeyField::Capture => self.draft.hotkey = hotkey,
             HotkeyField::Record => self.draft.record_hotkey = hotkey,
+            HotkeyField::Tool(i) => {
+                if let Some(t) = self.draft.tool_hotkeys.get_mut(i) {
+                    t.hotkey = hotkey;
+                }
+            }
         }
         self.recording = false;
         true
@@ -509,7 +735,41 @@ fn error_row(ui: &mut egui::Ui, err: Option<&str>) {
 #[cfg(test)]
 mod tests {
     use super::Form;
-    use crate::settings::Settings;
+    use crate::settings::{Settings, ToolAction, ToolHotkey};
+    use winit::event::ElementState;
+    use winit::keyboard::{KeyCode, ModifiersState};
+
+    #[test]
+    fn tool_hotkeys_must_be_set_and_unique() {
+        let mut form = Form::new(&Settings::default());
+        form.add_tool_hotkey(ToolAction::PickColor);
+        assert!(form.recording);
+        assert!(form.problem().is_some(), "no key combination yet");
+        form.record(
+            ModifiersState::CONTROL | ModifiersState::SHIFT,
+            KeyCode::KeyC,
+            ElementState::Pressed,
+        );
+        assert!(!form.recording);
+        assert_eq!(form.draft.tool_hotkeys[0].hotkey, "Ctrl + Shift + KeyC");
+        assert_eq!(form.problem(), None);
+
+        form.draft.tool_hotkeys.push(ToolHotkey {
+            action: ToolAction::ScanQr,
+            hotkey: "Ctrl + Shift + KeyC".into(),
+        });
+        assert_eq!(
+            form.problem().as_deref(),
+            Some("Read a QR code hotkey: same as the pick a colour hotkey")
+        );
+        form.draft.tool_hotkeys[1].hotkey = form.draft.hotkey.clone();
+        assert_eq!(
+            form.problem().as_deref(),
+            Some("Read a QR code hotkey: same as the capture hotkey")
+        );
+        form.draft.tool_hotkeys[1].hotkey = "Ctrl + Alt + KeyQ".into();
+        assert_eq!(form.problem(), None);
+    }
 
     /// Renders the General, Hotkeys and Paths & naming tabs to
     /// `target/settings-*-preview.png`: `cargo test settings_preview -- --ignored`.
@@ -517,6 +777,16 @@ mod tests {
     #[ignore]
     fn settings_preview() {
         let mut form = Form::new(&Settings::default());
+        form.draft.tool_hotkeys = vec![
+            ToolHotkey {
+                action: ToolAction::PickColor,
+                hotkey: "Ctrl + Shift + KeyC".into(),
+            },
+            ToolHotkey {
+                action: ToolAction::ScanQr,
+                hotkey: String::new(),
+            },
+        ];
         type Tab = fn(&mut Form, &mut egui::Ui);
         let tabs: [(&str, Tab); 3] = [
             ("general", |f, ui| f.ui(ui, &mut Vec::new())),
