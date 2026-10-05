@@ -1,0 +1,280 @@
+//! User settings, stored as TOML in the OS config folder.
+
+use std::path::PathBuf;
+
+use livesplit_hotkey::Hotkey;
+use serde::{Deserialize, Serialize};
+
+use crate::naming::{Naming, Template, migrate_legacy};
+use crate::upload::{S3Target, encode_path};
+
+pub const DEFAULT_HOTKEY: &str = "Alt + Shift + KeyS";
+pub const DEFAULT_RECORD_HOTKEY: &str = "Alt + Shift + KeyV";
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    pub hotkey: String,
+    /// Starts recording a region, and stops it. Empty: no hotkey.
+    pub record_hotkey: String,
+    /// Base folder screenshots are saved in.
+    pub folder: String,
+    /// Sub-folder template, e.g. `%pn/%y-%mo`.
+    pub subfolder: String,
+    /// File name template, `.png` is added.
+    pub file_name: String,
+    /// Save each screenshot to the folder above.
+    pub save_to_folder: bool,
+    pub copy_to_clipboard: bool,
+    /// After uploading, copy the link to the clipboard (replacing the image).
+    pub copy_link: bool,
+    /// S3-compatible upload destinations.
+    pub uploads: Vec<Upload>,
+    /// Show the annotation toolbar while capturing. Either way, releasing a
+    /// region drag takes the screenshot.
+    pub annotate: bool,
+    /// Shutter sound on capture, chime/error sounds for results.
+    pub play_sounds: bool,
+    /// Pop up a preview in the corner of the screen after each capture.
+    pub show_toast: bool,
+    /// Overlay frame-rate limit; 0 matches each monitor's refresh rate.
+    pub overlay_fps: u32,
+    /// Frame rate of screen recordings.
+    pub record_fps: u32,
+    /// The FFmpeg program recordings are encoded with; empty finds it on PATH.
+    pub ffmpeg_path: String,
+    /// Record what's playing along with the screen.
+    pub record_system_audio: bool,
+    /// Draw the mouse pointer into recordings.
+    pub record_cursor: bool,
+    /// Record a microphone along with the screen.
+    pub record_microphone: bool,
+    /// The microphone's name; empty for the system default.
+    pub microphone: String,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            hotkey: DEFAULT_HOTKEY.into(),
+            record_hotkey: DEFAULT_RECORD_HOTKEY.into(),
+            folder: default_folder().display().to_string(),
+            subfolder: String::new(),
+            file_name: "%rna{10}".into(),
+            save_to_folder: true,
+            copy_to_clipboard: true,
+            copy_link: true,
+            uploads: Vec::new(),
+            annotate: true,
+            play_sounds: true,
+            show_toast: true,
+            overlay_fps: 0,
+            record_fps: 30,
+            ffmpeg_path: String::new(),
+            record_cursor: true,
+            record_system_audio: false,
+            record_microphone: false,
+            microphone: String::new(),
+        }
+    }
+}
+
+pub enum Loaded {
+    FirstRun,
+    Existing,
+    /// The file exists but couldn't be read; defaults are used instead.
+    Broken(String),
+}
+
+impl Settings {
+    /// `SNAPR_CONFIG_DIR` overrides the location, e.g. for a portable copy or
+    /// to run a second, independent instance.
+    pub fn config_dir() -> Option<PathBuf> {
+        if let Some(dir) = std::env::var_os("SNAPR_CONFIG_DIR") {
+            return Some(PathBuf::from(dir));
+        }
+        Some(dirs::config_dir()?.join("snapr"))
+    }
+
+    fn path() -> Option<PathBuf> {
+        Some(Self::config_dir()?.join("config.toml"))
+    }
+
+    pub fn load() -> (Self, Loaded) {
+        let Some(path) = Self::path() else {
+            return (Self::default(), Loaded::FirstRun);
+        };
+        match std::fs::read_to_string(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                (Self::default(), Loaded::FirstRun)
+            }
+            Err(e) => (
+                Self::default(),
+                Loaded::Broken(format!("couldn't read {}: {e}", path.display())),
+            ),
+            Ok(text) => match toml::from_str::<Self>(&text) {
+                Ok(mut s) => {
+                    s.migrate_templates();
+                    (s, Loaded::Existing)
+                }
+                Err(e) => (
+                    Self::default(),
+                    Loaded::Broken(format!("couldn't parse {}: {e}", path.display())),
+                ),
+            },
+        }
+    }
+
+    /// Rewrites templates from the old `{random}` syntax to ShareX's `%rna{10}`.
+    fn migrate_templates(&mut self) {
+        for t in [&mut self.subfolder, &mut self.file_name]
+            .into_iter()
+            .chain(self.uploads.iter_mut().map(|u| &mut u.key_template))
+        {
+            *t = migrate_legacy(t);
+        }
+    }
+
+    pub fn save(&self) -> Result<(), String> {
+        let path = Self::path().ok_or("no config folder on this system")?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| format!("couldn't create {}: {e}", dir.display()))?;
+        }
+        let text = toml::to_string_pretty(self).map_err(|e| e.to_string())?;
+        std::fs::write(&path, text).map_err(|e| format!("couldn't write {}: {e}", path.display()))
+    }
+
+    /// The sound to record with the screen.
+    pub fn audio_sources(&self) -> Vec<crate::audio::Source> {
+        let mut sources = Vec::new();
+        if self.record_system_audio {
+            sources.push(crate::audio::Source::System);
+        }
+        if self.record_microphone {
+            sources.push(crate::audio::Source::Microphone(
+                self.microphone.trim().to_string(),
+            ));
+        }
+        sources
+    }
+
+    pub fn naming(&self) -> Result<Naming, String> {
+        Ok(Naming {
+            dir: PathBuf::from(&self.folder),
+            subdir: self
+                .subfolder
+                .parse::<Template>()
+                .map_err(|e| format!("Sub-folder: {e}"))?,
+            name: self
+                .file_name
+                .parse::<Template>()
+                .map_err(|e| format!("File name: {e}"))?,
+        })
+    }
+}
+
+/// An S3-compatible bucket screenshots are uploaded to. The secret key is kept
+/// in the OS credential store under `id`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Upload {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+    pub endpoint: String,
+    pub region: String,
+    pub bucket: String,
+    pub access_key_id: String,
+    /// Object key template, using the file-name placeholders; `.png` is added.
+    pub key_template: String,
+    /// Base for links, e.g. `https://pub-xxxx.r2.dev` or a custom domain.
+    /// Empty uses the storage endpoint's own URL.
+    pub public_url: String,
+    pub path_style: bool,
+    /// Include a hash of the file in the request signature.
+    pub signed_payload: bool,
+}
+
+impl Default for Upload {
+    fn default() -> Self {
+        Self {
+            id: (0..12)
+                .map(|_| fastrand::alphanumeric())
+                .collect::<String>()
+                .to_lowercase(),
+            name: "S3".into(),
+            enabled: true,
+            endpoint: String::new(),
+            region: "us-east-1".into(),
+            bucket: String::new(),
+            access_key_id: String::new(),
+            key_template: "%y-%mo/%rna{10}".into(),
+            public_url: String::new(),
+            path_style: false,
+            signed_payload: false,
+        }
+    }
+}
+
+impl Upload {
+    /// Checks the fields; returns the parsed key template.
+    pub fn validate(&self) -> Result<Template, String> {
+        let endpoint = self.endpoint.trim();
+        if !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
+            return Err("Endpoint should start with https://".into());
+        }
+        if self.bucket.trim().is_empty() {
+            return Err("Bucket is required".into());
+        }
+        if self.access_key_id.trim().is_empty() {
+            return Err("Access key ID is required".into());
+        }
+        let public = self.public_url.trim();
+        if !(public.is_empty() || public.starts_with("https://") || public.starts_with("http://")) {
+            return Err("Public URL should start with https://".into());
+        }
+        self.key_template
+            .parse::<Template>()
+            .map_err(|e| format!("Object key: {e}"))
+    }
+
+    pub fn target(&self, secret_access_key: String) -> S3Target {
+        S3Target {
+            endpoint: self.endpoint.trim().to_string(),
+            region: if self.region.trim().is_empty() {
+                "auto".into()
+            } else {
+                self.region.trim().to_string()
+            },
+            bucket: self.bucket.trim().to_string(),
+            access_key_id: self.access_key_id.trim().to_string(),
+            // A pasted secret often brings a stray space or newline along.
+            secret_access_key: secret_access_key.trim().to_string(),
+            path_style: self.path_style,
+            sign_payload: self.signed_payload,
+        }
+    }
+
+    /// The link to share for an uploaded object.
+    pub fn link(&self, key: &str) -> Result<String, String> {
+        let public = self.public_url.trim().trim_end_matches('/');
+        if public.is_empty() {
+            self.target(String::new()).object_url(key)
+        } else {
+            Ok(format!("{public}/{}", encode_path(key)))
+        }
+    }
+}
+
+pub fn parse_hotkey(s: &str) -> Result<Hotkey, String> {
+    s.parse()
+        .map_err(|_| format!("not a valid hotkey (expected e.g. \"{DEFAULT_HOTKEY}\")"))
+}
+
+pub fn default_folder() -> PathBuf {
+    dirs::picture_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("snapr")
+}

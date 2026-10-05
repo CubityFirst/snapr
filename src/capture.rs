@@ -1,0 +1,294 @@
+use image::RgbaImage;
+
+/// An integer rectangle in global (virtual desktop) physical pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rect {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+}
+
+impl Rect {
+    pub fn from_points(a: (f64, f64), b: (f64, f64)) -> Self {
+        let (x0, x1) = (a.0.min(b.0).floor() as i32, a.0.max(b.0).ceil() as i32);
+        let (y0, y1) = (a.1.min(b.1).floor() as i32, a.1.max(b.1).ceil() as i32);
+        Self {
+            x: x0,
+            y: y0,
+            w: (x1 - x0) as u32,
+            h: (y1 - y0) as u32,
+        }
+    }
+
+    pub fn right(&self) -> i32 {
+        self.x + self.w as i32
+    }
+
+    pub fn bottom(&self) -> i32 {
+        self.y + self.h as i32
+    }
+
+    pub fn contains(&self, (x, y): (f64, f64)) -> bool {
+        x >= self.x as f64
+            && y >= self.y as f64
+            && x < self.right() as f64
+            && y < self.bottom() as f64
+    }
+
+    /// The smallest rectangle containing both.
+    pub fn union(&self, other: &Rect) -> Rect {
+        let (x0, y0) = (self.x.min(other.x), self.y.min(other.y));
+        let (x1, y1) = (
+            self.right().max(other.right()),
+            self.bottom().max(other.bottom()),
+        );
+        Rect {
+            x: x0,
+            y: y0,
+            w: (x1 - x0) as u32,
+            h: (y1 - y0) as u32,
+        }
+    }
+
+    pub fn intersect(&self, other: &Rect) -> Option<Rect> {
+        let x0 = self.x.max(other.x);
+        let y0 = self.y.max(other.y);
+        let x1 = self.right().min(other.right());
+        let y1 = self.bottom().min(other.bottom());
+        (x1 > x0 && y1 > y0).then(|| Rect {
+            x: x0,
+            y: y0,
+            w: (x1 - x0) as u32,
+            h: (y1 - y0) as u32,
+        })
+    }
+}
+
+/// A frozen frame of one monitor.
+pub struct Shot {
+    pub image: RgbaImage,
+    /// Best guess of the monitor's top-left corner in physical pixels, used to
+    /// match it to the windowing system's monitor list.
+    pub pos: (i32, i32),
+}
+
+/// A shot together with the global rectangle its overlay window covers.
+pub struct PlacedShot<'a> {
+    pub image: &'a RgbaImage,
+    pub rect: Rect,
+}
+
+pub fn capture_all() -> Result<Vec<Shot>, xcap::XCapError> {
+    xcap::Monitor::all()?
+        .iter()
+        .map(|m| {
+            let image = m.capture_image()?;
+            let (x, y) = (m.x()?, m.y()?);
+            // macOS reports monitor positions in points rather than pixels.
+            let scale = if cfg!(target_os = "macos") {
+                m.scale_factor()?
+            } else {
+                1.0
+            };
+            let pos = (
+                (x as f32 * scale).round() as i32,
+                (y as f32 * scale).round() as i32,
+            );
+            Ok(Shot { image, pos })
+        })
+        .collect()
+}
+
+/// The mouse position in global physical pixels, where the platform makes
+/// it cheap to ask (Windows). Elsewhere it's learned from the first move.
+pub fn cursor_position() -> Option<(f64, f64)> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::POINT;
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+        let mut p = POINT { x: 0, y: 0 };
+        // SAFETY: writes into a valid POINT.
+        if unsafe { GetCursorPos(&mut p) } != 0 {
+            return Some((p.x as f64, p.y as f64));
+        }
+    }
+    None
+}
+
+/// The visible windows' frames (global physical pixels), topmost first, for
+/// snapping the region to a window. Must be called before our overlays open.
+pub fn window_rects() -> Vec<Rect> {
+    let Ok(windows) = xcap::Window::all() else {
+        return Vec::new();
+    };
+    windows
+        .into_iter()
+        .filter(|w| !w.is_minimized().unwrap_or(true))
+        // Untitled windows are mostly invisible helpers and overlays.
+        .filter(|w| w.title().is_ok_and(|t| !t.trim().is_empty()))
+        .filter_map(|w| {
+            Some(Rect {
+                x: w.x().ok()?,
+                y: w.y().ok()?,
+                w: w.width().ok()?,
+                h: w.height().ok()?,
+            })
+        })
+        .filter(|r| r.w >= 8 && r.h >= 8)
+        .collect()
+}
+
+/// Process name (e.g. `chrome`) and title of the focused window. Must be
+/// called before our overlay windows take focus.
+pub fn foreground_window() -> (Option<String>, Option<String>) {
+    let Some(window) = xcap::Window::all()
+        .ok()
+        .and_then(|all| all.into_iter().find(|w| w.is_focused().unwrap_or(false)))
+    else {
+        return (None, None);
+    };
+    let by_pid = window.pid().ok().and_then(process_name);
+    let process = by_pid
+        .or_else(|| window.app_name().ok())
+        .filter(|n| !n.is_empty());
+    let title = window.title().ok().filter(|t| !t.is_empty());
+    (process, title)
+}
+
+#[cfg(windows)]
+fn process_name(pid: u32) -> Option<String> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        QueryFullProcessImageNameW,
+    };
+    let mut buf = [0u16; 1024];
+    let mut len = buf.len() as u32;
+    // SAFETY: the handle is checked and closed, and `buf`/`len` describe a valid buffer.
+    let ok = unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return None;
+        }
+        let ok = QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len);
+        CloseHandle(handle);
+        ok != 0
+    };
+    let path = String::from_utf16_lossy(&buf[..len as usize]);
+    ok.then(|| {
+        std::path::Path::new(&path)
+            .file_stem()?
+            .to_str()
+            .map(str::to_owned)
+    })
+    .flatten()
+}
+
+#[cfg(target_os = "linux")]
+fn process_name(pid: u32) -> Option<String> {
+    Some(
+        std::fs::read_to_string(format!("/proc/{pid}/comm"))
+            .ok()?
+            .trim()
+            .to_owned(),
+    )
+}
+
+/// macOS: xcap's app name is already the owning process's name.
+#[cfg(not(any(windows, target_os = "linux")))]
+fn process_name(_pid: u32) -> Option<String> {
+    None
+}
+
+/// Builds the final screenshot for `region`, stitching together every monitor
+/// it overlaps. Areas not covered by any monitor are left transparent.
+pub fn crop(shots: &[PlacedShot], region: Rect) -> Option<RgbaImage> {
+    if region.w == 0 || region.h == 0 {
+        return None;
+    }
+    let mut out = RgbaImage::new(region.w, region.h);
+    let mut any = false;
+    for shot in shots {
+        let Some(inter) = region.intersect(&shot.rect) else {
+            continue;
+        };
+        any = true;
+        let (iw, ih) = shot.image.dimensions();
+        // Overlay windows normally match the capture 1:1, but scale in case
+        // the platform gave us a differently sized window.
+        let sx = iw as f64 / shot.rect.w as f64;
+        let sy = ih as f64 / shot.rect.h as f64;
+        for gy in inter.y..inter.bottom() {
+            let src_y = (((gy - shot.rect.y) as f64 * sy) as u32).min(ih - 1);
+            for gx in inter.x..inter.right() {
+                let src_x = (((gx - shot.rect.x) as f64 * sx) as u32).min(iw - 1);
+                let px = *shot.image.get_pixel(src_x, src_y);
+                out.put_pixel((gx - region.x) as u32, (gy - region.y) as u32, px);
+            }
+        }
+    }
+    any.then_some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::Rgba;
+
+    #[test]
+    fn crop_stitches_across_monitors() {
+        let left = RgbaImage::from_pixel(10, 10, Rgba([255, 0, 0, 255]));
+        let right = RgbaImage::from_pixel(10, 10, Rgba([0, 0, 255, 255]));
+        let shots = [
+            PlacedShot {
+                image: &left,
+                rect: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 10,
+                    h: 10,
+                },
+            },
+            PlacedShot {
+                image: &right,
+                rect: Rect {
+                    x: 10,
+                    y: 0,
+                    w: 10,
+                    h: 10,
+                },
+            },
+        ];
+        let out = crop(&shots, Rect::from_points((8.0, 2.0), (12.0, 4.0))).unwrap();
+        assert_eq!(out.dimensions(), (4, 2));
+        assert_eq!(out.get_pixel(1, 0), &Rgba([255, 0, 0, 255]));
+        assert_eq!(out.get_pixel(2, 1), &Rgba([0, 0, 255, 255]));
+    }
+
+    #[test]
+    fn crop_outside_monitors_is_none() {
+        let img = RgbaImage::new(10, 10);
+        let shots = [PlacedShot {
+            image: &img,
+            rect: Rect {
+                x: 0,
+                y: 0,
+                w: 10,
+                h: 10,
+            },
+        }];
+        assert!(
+            crop(
+                &shots,
+                Rect {
+                    x: 50,
+                    y: 50,
+                    w: 5,
+                    h: 5
+                }
+            )
+            .is_none()
+        );
+    }
+}
