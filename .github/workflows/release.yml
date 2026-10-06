@@ -6,12 +6,16 @@
 #
 # Tags with a hyphen (v1.0.0-rc.1) become pre-releases, which the updater
 # doesn't offer.
+#
+# Run it by hand (Actions > Release > Run workflow) to try the builds without
+# publishing anything.
 
 name: Release
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -29,8 +33,9 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             asset: snapr-macos-aarch64
-          # The oldest supported Ubuntu, so the build runs on older glibcs.
-          - os: ubuntu-22.04
+          # 24.04 rather than the older 22.04: the PipeWire bindings need
+          # its newer PipeWire headers.
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             asset: snapr-linux-x86_64
     runs-on: ${{ matrix.os }}
@@ -40,6 +45,7 @@ jobs:
       # A build that reports an older version than its release would offer
       # itself as an update forever.
       - name: Check the tag matches Cargo.toml
+        if: github.ref_type == 'tag'
         shell: bash
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
@@ -84,6 +90,7 @@ jobs:
 
   release:
     needs: build
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

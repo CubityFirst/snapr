@@ -20,8 +20,18 @@ use crate::encode::{self, Encoder, VideoFormat, mix::Mixer};
 
 /// xcap's recorder threads never exit (stopping only pauses them), so each
 /// monitor's recorder is kept and reused rather than started again.
-type Recorders = HashMap<u32, (VideoRecorder, Receiver<Frame>)>;
+type Recorders = HashMap<u32, (Recorder, Receiver<Frame>)>;
 static RECORDERS: Mutex<Option<Recorders>> = Mutex::new(None);
+
+/// xcap's recorder for one monitor. On macOS it holds an `AVCaptureSession`,
+/// which objc2 doesn't mark `Send`, though AVFoundation lets a session be
+/// started and stopped from any thread (Apple's samples do it on a
+/// background queue).
+struct Recorder(VideoRecorder);
+
+// SAFETY: see above; each recorder is used by one thread at a time, moving
+// between them through `RECORDERS`. It's `Send` anyway on Windows and Linux.
+unsafe impl Send for Recorder {}
 
 pub struct Recording {
     /// What's being recorded, in global physical pixels (the selection
@@ -363,7 +373,7 @@ fn monitor_for(rect: Rect) -> Result<(Monitor, Rect, (i32, i32)), String> {
     Ok((monitor, region, origin))
 }
 
-fn take_recorder(monitor: &Monitor, id: u32) -> Result<(VideoRecorder, Receiver<Frame>), String> {
+fn take_recorder(monitor: &Monitor, id: u32) -> Result<(Recorder, Receiver<Frame>), String> {
     if let Some(r) = RECORDERS
         .lock()
         .unwrap()
@@ -374,10 +384,11 @@ fn take_recorder(monitor: &Monitor, id: u32) -> Result<(VideoRecorder, Receiver<
     }
     monitor
         .video_recorder()
+        .map(|(recorder, frames)| (Recorder(recorder), frames))
         .map_err(|e| format!("screen recording isn't available: {e}"))
 }
 
-fn put_recorder(id: u32, recorder: VideoRecorder, frames: Receiver<Frame>) {
+fn put_recorder(id: u32, recorder: Recorder, frames: Receiver<Frame>) {
     RECORDERS
         .lock()
         .unwrap()
@@ -402,7 +413,7 @@ trait Frames {
 struct ScreenFrames {
     /// The recorder and its monitor's id, to hand back when done (`None`
     /// when frames come from elsewhere, in tests).
-    recorder: Option<(VideoRecorder, u32)>,
+    recorder: Option<(Recorder, u32)>,
     frames: Receiver<Frame>,
     region: Rect,
     /// The screen as last captured, and what's sent: that plus the pointer.
@@ -421,14 +432,14 @@ impl ScreenFrames {
         let (recorder, frames) = take_recorder(monitor, id)?;
         // Frames left over from the last recording on this monitor.
         while frames.try_recv().is_ok() {}
-        if let Err(e) = recorder.start() {
+        if let Err(e) = recorder.0.start() {
             put_recorder(id, recorder, frames);
             return Err(format!("couldn't start recording: {e}"));
         }
         Ok(Self::new(Some((recorder, id)), frames, first, region))
     }
 
-    fn new(recorder: Option<(VideoRecorder, u32)>, frames: Receiver<Frame>, first: Vec<u8>, region: Rect) -> Self {
+    fn new(recorder: Option<(Recorder, u32)>, frames: Receiver<Frame>, first: Vec<u8>, region: Rect) -> Self {
         Self {
             recorder,
             frames,
@@ -444,7 +455,7 @@ impl ScreenFrames {
 
     fn release(self) {
         if let Some((recorder, id)) = self.recorder {
-            let _ = recorder.stop();
+            let _ = recorder.0.stop();
             put_recorder(id, recorder, self.frames);
         }
     }
