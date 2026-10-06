@@ -224,7 +224,7 @@ git push origin v0.2.0
 ```
 
 The *Release* workflow (`.github/workflows/release.yml`) builds Windows
-x86-64, macOS (Apple silicon and Intel) and Linux x86-64, and publishes them
+x86-64, macOS (Apple silicon only) and Linux x86-64, and publishes them
 as a GitHub release named after the tag, with generated notes and a
 `SHA256SUMS` file. It refuses a tag that doesn't match `Cargo.toml`'s
 version (such a build would keep offering itself as an update). A tag with a
