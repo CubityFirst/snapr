@@ -51,9 +51,15 @@ pub struct Settings {
     pub record_format: RecordFormat,
     /// Record displays in HDR mode in HDR (HDR10; Windows, MP4 only).
     pub record_hdr: bool,
-    /// The FFmpeg program videos are encoded and decoded with on Linux;
-    /// empty finds it on PATH. Windows and macOS don't need it.
+    /// Encode MP4 (H.264) and WebM recordings with FFmpeg rather than the
+    /// system's encoder (Windows and macOS; Linux always uses FFmpeg).
+    pub record_with_ffmpeg: bool,
+    /// The FFmpeg program videos are encoded and decoded with on Linux, and
+    /// recordings encoded with when `record_with_ffmpeg` is on; empty finds
+    /// it on PATH.
     pub ffmpeg_path: String,
+    /// How FFmpeg encodes recordings.
+    pub ffmpeg: FfmpegOptions,
     /// Record what's playing along with the screen.
     pub record_system_audio: bool,
     /// Draw the mouse pointer into recordings.
@@ -66,6 +72,8 @@ pub struct Settings {
     pub tool_hotkeys: Vec<ToolHotkey>,
     /// How upload speeds are shown.
     pub speed_unit: SpeedUnit,
+    /// Look for a new release now and then, and install it.
+    pub check_for_updates: bool,
 }
 
 /// Recordings as MP4 (H.264 + AAC; plays everywhere), MP4 with AV1 video
@@ -87,6 +95,57 @@ impl RecordFormat {
             RecordFormat::Webm if crate::encode::webm_supported() => "webm",
             _ => "mp4",
         }
+    }
+}
+
+/// How FFmpeg encodes recordings: x264 for MP4, libvpx for WebM.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FfmpegOptions {
+    /// x264's preset, one of `X264_PRESETS`: slower ones make smaller files
+    /// at the same quality, for more CPU.
+    pub x264_preset: String,
+    /// x264's constant rate factor, 0 (lossless) to 51: lower is better
+    /// quality and bigger files.
+    pub x264_crf: u8,
+    /// libvpx's speed (`-cpu-used`), 0 (slowest, smallest files) to 8.
+    pub vp9_speed: u8,
+    /// libvpx's constant rate factor, 0 to 63: lower is better quality and
+    /// bigger files, up to the usual bit rate.
+    pub vp9_crf: u8,
+    /// More arguments for the output, after snapr's own (so they win), split
+    /// like a shell command line.
+    pub extra_args: String,
+}
+
+impl Default for FfmpegOptions {
+    fn default() -> Self {
+        Self {
+            x264_preset: "veryfast".into(),
+            x264_crf: 23,
+            vp9_speed: 8,
+            vp9_crf: 32,
+            extra_args: String::new(),
+        }
+    }
+}
+
+impl FfmpegOptions {
+    pub const X264_PRESETS: &[&str] = &[
+        "ultrafast",
+        "superfast",
+        "veryfast",
+        "faster",
+        "fast",
+        "medium",
+        "slow",
+        "slower",
+        "veryslow",
+    ];
+
+    /// `extra_args` split into separate arguments.
+    pub fn extra_args(&self) -> Result<Vec<String>, String> {
+        shlex::split(&self.extra_args).ok_or_else(|| "a quote isn't closed".into())
     }
 }
 
@@ -154,13 +213,16 @@ impl Default for Settings {
             record_fps: 30,
             record_format: RecordFormat::default(),
             record_hdr: true,
+            record_with_ffmpeg: false,
             ffmpeg_path: String::new(),
+            ffmpeg: FfmpegOptions::default(),
             record_cursor: true,
             record_system_audio: false,
             record_microphone: false,
             microphone: String::new(),
             tool_hotkeys: Vec::new(),
             speed_unit: SpeedUnit::default(),
+            check_for_updates: true,
         }
     }
 }

@@ -1,5 +1,7 @@
-//! Linux (no system encoder): frames are piped as raw RGBA into an `ffmpeg`
-//! process. With sound, the video goes to a temporary file and the mixed
+//! FFmpeg: on Linux (no system encoder), and on Windows and macOS when
+//! chosen over the system's encoder. Frames are converted to NV12 (BT.709,
+//! as the other encoders get them) and piped into an `ffmpeg` process. With
+//! sound, the video goes to a temporary file and the mixed
 //! sound to a raw f32 file, and FFmpeg combines them when it's finished.
 //! MP4 is H.264 and AAC, WebM VP9 and Opus.
 
@@ -8,7 +10,8 @@ use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 
-use super::{AudioFormat, Encoder, VideoFormat, is_webm, video_bitrate};
+use super::{AudioFormat, Encoder, FfmpegConfig, VideoFormat, is_webm, rgba_to_nv12, video_bitrate};
+use crate::settings::FfmpegOptions;
 
 /// H.264 encoders to try, best first. All of them can be absent from a
 /// given FFmpeg build; `mpeg4` is in practically every one.
@@ -29,6 +32,10 @@ pub struct Ffmpeg {
     /// Where the video goes: `out`, or with sound a temporary file.
     video: PathBuf,
     sound: Option<Sound>,
+    width: usize,
+    height: usize,
+    /// The frame being sent, as NV12.
+    nv12: Vec<u8>,
 }
 
 /// The mixed sound, written raw while recording.
@@ -40,15 +47,14 @@ struct Sound {
 
 impl Ffmpeg {
     pub fn open(
-        program: &str,
+        config: &FfmpegConfig,
         out: &Path,
         video: VideoFormat,
         audio: Option<AudioFormat>,
     ) -> Result<Self, String> {
-        let program = if program.trim().is_empty() {
-            "ffmpeg".to_string()
-        } else {
-            program.trim().to_string()
+        let program = match config.program.trim() {
+            "" => "ffmpeg".to_string(),
+            p => p.to_string(),
         };
         let webm = is_webm(out);
         let encoder = pick_encoder(&program, webm)?;
@@ -67,7 +73,7 @@ impl Ffmpeg {
             }
             None => (out.to_owned(), None),
         };
-        let mut child = spawn(&program, encoder, video, &video_path)?;
+        let mut child = spawn(&program, encoder, &config.options, video, &video_path)?;
         let stdin = child.stdin.take();
         Ok(Self {
             program,
@@ -77,16 +83,20 @@ impl Ffmpeg {
             out: out.to_owned(),
             video: video_path,
             sound,
+            width: video.width as usize,
+            height: video.height as usize,
+            nv12: vec![0; video.width as usize * video.height as usize * 3 / 2],
         })
     }
 }
 
 impl Encoder for Ffmpeg {
     fn video(&mut self, rgba: &[u8]) -> Result<(), String> {
+        rgba_to_nv12(rgba, self.width, self.height, &mut self.nv12);
         self.stdin
             .as_mut()
             .expect("open until finished")
-            .write_all(rgba)
+            .write_all(&self.nv12)
             .map_err(|e| format!("FFmpeg stopped accepting frames: {e}"))
     }
 
@@ -160,7 +170,7 @@ fn pick_encoder(ffmpeg: &str, webm: bool) -> Result<&'static str, String> {
         .output()
         .map_err(|e| {
             format!(
-                "FFmpeg is needed for recording but couldn't be run ({e}). Install it, or set its path under Settings \u{2192} General"
+                "FFmpeg couldn't be run ({e}). Install it, or set its path under Settings \u{2192} General"
             )
         })?;
     let list = String::from_utf8_lossy(&output.stdout);
@@ -190,27 +200,40 @@ fn command(program: &str) -> Command {
     cmd
 }
 
-fn spawn(ffmpeg: &str, encoder: &str, v: VideoFormat, out: &Path) -> Result<Child, String> {
+/// BT.709 limited range, what `rgba_to_nv12` makes; given for the input so
+/// FFmpeg passes the colours through untouched, and for the output so
+/// players read them right.
+const COLOUR: &[&str] = &["-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"];
+
+fn spawn(ffmpeg: &str, encoder: &str, options: &FfmpegOptions, v: VideoFormat, out: &Path) -> Result<Child, String> {
+    let extra = options.extra_args().map_err(|e| format!("FFmpeg arguments: {e}"))?;
     let mut cmd = command(ffmpeg);
     cmd.args(["-hide_banner", "-loglevel", "error", "-y"])
-        .args(["-f", "rawvideo", "-pix_fmt", "rgba"])
+        .args(["-f", "rawvideo", "-pix_fmt", "nv12"])
+        .args(COLOUR)
         .args(["-s", &format!("{}x{}", v.width, v.height)])
         .args(["-r", &v.fps.to_string(), "-i", "-"])
         .args(["-c:v", encoder]);
     match encoder {
-        "libx264" => cmd.args(["-preset", "veryfast", "-crf", "23"]),
+        "libx264" => cmd
+            .args(["-preset", &options.x264_preset])
+            .args(["-crf", &options.x264_crf.min(51).to_string()]),
         "mpeg4" => cmd.args(["-q:v", "3"]),
-        // Real-time speed; VP9 is slow otherwise.
+        // Real-time; VP9 is slow otherwise. Constant quality, up to the
+        // usual bit rate.
         "libvpx-vp9" => cmd
-            .args(["-deadline", "realtime", "-cpu-used", "8", "-row-mt", "1"])
+            .args(["-deadline", "realtime", "-row-mt", "1"])
+            .args(["-cpu-used", &options.vp9_speed.min(8).to_string()])
+            .args(["-crf", &options.vp9_crf.min(63).to_string()])
             .args(["-b:v", &video_bitrate(v).to_string()]),
         _ => cmd.args(["-b:v", "8M"]),
     };
-    cmd.args(["-pix_fmt", "yuv420p"]);
+    cmd.args(["-pix_fmt", "yuv420p"]).args(COLOUR);
     if encoder != "libvpx-vp9" {
         cmd.args(["-movflags", "+faststart"]);
     }
-    cmd.arg(out)
+    cmd.args(extra)
+        .arg(out)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -269,4 +292,87 @@ fn move_file(from: &Path, to: &Path) -> Result<(), String> {
         .map_err(|e| format!("couldn't save {}: {e}", to.display()))?;
     let _ = std::fs::remove_file(from);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Encodes a few frames of one colour with sound, then decodes them
+    /// back as NV12: the colours come through (give or take compression)
+    /// and the file says BT.709. Skipped without FFmpeg.
+    #[test]
+    fn keeps_colours() {
+        if command("ffmpeg").arg("-version").output().is_err() {
+            eprintln!("skipped: no FFmpeg");
+            return;
+        }
+        let (w, h) = (64, 48);
+        let out = temp_base().with_extension("mp4");
+        let video = VideoFormat { width: w, height: h, fps: 30 };
+        let audio = AudioFormat { sample_rate: 48_000, channels: 2 };
+        let config = FfmpegConfig::default();
+        let mut enc: Box<dyn Encoder> = Box::new(Ffmpeg::open(&config, &out, video, Some(audio)).unwrap());
+        let rgba: Vec<u8> = [200, 60, 30, 255].repeat((w * h) as usize);
+        for _ in 0..15 {
+            enc.video(&rgba).unwrap();
+            enc.audio(&[0.0; 1600 * 2]).unwrap();
+        }
+        assert_eq!(enc.finish().unwrap(), None);
+
+        let mut expected = vec![0; (w * h * 3 / 2) as usize];
+        rgba_to_nv12(&rgba, w as usize, h as usize, &mut expected);
+        let decoded = command("ffmpeg")
+            .args(["-hide_banner", "-i"])
+            .arg(&out)
+            .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "nv12", "-"])
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_file(&out);
+        let info = String::from_utf8_lossy(&decoded.stderr);
+        assert!(info.contains("bt709"), "{info}");
+        assert!(info.contains("Audio: aac"), "{info}");
+        let near = |a: u8, b: u8| a.abs_diff(b) <= 2;
+        let mid_uv = (w * h + w * h / 4 + w / 2) as usize;
+        let (y, u, v) = (decoded.stdout[0], decoded.stdout[mid_uv], decoded.stdout[mid_uv + 1]);
+        assert!(near(y, expected[0]) && near(u, expected[mid_uv]) && near(v, expected[mid_uv + 1]),
+            "got {y} {u} {v}, expected {} {} {}", expected[0], expected[mid_uv], expected[mid_uv + 1]);
+    }
+
+    /// The CRF changes the size, and extra arguments (quoted ones too) reach
+    /// FFmpeg. Skipped without FFmpeg.
+    #[test]
+    fn uses_options() {
+        if command("ffmpeg").arg("-version").output().is_err() {
+            eprintln!("skipped: no FFmpeg");
+            return;
+        }
+        let (w, h) = (128, 96);
+        let video = VideoFormat { width: w, height: h, fps: 30 };
+        // Moving noise, so quality costs something.
+        let frames: Vec<Vec<u8>> = (0..10)
+            .map(|_| (0..w * h * 4).map(|_| fastrand::u8(..)).collect())
+            .collect();
+        let encode = |crf: u8, extra: &str| {
+            let out = temp_base().with_extension("mp4");
+            let config = FfmpegConfig {
+                program: String::new(),
+                options: FfmpegOptions { x264_crf: crf, extra_args: extra.into(), ..Default::default() },
+            };
+            let mut enc: Box<dyn Encoder> = Box::new(Ffmpeg::open(&config, &out, video, None).unwrap());
+            for f in &frames {
+                enc.video(f).unwrap();
+            }
+            enc.finish().unwrap();
+            let size = std::fs::metadata(&out).unwrap().len();
+            let info = command("ffmpeg").arg("-i").arg(&out).output().unwrap();
+            let _ = std::fs::remove_file(&out);
+            (size, String::from_utf8_lossy(&info.stderr).into_owned())
+        };
+        let (sharp, info) = encode(10, r#"-metadata "title=snapr options""#);
+        let (rough, _) = encode(45, "");
+        assert!(sharp > rough * 2, "CRF 10: {sharp} bytes, CRF 45: {rough}");
+        assert!(info.contains("snapr options"), "{info}");
+        assert!(FfmpegOptions { extra_args: r#"-metadata "title"#.into(), ..Default::default() }.extra_args().is_err());
+    }
 }

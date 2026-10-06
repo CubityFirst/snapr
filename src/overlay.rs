@@ -626,7 +626,8 @@ mod close_timing {
             let rec = crate::record::Recording::start(
                 rect,
                 30,
-                "ffmpeg",
+                &Default::default(),
+                false,
                 &[],
                 false,
                 false,

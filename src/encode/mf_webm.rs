@@ -145,7 +145,7 @@ mod tests {
             sample_rate: 48_000,
             channels: 2,
         };
-        let mut enc = super::super::open(&out, video, Some(audio), "").unwrap();
+        let mut enc = super::super::open(&out, video, Some(audio), &Default::default()).unwrap();
         for n in 0..2 * fps {
             let frame: Vec<u8> = (0..w * h)
                 .flat_map(|i| [((i % w + n * 8) % 256) as u8, (i / w % 256) as u8, 120, 255])

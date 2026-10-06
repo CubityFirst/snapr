@@ -139,6 +139,7 @@ for a portable copy or a second, independent instance.
 | Play sounds        | on (sounds are synthesized in code, no audio assets) |
 | Corner preview     | on: click opens the link (or image), middle-click copies, right-click closes |
 | Overlay frame rate | match monitor (vsync), or a custom limit |
+| Check for updates  | on (see [Updates](#updates)) |
 
 ### Naming templates
 
@@ -172,6 +173,19 @@ browsers), picked under *Settings → General → Recording*. Windows and macOS
 use the system's own encoders; WebM on Windows needs the VP9 Video
 Extensions (installed with Windows 10/11).
 
+If [FFmpeg](https://ffmpeg.org) is installed, *Encoder: FFmpeg* (Windows and
+macOS) records MP4 with x264 and WebM with libvpx instead. They're sharper
+for the file size, especially on text, but use more CPU. FFmpeg isn't
+bundled; snapr finds it on `PATH`, or use the path set in Settings. Without
+it, recordings use the system's encoder and say so. AV1 and HDR recordings
+are still made by the graphics card.
+
+With FFmpeg in use, Settings also has x264's *Preset* (default `veryfast`)
+and *Quality* (CRF, default 23) for MP4, libvpx's *Speed* (default 8) and
+*Quality* (CRF, default 32, capped at the usual bit rate) for WebM, and
+*Extra arguments* added after snapr's own, so they override them (e.g.
+`-tune stillimage`).
+
 On Windows, **MP4 (AV1)** is sharper for the same file size: AV1 + AAC,
 encoded by the graphics card (NVIDIA RTX 40, AMD RX 7000, Intel Arc or
 newer; without one it records H.264 and says so). It plays in browsers,
@@ -183,6 +197,38 @@ in full range and mapped to SDR, with your *SDR content brightness* as white,
 so they look like the screen. Recordings of an HDR display are HDR10 MP4s
 (10-bit HEVC, made by the graphics card; they start about a second late
 while it gets ready). Turn off *Record in HDR* for SDR recordings instead.
+
+## Updates
+
+snapr looks for a new release on GitHub 15 seconds after it starts and every
+12 hours after that. When there is one, it downloads this platform's build,
+checks it against the release's `SHA256SUMS`, and puts it in place of the
+program file; the running copy carries on, and the new version runs from the
+next start (or straight away with *Restart now*). *Settings → General →
+Updates* has *Do not check for updates* and *Check for updates now*, which
+works either way. Pre-releases aren't offered, and development (debug)
+builds only check when asked, and say what's available without installing
+it.
+
+The program has to be able to replace its own file: a copy installed
+somewhere only an administrator can write to (e.g. `/usr/bin`) reports
+*Couldn't update* instead.
+
+### Releasing
+
+Bump `version` in `Cargo.toml`, commit, then tag and push:
+
+```
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The *Release* workflow (`.github/workflows/release.yml`) builds Windows
+x86-64, macOS (Apple silicon and Intel) and Linux x86-64, and publishes them
+as a GitHub release named after the tag, with generated notes and a
+`SHA256SUMS` file. It refuses a tag that doesn't match `Cargo.toml`'s
+version (such a build would keep offering itself as an update). A tag with a
+hyphen, e.g. `v0.2.0-rc.1`, is published as a pre-release.
 
 ## Command line
 

@@ -1,0 +1,112 @@
+# Builds snapr for each platform when a version tag (e.g. v0.2.0) is pushed,
+# and publishes the builds with a SHA256SUMS file as a GitHub release. The
+# app's updater (src/update.rs) downloads its platform's file from the
+# latest release, so the file names below must stay in step with
+# `update::asset_name`: snapr-<os>-<arch>[.exe].
+#
+# Tags with a hyphen (v1.0.0-rc.1) become pre-releases, which the updater
+# doesn't offer.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.asset }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: snapr-windows-x86_64.exe
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            asset: snapr-macos-aarch64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            asset: snapr-macos-x86_64
+          # The oldest supported Ubuntu, so the build runs on older glibcs.
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            asset: snapr-linux-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # A build that reports an older version than its release would offer
+      # itself as an update forever.
+      - name: Check the tag matches Cargo.toml
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match the version in Cargo.toml ($version)"
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config clang libclang-dev \
+            libasound2-dev libpipewire-0.3-dev libspa-0.2-dev \
+            libgbm-dev libdrm-dev libegl-dev libwayland-dev libxkbcommon-dev \
+            libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev \
+            libdbus-1-dev
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Name the build
+        shell: bash
+        run: |
+          mkdir dist
+          cp "target/${{ matrix.target }}/release/snapr${{ runner.os == 'Windows' && '.exe' || '' }}" "dist/${{ matrix.asset }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum snapr-* > SHA256SUMS && cat SHA256SUMS
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=()
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then flags+=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "snapr ${GITHUB_REF_NAME#v}" \
+            --generate-notes \
+            --verify-tag \
+            "${flags[@]}"

@@ -2,6 +2,8 @@
 //! Media Foundation on Windows, AVFoundation on macOS. Linux has no system
 //! encoder, so it pipes the frames to FFmpeg. WebM (VP9 + Opus) is written
 //! on Windows (the VP9 Video Extensions' encoder) and Linux (FFmpeg).
+//! Windows and macOS can use FFmpeg too (`open_ffmpeg`), whose x264 and
+//! libvpx are sharper for the size than the system's encoders.
 //!
 //! Video arrives as RGBA frames at a fixed rate and sound as one stream of
 //! interleaved stereo f32 samples (already mixed, see `mix`), both following
@@ -10,8 +12,6 @@
 #[cfg(target_os = "macos")]
 mod avf;
 mod faststart;
-// Compiled everywhere so its tests can run on any machine with FFmpeg.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod ffmpeg;
 #[cfg(windows)]
 mod mf;
@@ -25,6 +25,16 @@ mod vp9;
 mod webm;
 
 use std::path::Path;
+
+use crate::settings::FfmpegOptions;
+
+/// FFmpeg for recordings: the program (empty finds it on PATH) and how it
+/// encodes.
+#[derive(Debug, Clone, Default)]
+pub struct FfmpegConfig {
+    pub program: String,
+    pub options: FfmpegOptions,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct VideoFormat {
@@ -89,13 +99,12 @@ pub fn required_sample_rate(out: &Path) -> Option<u32> {
 }
 
 /// Starts a video file at `out`: WebM if its extension says so, else MP4.
-/// `ffmpeg` is the program to use where the OS has no encoder (Linux);
-/// empty finds it on PATH.
+/// `ffmpeg` is used where the OS has no encoder (Linux).
 pub fn open(
     out: &Path,
     video: VideoFormat,
     audio: Option<AudioFormat>,
-    #[allow(unused_variables)] ffmpeg: &str,
+    #[allow(unused_variables)] ffmpeg: &FfmpegConfig,
 ) -> Result<Box<dyn Encoder>, String> {
     if is_webm(out) && !webm_supported() {
         return Err("WebM recordings aren't available on this system".into());
@@ -109,7 +118,18 @@ pub fn open(
     #[cfg(target_os = "macos")]
     return Ok(Box::new(avf::AssetWriter::open(out, video, audio)?));
     #[cfg(not(any(windows, target_os = "macos")))]
-    return Ok(Box::new(ffmpeg::Ffmpeg::open(ffmpeg, out, video, audio)?));
+    return open_ffmpeg(out, video, audio, ffmpeg);
+}
+
+/// Starts a video file at `out` with FFmpeg rather than the system's
+/// encoder: x264 for MP4, libvpx for WebM.
+pub fn open_ffmpeg(
+    out: &Path,
+    video: VideoFormat,
+    audio: Option<AudioFormat>,
+    ffmpeg: &FfmpegConfig,
+) -> Result<Box<dyn Encoder>, String> {
+    Ok(Box::new(ffmpeg::Ffmpeg::open(ffmpeg, out, video, audio)?))
 }
 
 /// A bit rate that keeps text sharp: about 0.15 bits per pixel per frame.
@@ -120,7 +140,6 @@ pub fn video_bitrate(v: VideoFormat) -> u32 {
 
 /// RGBA to NV12 (a Y plane, then interleaved U/V at half resolution), BT.709
 /// limited range. `out` holds `w * h * 3 / 2` bytes; `w` and `h` are even.
-#[cfg_attr(not(windows), allow(dead_code))]
 pub fn rgba_to_nv12(rgba: &[u8], w: usize, h: usize, out: &mut [u8]) {
     // Coefficients scaled by 2^16, including the 219/255 and 224/255 ranges.
     const ROUND: i32 = 1 << 15;

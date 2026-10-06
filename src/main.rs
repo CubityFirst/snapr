@@ -40,6 +40,7 @@ mod toast;
 mod toolbar;
 mod tools;
 mod tray;
+mod update;
 mod upload;
 
 use std::collections::HashMap;
@@ -93,6 +94,10 @@ enum UserEvent {
     Combined(usize, Result<image::RgbaImage, String>),
     /// An image file to pin to the screen was read.
     PinLoaded(PathBuf, Result<image::RgbaImage, String>),
+    /// Time for the automatic check for updates.
+    UpdateDue,
+    /// Checking for or installing an update got further.
+    Update(update::Status),
 }
 
 /// A global hotkey, or why it's unavailable.
@@ -205,6 +210,10 @@ struct App {
     open_settings_on_start: bool,
     /// What's been captured and which tools were used, for the Stats page.
     stats: stats::Stats,
+    /// Where checking for and installing updates is up to.
+    update: update::Status,
+    /// Start the program again once the event loop exits (to run an update).
+    restart: bool,
 }
 
 impl App {
@@ -295,7 +304,11 @@ impl App {
         match record::Recording::start(
             rect,
             self.settings.record_fps,
-            &self.settings.ffmpeg_path,
+            &crate::encode::FfmpegConfig {
+                program: self.settings.ffmpeg_path.clone(),
+                options: self.settings.ffmpeg.clone(),
+            },
+            self.settings.record_with_ffmpeg,
             &self.settings.audio_sources(),
             self.settings.record_cursor,
             self.settings.record_hdr,
@@ -508,6 +521,7 @@ impl App {
         let mut form = Form::new(&self.settings);
         form.status = self.status.clone();
         form.last_capture = self.last_capture.clone();
+        form.update = self.update.clone();
         let proxy = Mutex::new(self.proxy.clone());
         let wake = Box::new(move || {
             let _ = proxy.lock().unwrap().send_event(UserEvent::ThumbnailReady);
@@ -738,6 +752,14 @@ impl App {
             }
             Action::SaveSettings(s, secrets) => self.apply_settings(event_loop, s, secrets),
             Action::TestUpload(upload, secret) => self.test_upload(upload, secret),
+            Action::CheckForUpdates => self.check_for_updates(),
+            Action::RestartToUpdate => {
+                if let Some(save) = self.main_window.as_mut().and_then(|w| w.flush_settings()) {
+                    self.main_window_action(event_loop, save);
+                }
+                self.restart = true;
+                event_loop.exit();
+            }
             Action::CopyText(text) => {
                 self.chime_on_copy = true;
                 self.output.copy_text(text);
@@ -887,6 +909,14 @@ impl App {
                 .lock()
                 .unwrap()
                 .send_event(UserEvent::UploadTest(id, result.map_err(|e: String| e)));
+        });
+    }
+
+    /// Looks for a newer release and installs it, in the background.
+    fn check_for_updates(&self) {
+        let proxy = Mutex::new(self.proxy.clone());
+        update::check(move |status| {
+            let _ = proxy.lock().unwrap().send_event(UserEvent::Update(status));
         });
     }
 
@@ -1204,6 +1234,18 @@ impl ApplicationHandler<UserEvent> for App {
                     w.window.request_redraw();
                 }
             }
+            UserEvent::UpdateDue => {
+                if self.settings.check_for_updates {
+                    self.check_for_updates();
+                }
+            }
+            UserEvent::Update(status) => {
+                if let Some(w) = &mut self.main_window {
+                    w.form.update = status.clone();
+                    w.window.request_redraw();
+                }
+                self.update = status;
+            }
             UserEvent::ThumbnailReady => {
                 if let Some(w) = &self.main_window {
                     w.window.request_redraw();
@@ -1411,7 +1453,8 @@ fn main() {
             }
         }
     }
-    let _lock = if once { None } else { single_instance() };
+    update::init();
+    let lock = if once { None } else { single_instance() };
 
     let (settings, loaded) = Settings::load();
     let mut status = None;
@@ -1434,6 +1477,13 @@ fn main() {
     let event_loop = builder.build().expect("failed to create event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
     let proxy = event_loop.create_proxy();
+    // Development builds are restarted too often to check each time.
+    if !once && !cfg!(debug_assertions) {
+        let proxy = Mutex::new(proxy.clone());
+        update::schedule(move || {
+            let _ = proxy.lock().unwrap().send_event(UserEvent::UpdateDue);
+        });
+    }
 
     let hotkeys = (!once).then(|| {
         let mut h = Hotkeys::new(proxy.clone(), || UserEvent::Hotkey);
@@ -1515,9 +1565,20 @@ fn main() {
         last_region: None,
         open_settings_on_start: open_settings,
         stats: stats::Stats::load(),
+        update: update::Status::default(),
+        restart: false,
     };
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("event loop error: {e}");
     }
     app.output.flush();
+    if app.restart {
+        // Let go of the tray icon and the single-instance lock first, or the
+        // new copy would hand over to this one and quit.
+        drop(app);
+        drop(lock);
+        if let Err(e) = update::restart() {
+            eprintln!("{e}");
+        }
+    }
 }

@@ -345,7 +345,7 @@ mod tests {
                 sample_rate: 48_000,
                 channels: 2,
             };
-            let mut enc = encode::open(&path, video, Some(audio), "").unwrap();
+            let mut enc = encode::open(&path, video, Some(audio), &Default::default()).unwrap();
             let frame: Vec<u8> = (0..w * h)
                 .flat_map(|i| if i / w < h / 2 { [220, 30, 30, 255] } else { [30, 30, 220, 255] })
                 .collect();

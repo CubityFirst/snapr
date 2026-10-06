@@ -13,6 +13,7 @@ use crate::naming::{CATEGORIES, Context};
 use crate::output;
 use crate::secrets;
 use crate::settings::{Settings, ToolAction, ToolHotkey, Upload, parse_hotkey};
+use crate::update;
 
 pub enum Action {
     /// Apply these settings and store these new secret keys (upload id → key).
@@ -20,6 +21,10 @@ pub enum Action {
     Reveal(PathBuf),
     /// Try an upload destination, with a secret key typed but not yet saved.
     TestUpload(Upload, Option<String>),
+    CheckForUpdates,
+    /// Quit and start the updated program.
+    RestartToUpdate,
+    OpenUrl(String),
 }
 
 /// The hotkeys that can be set on the Hotkeys tab.
@@ -55,6 +60,8 @@ pub struct Form {
     /// Message from the app, e.g. a save or hotkey error. `true` = error.
     pub status: Option<(String, bool)>,
     pub last_capture: Option<PathBuf>,
+    /// Where checking for and installing updates is up to.
+    pub update: update::Status,
     /// Secret keys typed but not saved yet, by upload id.
     pub(crate) secrets: HashMap<String, String>,
     /// Uploads whose secret key is in the credential store.
@@ -80,6 +87,7 @@ impl Form {
             recording_field: HotkeyField::Capture,
             status: None,
             last_capture: None,
+            update: update::Status::default(),
             secrets: HashMap::new(),
             stored_secrets: settings
                 .uploads
@@ -124,6 +132,9 @@ impl Form {
         }
         if let Err(e) = self.draft.naming() {
             return Some(e);
+        }
+        if let Err(e) = self.draft.ffmpeg.extra_args() {
+            return Some(format!("FFmpeg arguments: {e}"));
         }
         let redact = self.draft.redact_image.trim();
         if !redact.is_empty() && !std::path::Path::new(redact).is_file() {
@@ -299,7 +310,9 @@ impl Form {
                         if cfg!(windows) {
                             ui.selectable_value(&mut self.draft.record_format, RecordFormat::Av1, "MP4 (AV1)")
                                 .on_hover_text(
-                                    "AV1 and AAC, made by the graphics card (NVIDIA RTX 40, AMD RX 7000, Intel Arc or newer):                                      sharper for the size. Plays in browsers, Discord and Windows' apps; not on older devices.                                      Falls back to H.264 without such a card.",
+                                    "AV1 and AAC, made by the graphics card (NVIDIA RTX 40, AMD RX 7000, Intel Arc or newer): \
+                                     sharper for the size. Plays in browsers, Discord and Windows' apps; not on older devices. \
+                                     Falls back to H.264 without such a card.",
                                 );
                         }
                         ui.selectable_value(&mut self.draft.record_format, RecordFormat::Webm, "WebM")
@@ -308,8 +321,23 @@ impl Form {
                     ui.end_row();
                 }
 
-                // Windows and macOS encode and play videos themselves.
-                if cfg!(target_os = "linux") {
+                // Windows and macOS encode and play videos themselves, and
+                // can encode with FFmpeg instead.
+                if !cfg!(target_os = "linux") {
+                    ui.label("Encoder");
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut self.draft.record_with_ffmpeg, false, "System")
+                            .on_hover_text("The encoder the system provides: nothing to install, and light on the CPU");
+                        ui.selectable_value(&mut self.draft.record_with_ffmpeg, true, "FFmpeg")
+                            .on_hover_text(
+                                "x264 (MP4) or libvpx (WebM): sharper for the file size, but uses more CPU. \
+                                 Needs FFmpeg installed; without it, recordings use the system's encoder. \
+                                 AV1 and HDR recordings are still made by the graphics card.",
+                            );
+                    });
+                    ui.end_row();
+                }
+                if cfg!(target_os = "linux") || self.draft.record_with_ffmpeg {
                     ui.label("FFmpeg");
                     ui.horizontal(|ui| {
                         ui.add(
@@ -323,6 +351,56 @@ impl Form {
                             self.draft.ffmpeg_path = file.display().to_string();
                         }
                     });
+                    ui.end_row();
+
+                    // The settings for the format being recorded.
+                    let ff = &mut self.draft.ffmpeg;
+                    if self.draft.record_format == crate::settings::RecordFormat::Webm && crate::encode::webm_supported() {
+                        ui.label("VP9 (WebM)");
+                        ui.horizontal(|ui| {
+                            ui.label("Speed");
+                            ui.add(egui::DragValue::new(&mut ff.vp9_speed).range(0..=8)).on_hover_text(
+                                "0 (slowest, smallest files) to 8 (fastest). Below about 5 \
+                                 may not keep up with the recording.",
+                            );
+                            ui.label("Quality");
+                            ui.add(egui::DragValue::new(&mut ff.vp9_crf).range(0..=63).prefix("CRF "))
+                                .on_hover_text("0 to 63: lower is sharper, with bigger files. 32 is the default.");
+                        });
+                    } else {
+                        ui.label("x264 (MP4)");
+                        ui.horizontal(|ui| {
+                            ui.label("Preset");
+                            egui::ComboBox::from_id_salt("x264_preset")
+                                .selected_text(ff.x264_preset.as_str())
+                                .show_ui(ui, |ui| {
+                                    for p in crate::settings::FfmpegOptions::X264_PRESETS {
+                                        ui.selectable_value(&mut ff.x264_preset, p.to_string(), *p);
+                                    }
+                                })
+                                .response
+                                .on_hover_text(
+                                    "Slower presets make smaller files at the same quality, but use more CPU; \
+                                     too slow and the recording can't keep up. veryfast is the default.",
+                                );
+                            ui.label("Quality");
+                            ui.add(egui::DragValue::new(&mut ff.x264_crf).range(0..=51).prefix("CRF "))
+                                .on_hover_text(
+                                    "0 (lossless) to 51: lower is sharper, with bigger files. 23 is the default; \
+                                     18 looks about lossless.",
+                                );
+                        });
+                    }
+                    ui.end_row();
+                    ui.label("Extra arguments");
+                    ui.add(
+                        TextEdit::singleline(&mut ff.extra_args)
+                            .hint_text("e.g. -tune stillimage")
+                            .desired_width(300.0),
+                    )
+                    .on_hover_text(
+                        "Added to FFmpeg's output options, after snapr's own, so they override them",
+                    );
                     ui.end_row();
                 }
                 ui.label("");
@@ -366,7 +444,7 @@ impl Form {
 
                 ui.label("");
                 ui.label(
-                    RichText::new(if cfg!(target_os = "linux") {
+                    RichText::new(if cfg!(target_os = "linux") || self.draft.record_with_ffmpeg {
                         "Recordings are encoded with FFmpeg and saved next to your screenshots."
                     } else {
                         "Recordings are saved next to your screenshots."
@@ -375,9 +453,84 @@ impl Form {
                         .small(),
                 );
                 ui.end_row();
+
+                ui.label(RichText::new("Updates").strong());
+                ui.end_row();
+
+                ui.label("");
+                let mut never = !self.draft.check_for_updates;
+                if ui
+                    .checkbox(&mut never, "Do not check for updates")
+                    .on_hover_text(
+                        "Otherwise snapr looks for a new release on GitHub when it starts and twice a day, \
+                         and installs it to run from the next start",
+                    )
+                    .changed()
+                {
+                    self.draft.check_for_updates = !never;
+                }
+                ui.end_row();
+
+                ui.label("Version");
+                ui.horizontal(|ui| {
+                    ui.label(update::VERSION);
+                    if ui
+                        .add_enabled(!self.update.busy(), egui::Button::new("Check for updates now"))
+                        .clicked()
+                    {
+                        actions.push(Action::CheckForUpdates);
+                    }
+                });
+                ui.end_row();
+
+                if !matches!(self.update, update::Status::Idle) {
+                    ui.label("");
+                    self.update_status_ui(ui, actions);
+                    ui.end_row();
+                }
             });
 
             self.save_bar(ui, actions);
+        });
+    }
+
+    /// What the last update check found, and what can be done about it.
+    fn update_status_ui(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        use update::Status;
+        ui.horizontal(|ui| match &self.update {
+            Status::Idle => {}
+            Status::Checking => {
+                ui.spinner();
+                ui.label("Checking for updates\u{2026}");
+            }
+            Status::UpToDate(at) => {
+                ui.label(
+                    RichText::new(format!("Up to date (checked {})", at.format("%H:%M"))).weak(),
+                );
+            }
+            Status::Downloading(version) => {
+                ui.spinner();
+                ui.label(format!("Downloading snapr {version}\u{2026}"));
+            }
+            Status::Available(version, page) => {
+                ui.label(format!("snapr {version} is available"));
+                if ui.link("Release notes").clicked() {
+                    actions.push(Action::OpenUrl(page.clone()));
+                }
+                ui.label(RichText::new("(development builds don't install it)").weak());
+            }
+            Status::Installed(version, page) => {
+                ui.colored_label(SUCCESS, format!("snapr {version} is installed"));
+                if ui.button("Restart now").clicked() {
+                    actions.push(Action::RestartToUpdate);
+                }
+                if ui.link("Release notes").clicked() {
+                    actions.push(Action::OpenUrl(page.clone()));
+                }
+            }
+            Status::Failed(e) => {
+                ui.colored_label(ERROR, format!("Couldn't update: {e}"));
+            }
         });
     }
 

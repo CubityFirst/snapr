@@ -75,12 +75,16 @@ impl Recording {
     /// With `hdr`, a display in HDR mode is recorded in HDR10 (Windows, MP4,
     /// with a GPU encoder; otherwise in SDR). With `av1`, an MP4 is AV1
     /// rather than H.264 (Windows, with a GPU encoder; otherwise H.264).
+    /// `with_ffmpeg` encodes other recordings with FFmpeg rather than the
+    /// system's encoder (Windows and macOS; Linux always uses it), falling
+    /// back to the system's when FFmpeg can't be run.
     /// `done` is called from the recording thread once the file is written.
     #[allow(clippy::too_many_arguments)]
     pub fn start(
         rect: Rect,
         fps: u32,
-        ffmpeg: &str,
+        ffmpeg: &encode::FfmpegConfig,
+        with_ffmpeg: bool,
         audio: &[Source],
         show_cursor: bool,
         #[allow(unused_variables)] hdr: bool,
@@ -139,7 +143,8 @@ impl Recording {
             height: region.h,
             fps,
         };
-        let ffmpeg = ffmpeg.to_string();
+        let ffmpeg = ffmpeg.clone();
+        let with_ffmpeg = with_ffmpeg && cfg!(any(windows, target_os = "macos"));
         let flags = Arc::new(Flags::default());
         let thread_flags = flags.clone();
         let thread_clock = clock.clone();
@@ -179,7 +184,14 @@ impl Recording {
                         });
                         #[cfg(not(windows))]
                         let av1_encoder: Option<Option<Box<dyn Encoder>>> = None;
-                        let opened = match av1_encoder.flatten() {
+                        let encoder = av1_encoder.flatten().or_else(|| {
+                            with_ffmpeg.then(|| {
+                                encode::open_ffmpeg(&out, format, audio_format, &ffmpeg)
+                                    .inspect_err(|e| warning = Some(format!("recorded with the system's encoder: {e}")))
+                                    .ok()
+                            })?
+                        });
+                        let opened = match encoder {
                             Some(e) => Ok(e),
                             None => encode::open(&out, format, audio_format, &ffmpeg),
                         };
@@ -643,7 +655,7 @@ mod tests {
         let first = vec![0; (region.w * region.h * 4) as usize];
         let pump_out = out.clone();
         let pumping = thread::spawn(move || {
-            let mut encoder = encode::open(&pump_out, format, None, "").unwrap();
+            let mut encoder = encode::open(&pump_out, format, None, &Default::default()).unwrap();
             let mut source = ScreenFrames::new(None, frames, first, region);
             pump(
                 &mut source,
@@ -723,7 +735,8 @@ mod tests {
         let mut rec = Recording::start(
             rect,
             30,
-            "",
+            &Default::default(),
+            false,
             &[],
             true,
             false,
@@ -763,7 +776,8 @@ mod tests {
         let mut rec = Recording::start(
             rect,
             30,
-            "",
+            &Default::default(),
+            false,
             &[Source::System],
             true,
             false,
@@ -812,7 +826,8 @@ mod webm_live {
         let mut rec = Recording::start(
             rect,
             30,
-            "",
+            &Default::default(),
+            false,
             &[Source::System],
             true,
             false,
@@ -873,7 +888,8 @@ mod hdr_live {
         let mut rec = Recording::start(
             rect,
             30,
-            "",
+            &Default::default(),
+            false,
             &[Source::System],
             true,
             true,
@@ -920,7 +936,8 @@ mod cursor_live {
         let mut rec = Recording::start(
             rect,
             30,
-            "",
+            &Default::default(),
+            false,
             &[],
             true,
             false,
