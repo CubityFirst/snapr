@@ -202,6 +202,9 @@ impl Overlay {
 
         let ctx = egui::Context::default();
         ctx.set_visuals(egui::Visuals::dark());
+        // The toolbar's tooltips name its tools and their keys: show them
+        // soon after the pointer stops (egui waits half a second).
+        ctx.all_styles_mut(|s| s.interaction.tooltip_delay = 0.1);
         let state = egui_winit::State::new(
             ctx,
             egui::ViewportId::ROOT,
