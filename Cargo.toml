@@ -1,6 +1,6 @@
 [package]
 name = "snapr"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "Cross-platform region screenshot tool: hotkey, freeze screen, drag a region."
 license = "PolyForm-Noncommercial-1.0.0"
