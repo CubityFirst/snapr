@@ -11,12 +11,12 @@ use image::RgbaImage;
 use crate::history::Remote;
 use crate::naming::{Context, Naming, Template};
 use crate::settings::{Settings, Upload};
-use crate::upload::{self, Body, Progress, S3Target};
+use crate::upload::{self, Body, Progress, Target};
 
 /// An upload destination, ready to use (secret key included).
 pub struct UploadTarget {
     pub upload: Upload,
-    pub target: S3Target,
+    pub target: Target,
     pub key: Template,
 }
 
@@ -43,7 +43,8 @@ pub enum Event {
         path: Option<PathBuf>,
         name: String,
         url: String,
-        remote: Remote,
+        /// Missing where uploads can't be deleted.
+        remote: Option<Remote>,
     },
     /// An upload was cancelled (the destination's name).
     Cancelled(String),
@@ -80,7 +81,7 @@ enum Job {
     Uploaded {
         path: Option<PathBuf>,
         name: String,
-        remote: Remote,
+        remote: Option<Remote>,
         result: Result<String, String>,
     },
     Flush(Sender<()>),
@@ -352,20 +353,18 @@ fn upload_all(
         transfers.lock().unwrap().push(transfer.clone());
         let transfers = transfers.clone();
         thread::spawn(move || {
-            let result = target
-                .put_object(&key, &body, content_type, &transfer.progress)
-                .and_then(|()| upload.link(&key));
+            let result = upload.put(&target, &key, &body, content_type, &transfer.progress);
             transfers
                 .lock()
                 .unwrap()
                 .retain(|t| !Arc::ptr_eq(t, &transfer));
             let _ = tx.send(Job::Uploaded {
                 path,
-                name: upload.name,
-                remote: Remote {
+                remote: upload.deletable().then(|| Remote {
                     upload_id: upload.id,
                     key,
-                },
+                }),
+                name: upload.name,
                 result,
             });
         });

@@ -6,7 +6,8 @@ use livesplit_hotkey::Hotkey;
 use serde::{Deserialize, Serialize};
 
 use crate::naming::{Naming, Template, migrate_legacy};
-use crate::upload::{S3Target, encode_path};
+use crate::pomf::PomfTarget;
+use crate::upload::{Body, Progress, S3Target, Target, encode_path};
 
 pub const DEFAULT_HOTKEY: &str = "Alt + Shift + KeyS";
 pub const DEFAULT_RECORD_HOTKEY: &str = "Alt + Shift + KeyV";
@@ -35,6 +36,8 @@ pub struct Settings {
     pub annotate: bool,
     /// Shutter sound on capture, chime/error sounds for results.
     pub play_sounds: bool,
+    /// How loud those sounds are, in percent.
+    pub sound_volume: u8,
     /// Pop up a preview in the corner of the screen after each capture.
     pub show_toast: bool,
     /// Overlay frame-rate limit; 0 matches each monitor's refresh rate.
@@ -227,6 +230,7 @@ impl Default for Settings {
             uploads: Vec::new(),
             annotate: true,
             play_sounds: true,
+            sound_volume: 100,
             show_toast: true,
             overlay_fps: 0,
             crosshair_info: CrosshairInfo::default(),
@@ -344,22 +348,39 @@ impl Settings {
     }
 }
 
-/// An S3-compatible bucket screenshots are uploaded to. The secret key is kept
-/// in the OS credential store under `id`.
+/// The kind of service an upload destination is.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UploadKind {
+    /// An S3-compatible bucket.
+    #[default]
+    S3,
+    /// A Pomf-compatible file host (version 1 of its API).
+    Pomf,
+}
+
+/// Where screenshots are uploaded to: an S3-compatible bucket, whose secret
+/// key is kept in the OS credential store under `id`, or a Pomf host.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Upload {
     pub id: String,
     pub name: String,
     pub enabled: bool,
+    pub kind: UploadKind,
+    /// The storage endpoint, or for Pomf the upload address (e.g.
+    /// `https://pomf.lain.la/upload.php`).
     pub endpoint: String,
     pub region: String,
     pub bucket: String,
     pub access_key_id: String,
     /// Object key template, using the file-name placeholders; `.png` is added.
+    /// Pomf hosts are sent its last part as the file name, which most
+    /// replace with their own.
     pub key_template: String,
     /// Base for links, e.g. `https://pub-xxxx.r2.dev` or a custom domain.
-    /// Empty uses the storage endpoint's own URL.
+    /// Empty uses the storage endpoint's own URL, or the link the Pomf host
+    /// gives.
     pub public_url: String,
     pub path_style: bool,
     /// Include a hash of the file in the request signature.
@@ -377,6 +398,7 @@ impl Default for Upload {
                 .to_lowercase(),
             name: "S3".into(),
             enabled: true,
+            kind: UploadKind::S3,
             endpoint: String::new(),
             region: "us-east-1".into(),
             bucket: String::new(),
@@ -391,28 +413,85 @@ impl Default for Upload {
 }
 
 impl Upload {
+    /// A new Pomf destination.
+    pub fn pomf() -> Self {
+        Self {
+            name: "Pomf".into(),
+            kind: UploadKind::Pomf,
+            key_template: "%rna{10}".into(),
+            ..Self::default()
+        }
+    }
+
+    /// Whether it needs a secret key from the credential store.
+    pub fn needs_secret(&self) -> bool {
+        self.kind == UploadKind::S3
+    }
+
+    /// Whether what's uploaded there can be deleted again.
+    pub fn deletable(&self) -> bool {
+        self.kind == UploadKind::S3
+    }
+
     /// Checks the fields; returns the parsed key template.
     pub fn validate(&self) -> Result<Template, String> {
         let endpoint = self.endpoint.trim();
         if !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
-            return Err("Endpoint should start with https://".into());
+            return Err(match self.kind {
+                UploadKind::S3 => "Endpoint should start with https://",
+                UploadKind::Pomf => "Upload URL should start with https://",
+            }
+            .into());
         }
-        if self.bucket.trim().is_empty() {
-            return Err("Bucket is required".into());
-        }
-        if self.access_key_id.trim().is_empty() {
-            return Err("Access key ID is required".into());
+        if self.kind == UploadKind::S3 {
+            if self.bucket.trim().is_empty() {
+                return Err("Bucket is required".into());
+            }
+            if self.access_key_id.trim().is_empty() {
+                return Err("Access key ID is required".into());
+            }
         }
         let public = self.public_url.trim();
         if !(public.is_empty() || public.starts_with("https://") || public.starts_with("http://")) {
             return Err("Public URL should start with https://".into());
         }
-        self.key_template
-            .parse::<Template>()
-            .map_err(|e| format!("Object key: {e}"))
+        self.key_template.parse::<Template>().map_err(|e| match self.kind {
+            UploadKind::S3 => format!("Object key: {e}"),
+            UploadKind::Pomf => format!("File name: {e}"),
+        })
     }
 
-    pub fn target(&self, secret_access_key: String) -> S3Target {
+    /// Where its files go; the secret key is only used for S3.
+    pub fn target(&self, secret_access_key: String) -> Target {
+        match self.kind {
+            UploadKind::S3 => Target::S3(self.s3_target(secret_access_key)),
+            UploadKind::Pomf => Target::Pomf(PomfTarget {
+                url: self.endpoint.trim().to_string(),
+                public_url: self.public_url.trim().to_string(),
+            }),
+        }
+    }
+
+    /// Uploads `body` to `target` (from [`Self::target`]) as `key`, following
+    /// along in `progress`. Returns its link.
+    pub fn put(
+        &self,
+        target: &Target,
+        key: &str,
+        body: &Body,
+        content_type: &str,
+        progress: &Progress,
+    ) -> Result<String, String> {
+        match target {
+            Target::S3(t) => {
+                t.put_object(key, body, content_type, progress)?;
+                self.link(key)
+            }
+            Target::Pomf(t) => t.upload(key, body, content_type, progress),
+        }
+    }
+
+    fn s3_target(&self, secret_access_key: String) -> S3Target {
         S3Target {
             endpoint: self.endpoint.trim().to_string(),
             region: if self.region.trim().is_empty() {
@@ -434,7 +513,7 @@ impl Upload {
     pub fn link(&self, key: &str) -> Result<String, String> {
         let public = self.public_url.trim().trim_end_matches('/');
         if public.is_empty() {
-            self.target(String::new()).object_url(key)
+            self.s3_target(String::new()).object_url(key)
         } else {
             Ok(format!("{public}/{}", encode_path(key)))
         }

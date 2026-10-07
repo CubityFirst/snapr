@@ -36,6 +36,7 @@ pub enum Page {
     Hotkeys,
     Naming,
     Destinations,
+    Recording,
 }
 
 pub enum Action {
@@ -452,6 +453,7 @@ impl MainWindow {
                             (Page::Hotkeys, "Hotkeys"),
                             (Page::Naming, "Paths & naming"),
                             (Page::Destinations, "Destinations"),
+                            (Page::Recording, "Recording"),
                         ] {
                             ui.selectable_value(&mut self.page, tab, label);
                         }
@@ -465,6 +467,7 @@ impl MainWindow {
                         Page::Hotkeys => self.form.hotkeys_ui(ui, &mut form_actions),
                         Page::Naming => self.form.naming_ui(ui, &mut form_actions),
                         Page::Destinations => self.form.destinations_ui(ui, &mut form_actions),
+                        Page::Recording => self.form.recording_ui(ui, &mut form_actions),
                         _ => self.form.ui(ui, &mut form_actions),
                     }
                     actions.extend(form_actions.into_iter().map(Action::from));

@@ -42,7 +42,7 @@ impl Body {
     }
 
     /// `len` bytes from `start`.
-    fn read(&self, start: u64, len: u64) -> Result<Vec<u8>, String> {
+    pub(crate) fn read(&self, start: u64, len: u64) -> Result<Vec<u8>, String> {
         match self {
             Body::Bytes(b) => Ok(b[start as usize..(start + len) as usize].to_vec()),
             Body::File(p) => {
@@ -69,16 +69,27 @@ pub struct Progress {
 }
 
 impl Progress {
-    fn cancelled(&self) -> bool {
+    pub(crate) fn cancelled(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
     }
 }
 
 /// Hands a request body to ureq, counting it into `progress` as it goes.
-struct Counting<'a> {
+pub(crate) struct Counting<'a> {
     data: &'a [u8],
-    sent: usize,
+    /// Bytes handed over so far.
+    pub(crate) sent: usize,
     progress: &'a Progress,
+}
+
+impl<'a> Counting<'a> {
+    pub(crate) fn new(data: &'a [u8], progress: &'a Progress) -> Self {
+        Self {
+            data,
+            sent: 0,
+            progress,
+        }
+    }
 }
 
 impl Read for Counting<'_> {
@@ -102,6 +113,13 @@ pub const DEFAULT_CONCURRENCY: u32 = 4;
 /// The most parts at once a destination can be set to; each one holds its
 /// part in memory while it's sent.
 pub const MAX_CONCURRENCY: u32 = 32;
+
+/// Where an upload destination's files go, ready to send.
+#[derive(Debug, Clone)]
+pub enum Target {
+    S3(S3Target),
+    Pomf(crate::pomf::PomfTarget),
+}
 
 /// Where and how to upload.
 #[derive(Debug, Clone)]

@@ -25,6 +25,7 @@ mod output;
 mod overlay;
 mod pin;
 mod player;
+mod pomf;
 #[cfg(test)]
 mod preview;
 mod qr;
@@ -339,7 +340,7 @@ impl App {
                 };
                 self.set_status(format!("Recording{stop}"));
             }
-            Err(e) => self.report(event_loop, format!("recording failed: {e}"), true),
+            Err(e) => self.report_on(event_loop, format!("recording failed: {e}"), true, Page::Recording),
         }
     }
 
@@ -352,12 +353,12 @@ impl App {
         let (path, first_frame) = match result {
             Ok(Some(r)) => {
                 if let Some(w) = r.warning {
-                    self.report(event_loop, format!("recording: {w}"), true);
+                    self.report_on(event_loop, format!("recording: {w}"), true, Page::Recording);
                 }
                 (r.path, r.first_frame)
             }
             Ok(None) => return self.set_status("Recording discarded".into()),
-            Err(e) => return self.report(event_loop, format!("recording failed: {e}"), true),
+            Err(e) => return self.report_on(event_loop, format!("recording failed: {e}"), true, Page::Recording),
         };
         println!("recorded {}", path.display());
         self.play(Sound::Done);
@@ -574,7 +575,7 @@ impl App {
 
     fn play(&self, sound: Sound) {
         if self.settings.play_sounds {
-            sound::play(sound);
+            sound::play(sound, self.settings.sound_volume);
         }
     }
 
@@ -868,7 +869,10 @@ impl App {
         std::thread::spawn(move || {
             let result = secrets::get(&upload.id)
                 .ok_or_else(|| "its secret access key isn't saved".to_string())
-                .and_then(|secret| upload.target(secret).delete_object(&remote.key));
+                .and_then(|secret| match upload.target(secret) {
+                    crate::upload::Target::S3(t) => t.delete_object(&remote.key),
+                    crate::upload::Target::Pomf(_) => Err("Pomf uploads can't be deleted".into()),
+                });
             let _ = proxy.lock().unwrap().send_event(UserEvent::RemoteDeleted(
                 path,
                 upload.name,
@@ -888,19 +892,23 @@ impl App {
     }
 
     /// Uploads a tiny file to the destination and deletes it again, or with
-    /// `icon`, uploads snapr's icon where a screenshot would go and leaves
-    /// it there to look at.
+    /// `icon` (or where uploads can't be deleted), uploads snapr's icon where
+    /// a screenshot would go and leaves it there to look at.
     fn test_upload(&self, upload: Upload, secret: Option<String>, icon: bool) {
         let proxy = Mutex::new(self.proxy.clone());
         let id = upload.id.clone();
         std::thread::spawn(move || {
             let result = (|| {
                 let template = upload.validate()?;
-                let secret = secret
-                    .or_else(|| secrets::get(&upload.id))
-                    .ok_or("enter the secret access key")?;
+                let secret = if upload.needs_secret() {
+                    secret
+                        .or_else(|| secrets::get(&upload.id))
+                        .ok_or("enter the secret access key")?
+                } else {
+                    String::new()
+                };
                 let target = upload.target(secret);
-                if icon {
+                if icon || !upload.deletable() {
                     const SIZE: u32 = 256;
                     let image = image::RgbaImage::from_raw(SIZE, SIZE, crate::tray::icon_rgba(SIZE))
                         .ok_or("couldn't draw the icon")?;
@@ -917,9 +925,12 @@ impl App {
                     let key = template.render_key(&ctx, "png");
                     let body = crate::upload::Body::Bytes(Arc::new(png));
                     let progress = crate::upload::Progress::default();
-                    target.put_object(&key, &body, "image/png", &progress)?;
-                    return Ok(format!("Uploaded the icon: {}", upload.link(&key)?));
+                    let link = upload.put(&target, &key, &body, "image/png", &progress)?;
+                    return Ok(format!("Uploaded the icon: {link}"));
                 }
+                let crate::upload::Target::S3(target) = target else {
+                    unreachable!("only S3 uploads can be deleted");
+                };
                 let key = format!(
                     "snapr-test-{}.txt",
                     (0..8).map(|_| fastrand::alphanumeric()).collect::<String>()
@@ -1163,7 +1174,7 @@ impl ApplicationHandler<UserEvent> for App {
                 println!("uploaded to {name}: {url}");
                 self.play(Sound::Done);
                 if let Some(path) = &path {
-                    history::set_link(path, Some(&url), Some(remote.clone()));
+                    history::set_link(path, Some(&url), remote.clone());
                     self.last_upload = Some((path.clone(), url.clone()));
                     if let Some(t) = self.toast.as_mut().filter(|t| t.path == *path) {
                         t.set_link(url.clone());
@@ -1178,7 +1189,7 @@ impl ApplicationHandler<UserEvent> for App {
                 if let Some(w) = &mut self.main_window {
                     w.form.status = self.status.clone();
                     if let Some(path) = &path {
-                        w.gallery.set_link(path, Some(url), Some(remote));
+                        w.gallery.set_link(path, Some(url), remote);
                     }
                     w.window.request_redraw();
                 }
@@ -1385,9 +1396,14 @@ fn output_config(settings: &Settings) -> Result<output::Config, String> {
                 continue;
             }
         };
-        let Some(secret) = secrets::get(&u.id) else {
-            eprintln!("upload destination {}: no secret key stored", u.name);
-            continue;
+        let secret = if u.needs_secret() {
+            let Some(secret) = secrets::get(&u.id) else {
+                eprintln!("upload destination {}: no secret key stored", u.name);
+                continue;
+            };
+            secret
+        } else {
+            String::new()
         };
         uploads.push(output::UploadTarget {
             upload: u.clone(),

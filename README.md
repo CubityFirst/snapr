@@ -115,6 +115,14 @@ button. Right-click an uploaded screenshot there and choose *Delete remotely* to
 remove the uploaded copy (the local file is kept); *Clear recent* empties the
 list without deleting any files.
 
+*+ Add Pomf upload* adds a [Pomf](https://github.com/pomf/pomf)-compatible
+file host instead (version 1 of its API: pomf.lain.la, uguu.se, qu.ax, ...).
+Give it the host's upload address, e.g. `https://pomf.lain.la/upload.php`;
+there are no keys. The host picks the file's name and link (set **Public
+URL** to put links under a domain of your own). Pomf can't delete uploads,
+so **Test** uploads snapr's icon and leaves it there, and those screenshots
+don't offer *Delete remotely*.
+
 Secret access keys are kept in the system credential store (Windows Credential
 Manager, macOS Keychain, Secret Service on Linux), never in `config.toml`.
 Requests are signed with AWS Signature V4, checked against AWS's published
@@ -138,6 +146,7 @@ for a portable copy or a second, independent instance.
 | Copy to clipboard  | on                       |
 | Annotation toolbar | on                       |
 | Play sounds        | on (sounds are synthesized in code, no audio assets) |
+| Sound volume       | 100% (dragging the slider plays the chime when you let go) |
 | Corner preview     | on: click opens the link (or image), middle-click copies, right-click closes |
 | Overlay frame rate | match monitor (vsync), or a custom limit |
 | Beside the crosshair | off; any of *Position* (screen X/Y), *Colour* (hex and RGB) and *Magnifier*, shown next to the cursor while selecting a region |
@@ -171,7 +180,7 @@ can't escape the base folder, and existing files are never overwritten.
 
 Recordings are saved next to your screenshots as **MP4** (H.264 + AAC; plays
 everywhere) or, on Windows and Linux, **WebM** (VP9 + Opus; smaller, plays in
-browsers), picked under *Settings → General → Recording*. Windows and macOS
+browsers), picked under *Settings → Recording*. Windows and macOS
 use the system's own encoders; WebM on Windows needs the VP9 Video
 Extensions (installed with Windows 10/11).
 

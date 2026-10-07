@@ -4,7 +4,7 @@
 use egui::{RichText, TextEdit};
 
 use crate::naming::Context;
-use crate::settings::{SpeedUnit, Upload};
+use crate::settings::{SpeedUnit, Upload, UploadKind};
 use crate::settings_ui::{Action, ERROR, Form, SUCCESS, Test, template_field};
 use crate::upload::{DEFAULT_CONCURRENCY, MAX_CONCURRENCY};
 
@@ -55,10 +55,23 @@ impl Form {
                     self.tests.remove(&u.id);
                 }
                 ui.horizontal(|ui| {
-                    if ui.button("+ Add upload").clicked() {
-                        let u = Upload::default();
-                        self.expanded = Some(u.id.clone());
-                        self.draft.uploads.push(u);
+                    for (label, hover, new) in [
+                        (
+                            "+ Add S3 upload",
+                            "A bucket on Cloudflare R2, Amazon S3, MinIO, Backblaze B2, ...",
+                            Upload::default as fn() -> Upload,
+                        ),
+                        (
+                            "+ Add Pomf upload",
+                            "A Pomf-compatible file host, e.g. pomf.lain.la or uguu.se",
+                            Upload::pomf,
+                        ),
+                    ] {
+                        if ui.button(label).on_hover_text(hover).clicked() {
+                            let u = new();
+                            self.expanded = Some(u.id.clone());
+                            self.draft.uploads.push(u);
+                        }
                     }
                     let ticked: Vec<Upload> =
                         self.draft.uploads.iter().filter(|u| u.enabled).cloned().collect();
@@ -116,18 +129,12 @@ impl Form {
                     .split('/')
                     .next()
                     .unwrap_or("");
-                ui.label(
-                    RichText::new(format!(
-                        "{} \u{00b7} {host}",
-                        if u.bucket.is_empty() {
-                            "no bucket"
-                        } else {
-                            &u.bucket
-                        }
-                    ))
-                    .weak()
-                    .small(),
-                );
+                let what = match u.kind {
+                    UploadKind::Pomf => "Pomf",
+                    UploadKind::S3 if u.bucket.is_empty() => "no bucket",
+                    UploadKind::S3 => &u.bucket,
+                };
+                ui.label(RichText::new(format!("{what} \u{00b7} {host}")).weak().small());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("Remove").clicked() {
                         remove = true;
@@ -138,7 +145,12 @@ impl Form {
                     let running = matches!(self.tests.get(&id), Some(Test::Running));
                     if ui
                         .add_enabled(!running, egui::Button::new("Test"))
-                        .on_hover_text("Upload a tiny file and delete it again")
+                        .on_hover_text(if u.deletable() {
+                            "Upload a tiny file and delete it again"
+                        } else {
+                            "Upload snapr's icon and show its link (it stays there: Pomf \
+                             uploads can't be deleted)"
+                        })
                         .clicked()
                     {
                         let secret = self.secrets.get(&id).filter(|s| !s.is_empty()).cloned();
@@ -181,94 +193,131 @@ impl Form {
                         ui.end_row();
                     };
                     field(ui, "Name", &mut u.name, "");
-                    field(
-                        ui,
-                        "Endpoint",
-                        &mut u.endpoint,
-                        "https://<account>.r2.cloudflarestorage.com",
-                    );
-                    field(ui, "Region", &mut u.region, "auto (R2) or e.g. us-east-1");
-                    field(ui, "Bucket", &mut u.bucket, "");
-                    field(ui, "Access key ID", &mut u.access_key_id, "");
-
-                    ui.label("Secret access key");
-                    let secret = self.secrets.entry(id.clone()).or_default();
-                    let hint = if stored {
-                        "saved \u{2014} type to replace"
-                    } else {
-                        ""
-                    };
-                    ui.add(
-                        TextEdit::singleline(secret)
-                            .password(true)
-                            .hint_text(hint)
-                            .desired_width(360.0),
-                    );
-                    ui.end_row();
-                    ui.label("");
-                    ui.label(
-                        RichText::new(
-                            "Kept in your system's credential store, not in the config file.",
-                        )
-                        .weak()
-                        .small(),
-                    );
-                    ui.end_row();
-
-                    ui.label("Object key");
-                    ui.horizontal(|ui| {
-                        template_field(
-                            ui,
-                            &format!("key-{id}"),
-                            &mut u.key_template,
-                            "%y-%mo/%rna{10}",
-                        );
-                        ui.label(".png");
-                    });
-                    ui.end_row();
-
-                    field(
-                        ui,
-                        "Public URL",
-                        &mut u.public_url,
-                        "https://pub-\u{2026}.r2.dev or your own domain",
-                    );
-                    ui.label("");
-                    ui.checkbox(
-                        &mut u.path_style,
-                        "Path-style requests (endpoint/bucket/key)",
-                    );
-                    ui.end_row();
-
-                    ui.label("");
-                    ui.checkbox(
-                        &mut u.signed_payload,
-                        "Signed payload (hash the file into the signature)",
-                    );
-                    ui.end_row();
-
-                    ui.label("Parallel parts");
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::DragValue::new(&mut u.parallel_parts)
-                                .range(1..=MAX_CONCURRENCY)
-                                .speed(0.1),
-                        )
-                        .on_hover_text(
-                            "How many pieces of a large file (over 16 MB) are sent at once. \
-                             More can be faster on a fast connection; each one holds \
-                             8 MB or more in memory while it's sent.",
-                        );
+                    if u.kind == UploadKind::Pomf {
+                        field(ui, "Upload URL", &mut u.endpoint, "https://pomf.lain.la/upload.php");
+                        ui.label("File name");
+                        ui.horizontal(|ui| {
+                            template_field(ui, &format!("key-{id}"), &mut u.key_template, "%rna{10}");
+                            ui.label(".png");
+                        });
+                        ui.end_row();
+                        ui.label("");
                         ui.label(
-                            RichText::new(format!("for files over 16 MB (default {DEFAULT_CONCURRENCY})"))
+                            RichText::new("Most hosts give the file a name of their own.")
                                 .weak()
                                 .small(),
                         );
-                    });
-                    ui.end_row();
+                        ui.end_row();
+                        field(
+                            ui,
+                            "Public URL",
+                            &mut u.public_url,
+                            "optional: put links under your own domain instead",
+                        );
+                    } else {
+                        field(
+                            ui,
+                            "Endpoint",
+                            &mut u.endpoint,
+                            "https://<account>.r2.cloudflarestorage.com",
+                        );
+                        field(ui, "Region", &mut u.region, "auto (R2) or e.g. us-east-1");
+                        field(ui, "Bucket", &mut u.bucket, "");
+                        field(ui, "Access key ID", &mut u.access_key_id, "");
+
+                        ui.label("Secret access key");
+                        let secret = self.secrets.entry(id.clone()).or_default();
+                        let hint = if stored {
+                            "saved \u{2014} type to replace"
+                        } else {
+                            ""
+                        };
+                        ui.add(
+                            TextEdit::singleline(secret)
+                                .password(true)
+                                .hint_text(hint)
+                                .desired_width(360.0),
+                        );
+                        ui.end_row();
+                        ui.label("");
+                        ui.label(
+                            RichText::new(
+                                "Kept in your system's credential store, not in the config file.",
+                            )
+                            .weak()
+                            .small(),
+                        );
+                        ui.end_row();
+
+                        ui.label("Object key");
+                        ui.horizontal(|ui| {
+                            template_field(
+                                ui,
+                                &format!("key-{id}"),
+                                &mut u.key_template,
+                                "%y-%mo/%rna{10}",
+                            );
+                            ui.label(".png");
+                        });
+                        ui.end_row();
+
+                        field(
+                            ui,
+                            "Public URL",
+                            &mut u.public_url,
+                            "https://pub-\u{2026}.r2.dev or your own domain",
+                        );
+                        ui.label("");
+                        ui.checkbox(
+                            &mut u.path_style,
+                            "Path-style requests (endpoint/bucket/key)",
+                        );
+                        ui.end_row();
+
+                        ui.label("");
+                        ui.checkbox(
+                            &mut u.signed_payload,
+                            "Signed payload (hash the file into the signature)",
+                        );
+                        ui.end_row();
+
+                        ui.label("Parallel parts");
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::DragValue::new(&mut u.parallel_parts)
+                                    .range(1..=MAX_CONCURRENCY)
+                                    .speed(0.1),
+                            )
+                            .on_hover_text(
+                                "How many pieces of a large file (over 16 MB) are sent at once. \
+                                 More can be faster on a fast connection; each one holds \
+                                 8 MB or more in memory while it's sent.",
+                            );
+                            ui.label(
+                                RichText::new(format!("for files over 16 MB (default {DEFAULT_CONCURRENCY})"))
+                                    .weak()
+                                    .small(),
+                            );
+                        });
+                        ui.end_row();
+                    }
 
                     ui.label("");
                     match u.validate() {
+                        Ok(_) if u.kind == UploadKind::Pomf => {
+                            let public = u.public_url.trim().trim_end_matches('/');
+                            let link = if public.is_empty() {
+                                "the one the host gives".to_string()
+                            } else {
+                                format!("{public}/<name the host gives>")
+                            };
+                            ui.label(
+                                RichText::new(format!("Link: {link}"))
+                                    .monospace()
+                                    .weak()
+                                    .small(),
+                            );
+                        }
                         Ok(key) => {
                             let ctx = Context {
                                 process: Some("firefox".into()),

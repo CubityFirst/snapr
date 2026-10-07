@@ -14,6 +14,7 @@ use crate::naming::{CATEGORIES, Context};
 use crate::output;
 use crate::secrets;
 use crate::settings::{Settings, ToolAction, ToolHotkey, Upload, parse_hotkey};
+use crate::sound::{self, Sound};
 use crate::update;
 
 pub enum Action {
@@ -158,7 +159,7 @@ impl Form {
             if let Err(e) = u.validate() {
                 return Some(format!("{}: {e}", u.name));
             }
-            if !self.has_secret(&u.id) {
+            if u.needs_secret() && !self.has_secret(&u.id) {
                 return Some(format!("{}: enter the secret access key", u.name));
             }
         }
@@ -257,6 +258,16 @@ impl Form {
                 ui.checkbox(&mut self.draft.play_sounds, "Play sounds (shutter on capture)");
                 ui.end_row();
 
+                ui.label("Sound volume");
+                ui.add_enabled_ui(self.draft.play_sounds, |ui| {
+                    let slider = ui.add(egui::Slider::new(&mut self.draft.sound_volume, 0..=100).suffix("%"));
+                    // Let it be heard once it's set, not all the way along a drag.
+                    if slider.drag_stopped() || (slider.changed() && !slider.dragged()) {
+                        sound::play(Sound::Done, self.draft.sound_volume);
+                    }
+                });
+                ui.end_row();
+
                 ui.label("");
                 ui.checkbox(&mut self.draft.show_toast, "Show a preview in the corner after each capture")
                     .on_hover_text("Click it to open the link (or the image), middle-click to copy the image, right-click to close it");
@@ -322,9 +333,56 @@ impl Form {
                     );
                 ui.end_row();
 
-                ui.label(RichText::new("Recording").strong());
+                ui.label(RichText::new("Updates").strong());
                 ui.end_row();
 
+                ui.label("");
+                let mut never = !self.draft.check_for_updates;
+                if ui
+                    .checkbox(&mut never, "Do not check for updates")
+                    .on_hover_text(
+                        "Otherwise snapr looks for a new release on GitHub when it starts and twice a day, \
+                         and installs it to run from the next start",
+                    )
+                    .changed()
+                {
+                    self.draft.check_for_updates = !never;
+                }
+                ui.end_row();
+
+                ui.label("Version");
+                ui.horizontal(|ui| {
+                    ui.label(update::VERSION);
+                    if ui
+                        .add_enabled(!self.update.busy(), egui::Button::new("Check for updates now"))
+                        .clicked()
+                    {
+                        actions.push(Action::CheckForUpdates);
+                    }
+                });
+                ui.end_row();
+
+                if !matches!(self.update, update::Status::Idle) {
+                    ui.label("");
+                    self.update_status_ui(ui, actions);
+                    ui.end_row();
+                }
+            });
+
+            self.save_bar(ui, actions);
+        });
+    }
+
+    /// The Recording tab.
+    pub fn recording_ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+            ui.label(
+                RichText::new("Press the record hotkey and drag a region to record it; press it again to stop.")
+                    .weak(),
+            );
+            ui.add_space(10.0);
+
+            egui::Grid::new("recording").num_columns(2).spacing([14.0, 8.0]).show(ui, |ui| {
                 ui.label("Frame rate");
                 ui.add(egui::DragValue::new(&mut self.draft.record_fps).range(1..=120).suffix(" fps"));
                 ui.end_row();
@@ -483,41 +541,6 @@ impl Form {
                         .small(),
                 );
                 ui.end_row();
-
-                ui.label(RichText::new("Updates").strong());
-                ui.end_row();
-
-                ui.label("");
-                let mut never = !self.draft.check_for_updates;
-                if ui
-                    .checkbox(&mut never, "Do not check for updates")
-                    .on_hover_text(
-                        "Otherwise snapr looks for a new release on GitHub when it starts and twice a day, \
-                         and installs it to run from the next start",
-                    )
-                    .changed()
-                {
-                    self.draft.check_for_updates = !never;
-                }
-                ui.end_row();
-
-                ui.label("Version");
-                ui.horizontal(|ui| {
-                    ui.label(update::VERSION);
-                    if ui
-                        .add_enabled(!self.update.busy(), egui::Button::new("Check for updates now"))
-                        .clicked()
-                    {
-                        actions.push(Action::CheckForUpdates);
-                    }
-                });
-                ui.end_row();
-
-                if !matches!(self.update, update::Status::Idle) {
-                    ui.label("");
-                    self.update_status_ui(ui, actions);
-                    ui.end_row();
-                }
             });
 
             self.save_bar(ui, actions);
@@ -1011,7 +1034,7 @@ mod tests {
         assert_eq!(form.problem(), None);
     }
 
-    /// Renders the General, Hotkeys and Paths & naming tabs to
+    /// Renders the General, Hotkeys, Paths & naming and Recording tabs to
     /// `target/settings-*-preview.png`: `cargo test settings_preview -- --ignored`.
     #[test]
     #[ignore]
@@ -1028,15 +1051,16 @@ mod tests {
             },
         ];
         type Tab = fn(&mut Form, &mut egui::Ui);
-        let tabs: [(&str, Tab); 3] = [
+        let tabs: [(&str, Tab); 4] = [
             ("general", |f, ui| f.ui(ui, &mut Vec::new())),
             ("hotkeys", |f, ui| f.hotkeys_ui(ui, &mut Vec::new())),
             ("naming", |f, ui| f.naming_ui(ui, &mut Vec::new())),
+            ("recording", |f, ui| f.recording_ui(ui, &mut Vec::new())),
         ];
         for (name, tab) in tabs {
             crate::preview::render(
                 &format!("settings-{name}-preview"),
-                [920, 420],
+                [920, 620],
                 1.0,
                 |root| {
                     egui::CentralPanel::default().show(root, |ui| tab(&mut form, ui));

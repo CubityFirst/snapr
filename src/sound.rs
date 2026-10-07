@@ -1,12 +1,13 @@
 //! Feedback sounds, synthesized at startup (so there are no audio assets to
 //! license) and played through each platform's built-in API.
 
+use std::collections::HashMap;
 use std::f32::consts::TAU;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
 
 const RATE: u32 = 44_100;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Sound {
     /// A camera shutter, when a capture is taken.
     Capture,
@@ -16,9 +17,14 @@ pub enum Sound {
     Error,
 }
 
-static CAPTURE: LazyLock<Vec<u8>> = LazyLock::new(|| wav(&shutter()));
-static DONE: LazyLock<Vec<u8>> = LazyLock::new(|| wav(&chime()));
-static ERROR: LazyLock<Vec<u8>> = LazyLock::new(|| wav(&error()));
+static CAPTURE: LazyLock<Vec<u8>> = LazyLock::new(|| wav(&shutter(), 1.0));
+static DONE: LazyLock<Vec<u8>> = LazyLock::new(|| wav(&chime(), 1.0));
+static ERROR: LazyLock<Vec<u8>> = LazyLock::new(|| wav(&error(), 1.0));
+
+/// Quieter copies, made the first time each is played. They're never freed,
+/// as playback may still be reading one (at most 3 x 100 small files).
+static QUIETER: LazyLock<Mutex<HashMap<(Sound, u8), &'static [u8]>>> =
+    LazyLock::new(Default::default);
 
 fn bytes(sound: Sound) -> &'static [u8] {
     match sound {
@@ -28,8 +34,32 @@ fn bytes(sound: Sound) -> &'static [u8] {
     }
 }
 
-pub fn play(sound: Sound) {
-    platform::play(sound, bytes(sound));
+/// The sound at `volume` percent.
+fn at_volume(sound: Sound, volume: u8) -> &'static [u8] {
+    if volume >= 100 {
+        return bytes(sound);
+    }
+    let mut quieter = QUIETER.lock().unwrap_or_else(|e| e.into_inner());
+    quieter.entry((sound, volume)).or_insert_with(|| {
+        let samples = match sound {
+            Sound::Capture => shutter(),
+            Sound::Done => chime(),
+            Sound::Error => error(),
+        };
+        Vec::leak(wav(&samples, gain(volume)))
+    })
+}
+
+/// Squared, so the slider sounds even: half way is about half as loud.
+fn gain(volume: u8) -> f32 {
+    (volume.min(100) as f32 / 100.0).powi(2)
+}
+
+/// Plays `sound` at `volume` percent.
+pub fn play(sound: Sound, volume: u8) {
+    if volume > 0 {
+        platform::play(sound, volume.min(100), at_volume(sound, volume));
+    }
 }
 
 fn samples(seconds: f32) -> Vec<f32> {
@@ -101,9 +131,9 @@ fn add_tone(out: &mut [f32], start: f32, freq: f32, decay: f32, gain: f32, overt
     }
 }
 
-/// Encodes mono samples as a 16-bit PCM WAV file, with short fades at the
-/// ends so it never starts or stops with a pop.
-fn wav(samples: &[f32]) -> Vec<u8> {
+/// Encodes mono samples, scaled by `gain`, as a 16-bit PCM WAV file, with
+/// short fades at the ends so it never starts or stops with a pop.
+fn wav(samples: &[f32], gain: f32) -> Vec<u8> {
     let fade = (0.002 * RATE as f32) as usize;
     let n = samples.len();
     let data_len = (n * 2) as u32;
@@ -122,7 +152,7 @@ fn wav(samples: &[f32]) -> Vec<u8> {
     out.extend_from_slice(&data_len.to_le_bytes());
     for (i, s) in samples.iter().enumerate() {
         let edge = (i.min(n - 1 - i) as f32 / fade as f32).min(1.0);
-        let v = (s * edge).clamp(-1.0, 1.0);
+        let v = (s * gain * edge).clamp(-1.0, 1.0);
         out.extend_from_slice(&((v * i16::MAX as f32) as i16).to_le_bytes());
     }
     out
@@ -132,7 +162,7 @@ fn wav(samples: &[f32]) -> Vec<u8> {
 mod platform {
     use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
 
-    pub fn play(_sound: super::Sound, wav: &'static [u8]) {
+    pub fn play(_sound: super::Sound, _volume: u8, wav: &'static [u8]) {
         // SAFETY: with SND_MEMORY the "name" is a pointer to the WAV data,
         // which is 'static so it outlives the asynchronous playback.
         unsafe {
@@ -159,7 +189,7 @@ mod platform {
         static PLAYING: RefCell<Option<Retained<NSSound>>> = const { RefCell::new(None) };
     }
 
-    pub fn play(_sound: super::Sound, wav: &'static [u8]) {
+    pub fn play(_sound: super::Sound, _volume: u8, wav: &'static [u8]) {
         let Some(sound) = NSSound::initWithData(NSSound::alloc(), &NSData::with_bytes(wav)) else {
             return;
         };
@@ -174,9 +204,9 @@ mod platform {
 
     /// Writes the sound to a temporary file (once) and plays it with
     /// PulseAudio/PipeWire's `paplay`, or ALSA's `aplay`.
-    pub fn play(sound: super::Sound, wav: &'static [u8]) {
+    pub fn play(sound: super::Sound, volume: u8, wav: &'static [u8]) {
         let path: PathBuf =
-            std::env::temp_dir().join(format!("snapr-{sound:?}.wav").to_lowercase());
+            std::env::temp_dir().join(format!("snapr-{sound:?}-{volume}.wav").to_lowercase());
         if !path.exists() && std::fs::write(&path, wav).is_err() {
             return;
         }
@@ -215,6 +245,21 @@ mod tests {
             assert!(peak > 3000, "{sound:?} is nearly silent ({peak})");
             assert!(peak < i16::MAX as u16, "{sound:?} clips");
         }
+    }
+
+    #[test]
+    fn volume_scales_the_sound() {
+        let peak = |wav: &[u8]| {
+            wav[44..]
+                .chunks_exact(2)
+                .map(|b| i16::from_le_bytes([b[0], b[1]]).unsigned_abs())
+                .max()
+                .unwrap() as f32
+        };
+        let full = peak(at_volume(Sound::Done, 100));
+        let half = peak(at_volume(Sound::Done, 50));
+        assert!((half / full - 0.25).abs() < 0.01, "{half} / {full}");
+        assert_eq!(at_volume(Sound::Done, 50).as_ptr(), at_volume(Sound::Done, 50).as_ptr());
     }
 
     /// Writes the sounds to `target/` to listen to: `cargo test write_sounds -- --ignored`.
