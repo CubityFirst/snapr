@@ -75,8 +75,8 @@ use crate::tray::{Tray, TrayAction};
 enum UserEvent {
     Hotkey,
     RecordHotkey,
-    /// A screen recording was written (or failed).
-    RecordingDone(Result<Option<record::Recorded>, String>, naming::Context),
+    /// A screen recording was written (or failed), with its id.
+    RecordingDone(u64, Result<Option<record::Recorded>, String>, naming::Context),
     Tray(TrayAction),
     /// Something happened to a screenshot (saved, copied, uploaded, failed).
     Output(output::Event),
@@ -155,6 +155,8 @@ enum Start {
 
 /// A recording in progress and its border and buttons.
 struct ActiveRecording {
+    /// Tells its `RecordingDone` from an earlier (restarted) one's.
+    id: u64,
     recording: record::Recording,
     ui: Option<record_ui::RecordingUi>,
     /// The selection it was started from, and its naming, for Restart.
@@ -298,13 +300,15 @@ impl App {
         let out = naming
             .path_for(&ctx)
             .with_extension(self.settings.record_format.extension());
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let proxy = Mutex::new(self.proxy.clone());
         let done_ctx = ctx.clone();
         let done: record::Done = Box::new(move |result| {
             let _ = proxy
                 .lock()
                 .unwrap()
-                .send_event(UserEvent::RecordingDone(result, done_ctx));
+                .send_event(UserEvent::RecordingDone(id, result, done_ctx));
         });
         match record::Recording::start(
             rect,
@@ -329,6 +333,7 @@ impl App {
                     Err(_) => None,
                 };
                 self.recording = Some(ActiveRecording {
+                    id,
                     recording,
                     ui,
                     selection: rect,
@@ -347,9 +352,14 @@ impl App {
     fn recording_done(
         &mut self,
         event_loop: &ActiveEventLoop,
+        id: u64,
         result: Result<Option<record::Recorded>, String>,
         ctx: naming::Context,
     ) {
+        // Still showing: it couldn't start, or failed partway.
+        if self.recording.as_ref().is_some_and(|r| r.id == id) {
+            self.recording = None;
+        }
         let (path, first_frame) = match result {
             Ok(Some(r)) => {
                 if let Some(w) = r.warning {
@@ -1131,7 +1141,9 @@ impl ApplicationHandler<UserEvent> for App {
                     self.toggle_recording(event_loop)
                 }
             }
-            UserEvent::RecordingDone(result, ctx) => self.recording_done(event_loop, result, ctx),
+            UserEvent::RecordingDone(id, result, ctx) => {
+                self.recording_done(event_loop, id, result, ctx)
+            }
             UserEvent::Tray(TrayAction::Recent) => self.open_main_window(event_loop, Page::Recent),
             UserEvent::Tray(TrayAction::Settings) => {
                 self.open_main_window(event_loop, Page::Settings)
@@ -1332,7 +1344,19 @@ impl ApplicationHandler<UserEvent> for App {
             Some(t) => wake = Some(wake.map_or(t, |w| w.min(t))),
             None => {}
         }
-        if let Some(ui) = self.recording.as_mut().and_then(|r| r.ui.as_mut()) {
+        if let Some(active) = &mut self.recording
+            && let Some(ui) = &mut active.ui
+        {
+            // Red until the encoder has started, then green.
+            if !ui.live() {
+                match &self.gpu {
+                    Ok(gpu) if active.recording.live() => ui.set_live(gpu),
+                    _ => {
+                        let t = now + Duration::from_millis(30);
+                        wake = Some(wake.map_or(t, |w| w.min(t)));
+                    }
+                }
+            }
             ui.tick(now);
             if let Some(t) = ui.repaint_at() {
                 wake = Some(wake.map_or(t, |w| w.min(t)));

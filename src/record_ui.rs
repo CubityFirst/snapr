@@ -1,6 +1,8 @@
 //! What's on screen while recording: a dashed border just outside the region
 //! (clicks go through it) and a bar under it with the elapsed time and
 //! Stop / Pause / Restart / Abort. None of it shows up in the recording.
+//! The border is red while the encoder starts, green once it's recording and
+//! amber while paused.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -20,6 +22,7 @@ use crate::gpu::Gpu;
 const BORDER: u32 = 2;
 const DASH: u32 = 6;
 const RED: [u8; 3] = [0xe5, 0x48, 0x4d];
+const GREEN: [u8; 3] = [0x3c, 0xc8, 0x6e];
 const AMBER: [u8; 3] = [0xf5, 0xa5, 0x24];
 const GAP_COLOR: [u8; 3] = [0x10, 0x10, 0x12];
 const ICON: Color32 = Color32::from_rgb(0x4c, 0x9e, 0xff);
@@ -45,6 +48,8 @@ pub struct RecordingUi {
     started: Instant,
     paused_at: Option<Instant>,
     paused_for: Duration,
+    /// Recording rather than still starting; the timer starts then.
+    live: bool,
 }
 
 impl RecordingUi {
@@ -73,6 +78,7 @@ impl RecordingUi {
             started: Instant::now(),
             paused_at: None,
             paused_for: Duration::ZERO,
+            live: false,
         };
         ui.redraw_edges(gpu);
         ui.paint_bar();
@@ -91,6 +97,34 @@ impl RecordingUi {
         self.paused_at.is_some()
     }
 
+    pub fn live(&self) -> bool {
+        self.live
+    }
+
+    /// The encoder has started: turns the border green and starts the timer.
+    pub fn set_live(&mut self, gpu: &Gpu) {
+        let now = Instant::now();
+        self.live = true;
+        self.started = now;
+        self.paused_for = Duration::ZERO;
+        if self.paused_at.is_some() {
+            self.paused_at = Some(now);
+        }
+        self.redraw_edges(gpu);
+        self.bar.window.request_redraw();
+    }
+
+    /// The border's (and the bar's dot's) colour.
+    fn color(&self) -> [u8; 3] {
+        if self.paused_at.is_some() {
+            AMBER
+        } else if self.live {
+            GREEN
+        } else {
+            RED
+        }
+    }
+
     pub fn set_paused(&mut self, gpu: &Gpu, paused: bool) {
         match (paused, self.paused_at) {
             (true, None) => self.paused_at = Some(Instant::now()),
@@ -106,18 +140,21 @@ impl RecordingUi {
 
     /// Recorded time so far, not counting pauses.
     fn elapsed(&self) -> Duration {
+        if !self.live {
+            return Duration::ZERO;
+        }
         let end = self.paused_at.unwrap_or_else(Instant::now);
         end.duration_since(self.started)
             .saturating_sub(self.paused_for)
     }
 
     pub fn on_event(&mut self, gpu: &Gpu, id: WindowId, event: &WindowEvent) -> Option<Action> {
+        let color = self.color();
         if let Some(edge) = self.edges.iter_mut().find(|e| e.window.id() == id) {
             if matches!(
                 event,
                 WindowEvent::RedrawRequested | WindowEvent::Resized(_)
             ) {
-                let color = if self.paused_at.is_some() { AMBER } else { RED };
                 edge.draw(gpu, color);
             }
             return None;
@@ -160,7 +197,7 @@ impl RecordingUi {
     }
 
     fn redraw_edges(&mut self, gpu: &Gpu) {
-        let color = if self.paused_at.is_some() { AMBER } else { RED };
+        let color = self.color();
         for e in &mut self.edges {
             e.draw(gpu, color);
         }
@@ -169,11 +206,12 @@ impl RecordingUi {
     fn paint_bar(&mut self) -> Option<Action> {
         let elapsed = self.elapsed();
         let paused = self.paused_at.is_some();
+        let color = self.color();
         let bar = &mut self.bar;
         let input = bar.state.take_egui_input(&bar.window);
         let ctx = bar.state.egui_ctx().clone();
         let mut action = None;
-        let mut output = ctx.run_ui(input, |ui| action = bar_contents(ui, elapsed, paused));
+        let mut output = ctx.run_ui(input, |ui| action = bar_contents(ui, elapsed, paused, color));
         bar.state
             .handle_platform_output(&bar.window, std::mem::take(&mut output.platform_output));
         let primitives =
@@ -471,7 +509,12 @@ fn exclude_from_capture(window: &Window) {
     let _ = window;
 }
 
-fn bar_contents(ui: &mut egui::Ui, elapsed: Duration, paused: bool) -> Option<Action> {
+fn bar_contents(
+    ui: &mut egui::Ui,
+    elapsed: Duration,
+    paused: bool,
+    [r, g, b]: [u8; 3],
+) -> Option<Action> {
     let mut action = None;
     egui::CentralPanel::default()
         .frame(
@@ -483,16 +526,14 @@ fn bar_contents(ui: &mut egui::Ui, elapsed: Duration, paused: bool) -> Option<Ac
         .show(ui, |ui| {
             let full = ui.max_rect();
             let painter = ui.painter().clone();
-            // Status: a dot (hollow while paused) and the time.
+            // Status: a dot the border's colour (hollow while paused) and
+            // the time.
             let dot = pos2(full.left() + 16.0, full.center().y);
+            let color = Color32::from_rgb(r, g, b);
             if paused {
-                painter.circle_stroke(
-                    dot,
-                    4.0,
-                    Stroke::new(1.5, Color32::from_rgb(AMBER[0], AMBER[1], AMBER[2])),
-                );
+                painter.circle_stroke(dot, 4.0, Stroke::new(1.5, color));
             } else {
-                painter.circle_filled(dot, 4.5, Color32::from_rgb(RED[0], RED[1], RED[2]));
+                painter.circle_filled(dot, 4.5, color);
             }
             let secs = elapsed.as_secs();
             painter.text(
@@ -620,9 +661,9 @@ mod tests {
     #[test]
     #[ignore]
     fn recording_bar_preview() {
-        for (name, paused) in [
-            ("recording-bar-preview", false),
-            ("recording-bar-paused-preview", true),
+        for (name, paused, color) in [
+            ("recording-bar-preview", false, super::GREEN),
+            ("recording-bar-paused-preview", true, super::AMBER),
         ] {
             crate::preview::render(
                 name,
@@ -632,7 +673,7 @@ mod tests {
                 ],
                 1.5,
                 |root| {
-                    super::bar_contents(root, Duration::from_millis(754_317), paused);
+                    super::bar_contents(root, Duration::from_millis(754_317), paused, color);
                 },
             );
         }

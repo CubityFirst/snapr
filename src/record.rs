@@ -51,6 +51,8 @@ struct Flags {
     pause: AtomicBool,
     /// Throw the recording away instead of saving it.
     abort: AtomicBool,
+    /// The encoder has started and time is running: it's really recording.
+    live: AtomicBool,
 }
 
 /// The sound sources' samples on their way to the encoder.
@@ -90,7 +92,9 @@ impl Recording {
     /// `with_ffmpeg` encodes other recordings with FFmpeg rather than the
     /// system's encoder (Windows and macOS; Linux always uses it), falling
     /// back to the system's when FFmpeg can't be run.
-    /// `done` is called from the recording thread once the file is written.
+    /// The encoder starts in the background (see [`Recording::live`]);
+    /// `done` is called from the recording thread once the file is written,
+    /// or if it couldn't start.
     #[allow(clippy::too_many_arguments)]
     pub fn start(
         rect: Rect,
@@ -168,7 +172,6 @@ impl Recording {
         let flags = Arc::new(Flags::default());
         let thread_flags = flags.clone();
         let thread_clock = clock.clone();
-        let (ready_tx, ready) = mpsc::channel();
         let thread = thread::Builder::new()
             .name("record".into())
             .spawn(move || {
@@ -176,11 +179,8 @@ impl Recording {
                 // up per thread).
                 let audio_format = sound.as_ref().map(|s| s.mixer.format());
                 let mut warning = None;
-                // HDR: the GPU encoder takes a second to start, so the
-                // recording counts as started without waiting for it.
                 #[cfg(windows)]
                 let hdr_source = hdr_display.map(|(origin, on_display)| {
-                    let _ = ready_tx.send(Ok(()));
                     open_hdr(origin, on_display, &out, format, audio_format)
                         .inspect_err(|e| warning = Some(format!("recorded in SDR: {e}")))
                         .ok()
@@ -230,17 +230,11 @@ impl Recording {
                         }
                     })(),
                 };
-                if !hdr {
-                    let _ = ready_tx.send(opened.as_ref().map(drop).map_err(Clone::clone));
-                }
                 let (mut frames, mut encoder, first_frame) = match opened {
                     Ok(o) => o,
                     Err(e) => {
                         drop(captures);
-                        if hdr {
-                            done(Err(e));
-                        }
-                        return;
+                        return done(Err(e));
                     }
                 };
                 let mut sound = sound;
@@ -299,20 +293,18 @@ impl Recording {
                 })));
             })
             .map_err(|e| format!("couldn't start recording thread: {e}"))?;
-        match ready.recv() {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                let _ = thread.join();
-                return Err(e);
-            }
-            Err(_) => return Err("the recording thread stopped".into()),
-        }
         Ok(Self {
             rect: region,
             flags,
             clock,
             thread: Some(thread),
         })
+    }
+
+    /// Whether it's really recording yet, rather than still starting the
+    /// encoder (which can take a second or two, e.g. FFmpeg or a GPU's).
+    pub fn live(&self) -> bool {
+        self.flags.live.load(Ordering::Relaxed)
     }
 
     /// Stops recording; the file is finished in the background.
@@ -693,6 +685,7 @@ fn pump(
     encoder.video(frames.frame(p.as_ref().map(|(at, i)| (*at, i))))?;
     let mut start = Instant::now();
     clock.lock().unwrap().start();
+    flags.live.store(true, Ordering::Relaxed);
     let mut written: u64 = 1;
     while !flags.stop.load(Ordering::Relaxed) {
         if flags.pause.load(Ordering::Relaxed) {

@@ -7,6 +7,7 @@ use egui::{
 };
 
 use crate::annotate::{ArrowOptions, COLORS, PIXEL_BLOCKS, PixelateOptions, Size, Style, Tool};
+use crate::session::MAGNIFIER_PIXELS;
 
 const ACCENT: Color32 = Color32::from_rgb(0x3d, 0x9b, 0xff);
 const PANEL: Color32 = Color32::from_rgba_premultiplied(28, 29, 32, 245);
@@ -56,6 +57,10 @@ pub struct CursorInfo {
     /// The screen pixels around the cursor, enlarged (an odd-sided square
     /// centred on it; off-screen pixels are transparent).
     pub magnifier: Option<image::RgbaImage>,
+    /// Whether the magnifier's pixels are a set size, so it grows with how
+    /// many there are (scrolling resizes it), rather than it being a set
+    /// size (scrolling zooms it).
+    pub fixed_cells: bool,
     /// The colour of the pixel under the cursor.
     pub color: Option<[u8; 3]>,
     /// That pixel's position on the screen.
@@ -193,7 +198,7 @@ fn ui(ui: &mut egui::Ui, view: &View) -> (Vec<Action>, Option<Rect>) {
 fn draw_cursor_info(painter: &egui::Painter, at: egui::Pos2, info: &CursorInfo) {
     const GAP: f32 = 22.0;
     /// The magnifier's smallest side, whatever its zoom; it fills the card's
-    /// width.
+    /// width. With fixed cells, its side at the starting zoom instead.
     const SIDE: f32 = 135.0;
     const ROW: f32 = 24.0;
     /// Room on the left of each row for its swatch or icon.
@@ -221,7 +226,11 @@ fn draw_cursor_info(painter: &egui::Painter, at: egui::Pos2, info: &CursorInfo) 
         .map(|g| g.size().x)
         .fold(widest_color, f32::max);
     let width = text_w + INDENT + 8.0;
-    let side = if info.magnifier.is_some() { width.max(SIDE) } else { 0.0 };
+    let side = match &info.magnifier {
+        Some(p) if info.fixed_cells => p.width() as f32 * SIDE / MAGNIFIER_PIXELS as f32,
+        Some(_) => width.max(SIDE),
+        None => 0.0,
+    };
     let size = vec2(width.max(side), side + rows_h);
     if size.y == 0.0 {
         return;
@@ -1044,6 +1053,7 @@ mod tests {
                 pos2(560.0, 300.0),
                 CursorInfo {
                     magnifier: Some(pixels),
+                    fixed_cells: false,
                     color: Some([0x3d, 0x9b, 0xff]),
                     position: Some([1847, -212]),
                 },
@@ -1077,6 +1087,7 @@ mod tests {
                 pos2(60.0, 30.0),
                 CursorInfo {
                     magnifier: None,
+                    fixed_cells: false,
                     color: Some([200, 120, 60]),
                     position: Some([640, 1080]),
                 },

@@ -17,7 +17,7 @@ use crate::capture::{self, Rect};
 use crate::gpu::Gpu;
 use crate::naming::Context;
 use crate::overlay::{Frame, Overlay};
-use crate::settings::CrosshairInfo;
+use crate::settings::{CrosshairInfo, MagnifierScroll};
 use crate::toolbar::{Action, CursorInfo};
 
 pub enum Outcome {
@@ -55,14 +55,20 @@ pub enum Purpose {
 impl Purpose {
     /// Shown at the top of the screen while picking, for anything but a
     /// screenshot.
-    fn hint(self) -> Option<&'static str> {
+    fn hint(self, scroll: MagnifierScroll) -> Option<&'static str> {
         match self {
             Purpose::Screenshot => None,
             Purpose::Record => Some("Select a region to record"),
             Purpose::Scan => Some("Select a QR code to read"),
-            Purpose::PickColor => Some(
-                "Click to pick a colour \u{2014} arrow keys move one pixel, scroll zooms",
-            ),
+            Purpose::PickColor => Some(match scroll {
+                MagnifierScroll::Zoom => {
+                    "Click to pick a colour \u{2014} arrow keys move one pixel, scroll zooms"
+                }
+                MagnifierScroll::Resize => {
+                    "Click to pick a colour \u{2014} arrow keys move one pixel, \
+                     scroll resizes the magnifier"
+                }
+            }),
             Purpose::Pin => Some("Select a region to pin to the screen"),
         }
     }
@@ -81,7 +87,8 @@ enum Grab {
 
 /// Pixels across the magnifier at first (odd, so one is in the middle).
 pub const MAGNIFIER_PIXELS: u32 = 15;
-/// The fewest and most pixels the mouse wheel zooms the magnifier between.
+/// The fewest and most pixels the mouse wheel zooms (or resizes) the
+/// magnifier between. Resizing goes one step smaller still, to hide it.
 const MAGNIFIER_ZOOM: (i32, i32) = (5, 45);
 
 /// How close (in pixels) a press must be to a line's or an arrow's middle
@@ -131,7 +138,8 @@ pub struct Session {
     interval: Option<Duration>,
     /// What's shown beside the crosshair while selecting a region.
     crosshair_info: CrosshairInfo,
-    /// Pixels across the magnifier; the mouse wheel zooms it.
+    /// Pixels across the magnifier; the mouse wheel zooms or resizes it. 0
+    /// when resizing has hidden it.
     pub magnifier: u32,
     /// Mouse wheel movement not yet used up by a whole step (touchpads
     /// scroll in small amounts).
@@ -207,7 +215,11 @@ impl Session {
             purpose: Purpose::Screenshot,
             interval: (overlay_fps > 0).then(|| Duration::from_secs_f64(1.0 / overlay_fps as f64)),
             crosshair_info,
-            magnifier,
+            // Hidden by resizing, then switched to zooming: show it again.
+            magnifier: match crosshair_info.scroll {
+                MagnifierScroll::Zoom if magnifier == 0 => MAGNIFIER_PIXELS,
+                _ => magnifier,
+            },
             wheel: 0.0,
             cursor: capture::cursor_position(),
             grab: Grab::None,
@@ -411,7 +423,7 @@ impl Session {
             // On the monitor with the cursor, unless the region covers it.
             hint: self
                 .purpose
-                .hint()
+                .hint(self.crosshair_info.scroll)
                 .or_else(|| {
                     (self.annotate && self.tool == Tool::Image && self.redact_image.is_none())
                         .then_some(
@@ -432,21 +444,29 @@ impl Session {
     /// Settings.
     fn cursor_info(&self, c: (f64, f64)) -> Option<CursorInfo> {
         let show = self.crosshair_info;
-        let selecting = (self.tool == Tool::Select || !self.annotate)
-            && self.grab != Grab::Draw
-            && !self.over_toolbar();
-        let (magnifier, color) = match self.purpose {
-            Purpose::PickColor => (true, true),
-            _ if selecting && show.any() => (show.magnifier, show.color),
-            _ => return None,
-        };
+        let (magnifier, color) = self.card()?;
         Some(CursorInfo {
-            magnifier: magnifier.then(|| self.loupe_pixels(c)),
+            magnifier: (magnifier && self.magnifier > 0).then(|| self.loupe_pixels(c)),
+            fixed_cells: show.scroll == MagnifierScroll::Resize,
             color: color.then(|| self.pixel_at(c)),
             position: show
                 .position
                 .then(|| [c.0.floor() as i32, c.1.floor() as i32]),
         })
+    }
+
+    /// Whether the card beside the cursor shows, and if so whether it has
+    /// the magnifier (even one resized away) and the colour.
+    fn card(&self) -> Option<(bool, bool)> {
+        let show = self.crosshair_info;
+        let selecting = (self.tool == Tool::Select || !self.annotate)
+            && self.grab != Grab::Draw
+            && !self.over_toolbar();
+        match self.purpose {
+            Purpose::PickColor => Some((true, true)),
+            _ if selecting && show.any() => Some((show.magnifier, show.color)),
+            _ => None,
+        }
     }
 
     /// Whether the cursor is over the toolbar (or one of its popups).
@@ -749,14 +769,12 @@ impl Session {
         })
     }
 
-    /// Zooms the magnifier, if it's showing: fewer, bigger pixels scrolling
-    /// up, more scrolling down. Its size stays the same.
+    /// Zooms the magnifier, if it's on: fewer, bigger pixels scrolling up,
+    /// more scrolling down, its size staying the same. Or, if Settings says
+    /// so, resizes it: bigger scrolling up, smaller scrolling down until it
+    /// hides, its pixels staying the same size.
     fn on_wheel(&mut self, delta: MouseScrollDelta) {
-        let shown = self
-            .cursor
-            .and_then(|c| self.cursor_info(c))
-            .is_some_and(|i| i.magnifier.is_some());
-        if !shown {
+        if self.cursor.is_none() || !self.card().is_some_and(|(magnifier, _)| magnifier) {
             return;
         }
         self.wheel += match delta {
@@ -770,7 +788,16 @@ impl Session {
         self.wheel -= steps;
         let before = self.snap();
         let (min, max) = MAGNIFIER_ZOOM;
-        self.magnifier = (self.magnifier as i32 - 2 * steps as i32).clamp(min, max) as u32;
+        let (n, steps) = (self.magnifier as i32, steps as i32);
+        self.magnifier = match self.crosshair_info.scroll {
+            MagnifierScroll::Zoom => (n - 2 * steps).clamp(min, max),
+            MagnifierScroll::Resize => {
+                // Hidden is one step below the smallest.
+                let hidden = min - 2;
+                let n = (n.max(hidden) + 2 * steps).clamp(hidden, max);
+                if n == hidden { 0 } else { n }
+            }
+        } as u32;
         self.invalidate(before, false);
     }
 

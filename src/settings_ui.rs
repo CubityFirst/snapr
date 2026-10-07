@@ -13,7 +13,7 @@ use winit::keyboard::{KeyCode, ModifiersState};
 use crate::naming::{CATEGORIES, Context};
 use crate::output;
 use crate::secrets;
-use crate::settings::{Settings, ToolAction, ToolHotkey, Upload, parse_hotkey};
+use crate::settings::{MagnifierScroll, Settings, ToolAction, ToolHotkey, Upload, parse_hotkey};
 use crate::sound::{self, Sound};
 use crate::update;
 
@@ -300,6 +300,18 @@ impl Form {
                         .on_hover_text("The pixel's colour, as hex and RGB");
                     ui.checkbox(&mut info.magnifier, "Magnifier")
                         .on_hover_text("The pixels around the cursor, enlarged");
+                });
+                ui.end_row();
+
+                ui.label("Scrolling the magnifier").on_hover_text(
+                    "What the mouse wheel does to the magnifier, here and in the colour picker",
+                );
+                ui.horizontal(|ui| {
+                    let scroll = &mut self.draft.crosshair_info.scroll;
+                    ui.radio_value(scroll, MagnifierScroll::Zoom, "Zooms it")
+                        .on_hover_text("Fewer, bigger pixels, or more, smaller ones");
+                    ui.radio_value(scroll, MagnifierScroll::Resize, "Resizes it")
+                        .on_hover_text("Bigger, or smaller until it's hidden");
                 });
                 ui.end_row();
 

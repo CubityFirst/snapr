@@ -67,7 +67,8 @@ bottom, *Open screenshots folder*.
     image* or *Save as…* a PNG.
   - **Colour picker**: *Pick colour…* freezes the screen (undimmed) with a
     magnifier beside the cursor; click a pixel (or press **Enter**) to copy
-    its hex code. Arrow keys move the pointer one pixel (Shift: ten). The
+    its hex code. Arrow keys move the pointer one pixel (Shift: ten); scrolling
+    zooms the magnifier, or resizes it (see *Scrolling the magnifier*). The
     colour is shown as HEX, `rgb()` and `hsl()`, each with *Copy*, and recent
     picks are kept as swatches while the window is open.
   - **Pin to screen**: *Pin region…* freezes the screen; drag a region (or
@@ -150,6 +151,7 @@ for a portable copy or a second, independent instance.
 | Corner preview     | on: click opens the link (or image), middle-click copies, right-click closes |
 | Overlay frame rate | match monitor (vsync), or a custom limit |
 | Beside the crosshair | off; any of *Position* (screen X/Y), *Colour* (hex and RGB) and *Magnifier*, shown next to the cursor while selecting a region |
+| Scrolling the magnifier | *Zooms it* (fewer, bigger pixels, or more, smaller ones); *Resizes it* makes it bigger, or smaller until it's hidden |
 | Check for updates  | on (see [Updates](#updates)) |
 
 ### Naming templates
@@ -186,6 +188,11 @@ Extensions (installed with Windows 10/11).
 
 A region can span several monitors, like a screenshot can; anything in it
 that isn't on a monitor (a gap in an uneven layout) comes out black.
+
+While recording, a dashed border surrounds the region, with a bar below it
+(timer, *Stop*, *Pause*, *Restart*, *Abort*). The border is red while the
+encoder starts (FFmpeg or the graphics card can take a second), green once
+it's recording, and amber while paused. The timer starts when it turns green.
 
 If [FFmpeg](https://ffmpeg.org) is installed, *Encoder: FFmpeg* (Windows and
 macOS) records MP4 with x264 and WebM with libvpx instead. They're sharper
