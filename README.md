@@ -26,7 +26,7 @@ region; the screenshot includes your annotations.
 | Tool | Key | |
 |------|-----|-|
 | Region | `S` | the default: drag to capture |
-| Pen | `P` | freehand |
+| Pen | `P` or `F` | freehand |
 | Line | `L` | Shift snaps to 45° |
 | Arrow | `A` | Shift snaps to 45° |
 | Box | `R` | Shift makes a square |
@@ -68,7 +68,7 @@ bottom, *Open screenshots folder*.
   - **Colour picker**: *Pick colour…* freezes the screen (undimmed) with a
     magnifier beside the cursor; click a pixel (or press **Enter**) to copy
     its hex code. Arrow keys move the pointer one pixel (Shift: ten); scrolling
-    zooms the magnifier, or resizes it (see *Scrolling the magnifier*). The
+    resizes the magnifier, or zooms it (see *Scrolling the magnifier*). The
     colour is shown as HEX, `rgb()` and `hsl()`, each with *Copy*, and recent
     picks are kept as swatches while the window is open.
   - **Pin to screen**: *Pin region…* freezes the screen; drag a region (or
@@ -151,7 +151,7 @@ for a portable copy or a second, independent instance.
 | Corner preview     | on: click opens the link (or image), middle-click copies, right-click closes |
 | Overlay frame rate | match monitor (vsync), or a custom limit |
 | Beside the crosshair | off; any of *Position* (screen X/Y), *Colour* (hex and RGB) and *Magnifier*, shown next to the cursor while selecting a region |
-| Scrolling the magnifier | *Zooms it* (fewer, bigger pixels, or more, smaller ones); *Resizes it* makes it bigger, or smaller until it's hidden |
+| Scrolling the magnifier | *Resizes it*: bigger, or smaller until it's hidden; or *Zooms it*: fewer, bigger pixels, or more, smaller ones |
 | Check for updates  | on (see [Updates](#updates)) |
 | Start with Windows | off; on, snapr starts when you sign in (it can also be turned off in Task Manager's *Startup apps*) |
 

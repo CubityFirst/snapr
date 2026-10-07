@@ -524,7 +524,10 @@ fn popup_button(
 /// Draws the toolbar's buttons. Returns where the popup buttons are.
 fn toolbar_contents(ui: &mut egui::Ui, view: &View, actions: &mut Vec<Action>) -> PopupButtons {
     for tool in Tool::ALL {
-        let tip = format!("{}  ({})", tool.name(), tool.key());
+        let tip = match tool.alias() {
+            Some(alias) => format!("{}  ({} or {alias})", tool.name(), tool.key()),
+            None => format!("{}  ({})", tool.name(), tool.key()),
+        };
         if icon_button(ui, Icon::Tool(tool), view.tool == tool, true, &tip).clicked() {
             actions.push(Action::Tool(tool));
         }

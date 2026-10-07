@@ -91,6 +91,14 @@ impl Tool {
             Tool::Clip => 'C',
         }
     }
+
+    /// A second shortcut, for tools with one.
+    pub fn alias(self) -> Option<char> {
+        match self {
+            Tool::Pen => Some('F'), // freehand
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

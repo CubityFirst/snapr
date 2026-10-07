@@ -416,6 +416,13 @@ impl App {
         // the colour and size of the one below.
         let style = self.sessions.last().map_or(self.style, |s| s.style);
         let magnifier = self.sessions.last().map_or(self.magnifier, |s| s.magnifier);
+        // Our own windows a click can take, like any other app's.
+        let snap_to: Vec<&winit::window::Window> = self
+            .main_window
+            .iter()
+            .map(|w| &*w.window)
+            .chain(self.pins.iter().map(|p| &*p.window))
+            .collect();
         match Session::new(
             event_loop,
             gpu,
@@ -425,6 +432,7 @@ impl App {
             magnifier,
             Tool::Select,
             style,
+            &snap_to,
         ) {
             Ok(mut session) => {
                 session.purpose = purpose;

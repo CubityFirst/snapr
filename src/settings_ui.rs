@@ -315,10 +315,10 @@ impl Form {
                 );
                 ui.horizontal(|ui| {
                     let scroll = &mut self.draft.crosshair_info.scroll;
-                    ui.radio_value(scroll, MagnifierScroll::Zoom, "Zooms it")
-                        .on_hover_text("Fewer, bigger pixels, or more, smaller ones");
                     ui.radio_value(scroll, MagnifierScroll::Resize, "Resizes it")
                         .on_hover_text("Bigger, or smaller until it's hidden");
+                    ui.radio_value(scroll, MagnifierScroll::Zoom, "Zooms it")
+                        .on_hover_text("Fewer, bigger pixels, or more, smaller ones");
                 });
                 ui.end_row();
 

@@ -130,25 +130,103 @@ pub fn cursor_position() -> Option<(f64, f64)> {
 
 /// The visible windows' frames (global physical pixels), topmost first, for
 /// snapping the region to a window. Must be called before our overlays open.
-pub fn window_rects() -> Vec<Rect> {
+/// `own` are snapr's windows to include (the main window, pins): on Windows
+/// xcap leaves out the calling process's windows.
+#[cfg_attr(not(windows), allow(unused_variables))]
+pub fn window_rects(own: &[&winit::window::Window]) -> Vec<Rect> {
     let Ok(windows) = xcap::Window::all() else {
         return Vec::new();
     };
-    windows
+    let others = windows
         .into_iter()
         .filter(|w| !w.is_minimized().unwrap_or(true))
         // Untitled windows are mostly invisible helpers and overlays.
         .filter(|w| w.title().is_ok_and(|t| !t.trim().is_empty()))
         .filter_map(|w| {
-            Some(Rect {
+            let rect = Rect {
                 x: w.x().ok()?,
                 y: w.y().ok()?,
                 w: w.width().ok()?,
                 h: w.height().ok()?,
-            })
-        })
+            };
+            Some((w.id().ok()?, rect))
+        });
+    #[cfg(windows)]
+    let others = win32_windows::with_own(others.collect(), own);
+    others
+        .map(|(_, r)| r)
         .filter(|r| r.w >= 8 && r.h >= 8)
         .collect()
+}
+
+#[cfg(windows)]
+mod win32_windows {
+    use std::collections::HashMap;
+
+    use windows_sys::Win32::Foundation::{HWND, RECT};
+    use windows_sys::Win32::Graphics::Dwm::{
+        DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GW_HWNDNEXT, GetTopWindow, GetWindow, IsIconic, IsWindowVisible,
+    };
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    use super::Rect;
+
+    /// `others` (xcap's windows, by id) and `own`, in z-order, topmost first.
+    pub fn with_own(
+        others: Vec<(u32, Rect)>,
+        own: &[&winit::window::Window],
+    ) -> impl Iterator<Item = (u32, Rect)> {
+        let mut by_id: HashMap<u32, Rect> = others.iter().copied().collect();
+        by_id.extend(own.iter().filter_map(|w| {
+            let RawWindowHandle::Win32(h) = w.window_handle().ok()?.as_raw() else {
+                return None;
+            };
+            let hwnd = h.hwnd.get() as HWND;
+            Some((hwnd as usize as u32, frame(hwnd)?))
+        }));
+        let mut ordered = Vec::with_capacity(by_id.len());
+        // SAFETY: walks the top-level windows; a null handle ends it.
+        let mut hwnd = unsafe { GetTopWindow(std::ptr::null_mut()) };
+        while !hwnd.is_null() {
+            // xcap's ids are its handles, cut to 32 bits.
+            if let Some(r) = by_id.remove(&(hwnd as usize as u32)) {
+                ordered.push((hwnd as usize as u32, r));
+            }
+            // SAFETY: as above.
+            hwnd = unsafe { GetWindow(hwnd, GW_HWNDNEXT) };
+        }
+        ordered.into_iter()
+    }
+
+    /// The window's frame as xcap measures others' (without the invisible
+    /// resize borders), if it's showing.
+    fn frame(hwnd: HWND) -> Option<Rect> {
+        let mut cloaked = 0u32;
+        let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        // SAFETY: `hwnd` is a live window of ours; the out-pointers are valid
+        // and sized as given.
+        let showing = unsafe {
+            IsWindowVisible(hwnd) != 0
+                && IsIconic(hwnd) == 0
+                && (DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED as u32, (&raw mut cloaked).cast(), 4) != 0
+                    || cloaked == 0)
+                && DwmGetWindowAttribute(
+                    hwnd,
+                    DWMWA_EXTENDED_FRAME_BOUNDS as u32,
+                    (&raw mut r).cast(),
+                    size_of::<RECT>() as u32,
+                ) == 0
+        };
+        (showing && r.right > r.left && r.bottom > r.top).then(|| Rect {
+            x: r.left,
+            y: r.top,
+            w: (r.right - r.left) as u32,
+            h: (r.bottom - r.top) as u32,
+        })
+    }
 }
 
 /// Process name (e.g. `chrome`) and title of the focused window. Must be

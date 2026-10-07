@@ -180,6 +180,7 @@ impl Session {
         magnifier: u32,
         tool: Tool,
         style: Style,
+        snap_to: &[&winit::window::Window],
     ) -> Result<Self, String> {
         // Grab every monitor first so the "frozen" frame is from the moment
         // the hotkey was pressed, before any of our windows appear.
@@ -190,7 +191,7 @@ impl Session {
             Err(e) => return Err(format!("screen capture failed: {e}")),
         };
         let (process, title) = capture::foreground_window();
-        let windows = capture::window_rects();
+        let windows = capture::window_rects(snap_to);
         let monitors: Vec<_> = event_loop.available_monitors().collect();
         let mut overlays = HashMap::new();
         for shot in shots {
@@ -1027,7 +1028,10 @@ impl Session {
                     (true, "Z") => return self.apply(Action::Undo),
                     (true, "Y") => return self.apply(Action::Redo),
                     (false, key) => {
-                        if let Some(t) = Tool::ALL.into_iter().find(|t| key.starts_with(t.key())) {
+                        let picks = |t: &Tool| {
+                            key.starts_with(t.key()) || t.alias().is_some_and(|a| key.starts_with(a))
+                        };
+                        if let Some(t) = Tool::ALL.into_iter().find(picks) {
                             return self.apply(Action::Tool(t));
                         }
                     }

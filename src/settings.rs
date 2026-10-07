@@ -108,12 +108,12 @@ impl CrosshairInfo {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MagnifierScroll {
-    /// Fewer, bigger pixels in the same size magnifier, or more, smaller ones.
-    #[default]
-    Zoom,
     /// The same size pixels in a bigger or smaller magnifier, down to hiding
     /// it.
+    #[default]
     Resize,
+    /// Fewer, bigger pixels in the same size magnifier, or more, smaller ones.
+    Zoom,
 }
 
 /// Recordings as MP4 (H.264 + AAC; plays everywhere), MP4 with AV1 video
