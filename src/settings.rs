@@ -79,6 +79,8 @@ pub struct Settings {
     pub speed_unit: SpeedUnit,
     /// Look for a new release now and then, and install it.
     pub check_for_updates: bool,
+    /// Start snapr when you sign in (Windows).
+    pub start_with_windows: bool,
 }
 
 /// Details shown beside the crosshair while selecting a region. The colour
@@ -263,6 +265,7 @@ impl Default for Settings {
             tool_hotkeys: Vec::new(),
             speed_unit: SpeedUnit::default(),
             check_for_updates: true,
+            start_with_windows: false,
         }
     }
 }

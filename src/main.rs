@@ -2,6 +2,8 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod annotate;
+#[cfg(windows)]
+mod autostart;
 mod audio;
 mod capture;
 mod combine;
@@ -648,6 +650,14 @@ impl App {
             let old = self.settings.tool_hotkeys.clone();
             let _ = self.set_tool_hotkeys(&old);
             return self.report_on(event_loop, e, true, Page::Hotkeys);
+        }
+        // Only on a change: another copy (e.g. with its own SNAPR_CONFIG_DIR)
+        // shouldn't undo this one's.
+        #[cfg(windows)]
+        if new.start_with_windows != self.settings.start_with_windows
+            && let Err(e) = autostart::set(new.start_with_windows)
+        {
+            return self.report(event_loop, e, true);
         }
         if let Err(e) = new.save() {
             return self.report(event_loop, e, true);
@@ -1528,6 +1538,14 @@ fn main() {
     let lock = if once { None } else { single_instance() };
 
     let (settings, loaded) = Settings::load();
+    // Point it at this file again, in case snapr was moved.
+    #[cfg(windows)]
+    if settings.start_with_windows
+        && !once
+        && let Err(e) = autostart::refresh()
+    {
+        eprintln!("{e}");
+    }
     let mut status = None;
     match loaded {
         Loaded::FirstRun => open_settings = true,

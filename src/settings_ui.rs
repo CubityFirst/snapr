@@ -250,6 +250,13 @@ impl Form {
             ui.add_space(10.0);
 
             egui::Grid::new("settings").num_columns(2).spacing([14.0, 8.0]).show(ui, |ui| {
+                if cfg!(windows) {
+                    ui.label("");
+                    ui.checkbox(&mut self.draft.start_with_windows, "Start snapr when you sign in to Windows")
+                        .on_hover_text("So the hotkeys work without starting it yourself");
+                    ui.end_row();
+                }
+
                 ui.label("");
                 ui.checkbox(&mut self.draft.annotate, "Show the annotation toolbar while capturing");
                 ui.end_row();

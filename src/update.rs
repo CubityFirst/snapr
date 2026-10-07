@@ -61,7 +61,7 @@ pub fn init() {
     }
 }
 
-fn exe() -> Result<&'static Path, String> {
+pub fn exe() -> Result<&'static Path, String> {
     EXE.get_or_init(|| std::env::current_exe().ok())
         .as_deref()
         .ok_or_else(|| "couldn't find snapr's own file".into())

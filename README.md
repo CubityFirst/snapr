@@ -153,6 +153,7 @@ for a portable copy or a second, independent instance.
 | Beside the crosshair | off; any of *Position* (screen X/Y), *Colour* (hex and RGB) and *Magnifier*, shown next to the cursor while selecting a region |
 | Scrolling the magnifier | *Zooms it* (fewer, bigger pixels, or more, smaller ones); *Resizes it* makes it bigger, or smaller until it's hidden |
 | Check for updates  | on (see [Updates](#updates)) |
+| Start with Windows | off; on, snapr starts when you sign in (it can also be turned off in Task Manager's *Startup apps*) |
 
 ### Naming templates
 
