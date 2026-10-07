@@ -5,12 +5,13 @@
 //! committed + the annotation being drawn). The frame is exactly what gets
 //! saved, and only the area that changed is redrawn while drawing.
 
-use std::sync::{Arc, LazyLock};
+use std::hash::{Hash, Hasher};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use image::RgbaImage;
 use tiny_skia::{
-    FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, PixmapPaint, Stroke, StrokeDash,
-    Transform,
+    BlendMode, FillRule, LineCap, LineJoin, Paint, Path, PathBuilder, Pixmap, PixmapPaint,
+    Stroke, StrokeDash, Transform,
 };
 
 use crate::capture::Rect;
@@ -257,6 +258,23 @@ enum Shape {
 /// How close (in pixels) the mouse has to be to a line or stroke to pick it.
 const HIT_TOLERANCE: i32 = 5;
 
+/// Room (in pixels) between a hovered stroke's edge and the ring around it.
+const RING_GAP: f32 = 4.0;
+
+/// What to outline around the annotation under the cursor (global pixels).
+#[derive(Debug, Clone)]
+pub enum Highlight {
+    /// A box around it.
+    Box(Rect),
+    /// A ring that follows its strokes, drawn with its top-left corner at
+    /// `at`. `id` changes when the picture does.
+    Ring {
+        id: u64,
+        at: (i32, i32),
+        image: Arc<Pixmap>,
+    },
+}
+
 /// Shadow under a clip, in pixels.
 const CLIP_SHADOW: i32 = 5;
 
@@ -386,9 +404,12 @@ impl Annotation {
     }
 
     /// Where it is on screen (global pixels), if `tool` can move it: clips
-    /// with the clip tool, blurred and pixelated areas with their own tools.
+    /// with the clip tool, areas and pen strokes with their own tools.
     fn movable_rect(&self, tool: Tool) -> Option<Rect> {
         match (&self.shape, tool) {
+            (Shape::Pen(_), Tool::Pen) | (Shape::Highlighter(_), Tool::Highlighter) => {
+                self.stroke_box()
+            }
             (Shape::Clip(img, (x, y)), Tool::Clip) => Some(Rect {
                 x: *x,
                 y: *y,
@@ -409,6 +430,121 @@ impl Annotation {
             }
             _ => None,
         }
+    }
+
+    /// The box around a pen or highlighter stroke's points.
+    fn stroke_box(&self) -> Option<Rect> {
+        let (Shape::Pen(pts) | Shape::Highlighter(pts)) = &self.shape else {
+            return None;
+        };
+        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for &(x, y) in pts {
+            (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+        }
+        (x0 <= x1).then(|| Rect::from_points((x0 as f64, y0 as f64), (x1 as f64, y1 as f64)))
+    }
+
+    /// Where it is if `tool` can pick it up at `p`: anywhere in a clip or
+    /// area, but on the line itself for a stroke.
+    fn movable_under(&self, p: Point, tool: Tool) -> Option<Rect> {
+        let r = self.movable_rect(tool)?;
+        match self.shape {
+            Shape::Pen(_) | Shape::Highlighter(_) => self.hit(p).map(|_| r),
+            _ => r.contains((p.0 as f64, p.1 as f64)).then_some(r),
+        }
+    }
+
+    /// An arrow's heads, for a shaft `len` long.
+    fn heads(&self, len: f32) -> Heads {
+        let opts = self.style.arrow;
+        let (at_start, at_end) = if opts.double {
+            (true, true)
+        } else {
+            (opts.head_at_start, !opts.head_at_start)
+        };
+        let (head_len, width) = arrow_head(self.stroke_width());
+        Heads {
+            at_start,
+            at_end,
+            // Two heads get at most half the line each.
+            len: head_len.min(if opts.double { len / 2.0 } else { len }),
+            width,
+        }
+    }
+
+    /// What the ring around it follows when it's hovered (global pixels):
+    /// lines stroked at its width, and filled areas. `None` for the shapes
+    /// outlined with a box instead.
+    fn ring_shape(&self) -> Option<(Vec<Path>, Vec<Path>)> {
+        match &self.shape {
+            Shape::Pen(pts) | Shape::Highlighter(pts) if pts.len() == 1 => {
+                let dot = PathBuilder::from_circle(pts[0].0, pts[0].1, self.stroke_width() / 2.0)?;
+                Some((Vec::new(), vec![dot]))
+            }
+            Shape::Pen(pts) | Shape::Highlighter(pts) => Some((vec![pen_path(pts)?], Vec::new())),
+            Shape::Line(a, b, mid) => {
+                let line = curve_path(*a, control(*a, *b, *mid), *b, mid.is_some())?;
+                Some((vec![line], Vec::new()))
+            }
+            Shape::Arrow(a, b, mid) => {
+                let c = control(*a, *b, *mid);
+                let line = curve_path(*a, c, *b, mid.is_some())?;
+                let heads = self.heads((b.0 - a.0).hypot(b.1 - a.1));
+                let fills = [(heads.at_end, (*a, c, *b)), (heads.at_start, (*b, c, *a))]
+                    .into_iter()
+                    .filter(|(on, _)| *on)
+                    .filter_map(|(_, curve)| head_path(curve, heads.len, heads.width))
+                    .collect();
+                Some((vec![line], fills))
+            }
+            _ => None,
+        }
+    }
+
+    /// The ring around it when it's hovered, and where its top-left corner
+    /// goes (global pixels): white, with a dark edge either side to show on
+    /// any background. `None` for the shapes outlined with a box.
+    fn ring(&self) -> Option<((i32, i32), Pixmap)> {
+        let (lines, fills) = self.ring_shape()?;
+        let width = self.stroke_width();
+        let bounds = self.bounds();
+        let margin = (RING_GAP + 4.0).ceil() as i32;
+        let origin = (bounds.x - margin, bounds.y - margin);
+        let size = |n: u32| n + 2 * margin as u32;
+        let to_local = Transform::from_translate(-origin.0 as f32, -origin.1 as f32);
+        // Everything within `out` of the shape: painted, or with no colour,
+        // cleared.
+        let cover = |pm: &mut Pixmap, color: Option<[u8; 4]>, out: f32| {
+            let mut paint = Paint {
+                anti_alias: true,
+                ..Paint::default()
+            };
+            match color {
+                Some([r, g, b, a]) => paint.set_color_rgba8(r, g, b, a),
+                None => paint.blend_mode = BlendMode::Clear,
+            }
+            let stroke = |width: f32| Stroke {
+                width,
+                line_cap: LineCap::Round,
+                line_join: LineJoin::Round,
+                ..Stroke::default()
+            };
+            for path in &lines {
+                pm.stroke_path(path, &paint, &stroke(width + 2.0 * out), to_local, None);
+            }
+            for path in &fills {
+                pm.fill_path(path, &paint, FillRule::Winding, to_local, None);
+                pm.stroke_path(path, &paint, &stroke(2.0 * out), to_local, None);
+            }
+        };
+        let mut ring = Pixmap::new(size(bounds.w), size(bounds.h))?;
+        cover(&mut ring, Some([0, 0, 0, 140]), RING_GAP + 2.25);
+        cover(&mut ring, None, RING_GAP - 0.75);
+        let mut light = Pixmap::new(ring.width(), ring.height())?;
+        cover(&mut light, Some([255, 255, 255, 255]), RING_GAP + 1.5);
+        cover(&mut light, None, RING_GAP);
+        ring.draw_pixmap(0, 0, light.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+        Some((origin, ring))
     }
 
     /// The tool that moves it, for the ones that can be picked up.
@@ -456,9 +592,12 @@ impl Annotation {
             .then_some(bounds)
     }
 
-    /// Moves a clip or area so its top-left corner is at `p`.
+    /// Moves a clip, area or stroke so its top-left corner is at `p`.
     fn move_to(&mut self, p: Point) {
         let p = (p.0.round(), p.1.round());
+        if let Some(r) = self.stroke_box() {
+            return self.translate((p.0 - r.x as f32, p.1 - r.y as f32));
+        }
         let radius = self.step_radius();
         match &mut self.shape {
             Shape::Clip(_, at) => *at = (p.0 as i32, p.1 as i32),
@@ -600,30 +739,13 @@ impl Annotation {
                     }
                     return;
                 }
-                let mut pb = PathBuilder::new();
-                pb.move_to(pts[0].0, pts[0].1);
-                // Smooth through the midpoints of successive samples.
-                for w in pts.windows(2).skip(1) {
-                    let mid = ((w[0].0 + w[1].0) / 2.0, (w[0].1 + w[1].1) / 2.0);
-                    pb.quad_to(w[0].0, w[0].1, mid.0, mid.1);
-                }
-                let last = pts[pts.len() - 1];
-                pb.line_to(last.0, last.1);
-                if let Some(path) = pb.finish() {
+                if let Some(path) = pen_path(&pts) {
                     pm.stroke_path(&path, &paint, &stroke, id, None);
                 }
             }
             Shape::Line(a, b, mid) => {
                 let c = local(&control(*a, *b, *mid));
-                let (a, b) = (local(a), local(b));
-                let mut pb = PathBuilder::new();
-                pb.move_to(a.0, a.1);
-                if mid.is_some() {
-                    pb.quad_to(c.0, c.1, b.0, b.1);
-                } else {
-                    pb.line_to(b.0, b.1);
-                }
-                if let Some(path) = pb.finish() {
+                if let Some(path) = curve_path(local(a), c, local(b), mid.is_some()) {
                     pm.stroke_path(&path, &paint, &stroke, id, None);
                 }
             }
@@ -634,15 +756,12 @@ impl Annotation {
                 if len < 1.0 {
                     return;
                 }
-                let opts = self.style.arrow;
-                let (head_at_start, head_at_end) = if opts.double {
-                    (true, true)
-                } else {
-                    (opts.head_at_start, !opts.head_at_start)
-                };
-                let (head_len, head_w) = arrow_head(stroke.width);
-                // Two heads get at most half the line each.
-                let head_len = head_len.min(if opts.double { len / 2.0 } else { len });
+                let Heads {
+                    at_start: head_at_start,
+                    at_end: head_at_end,
+                    len: head_len,
+                    width: head_w,
+                } = self.heads(len);
                 // The shaft stops inside each head so the round cap doesn't
                 // poke out: the part of the curve from `t0` to `t1`, whose
                 // control points come from blossoming the curve.
@@ -677,11 +796,11 @@ impl Annotation {
                         pm.stroke_path(&path, &paint, &stroke, id, None);
                     }
                 }
-                if head_at_end {
-                    fill_head(pm, &paint, (a, c, b), head_len, head_w);
-                }
-                if head_at_start {
-                    fill_head(pm, &paint, (b, c, a), head_len, head_w);
+                let heads = [(head_at_end, (a, c, b)), (head_at_start, (b, c, a))];
+                for (_, curve) in heads.into_iter().filter(|(on, _)| *on) {
+                    if let Some(path) = head_path(curve, head_len, head_w) {
+                        pm.fill_path(&path, &paint, FillRule::Winding, id, None);
+                    }
                 }
             }
             Shape::Rect(a, b) | Shape::Ellipse(a, b) => {
@@ -1014,10 +1133,10 @@ fn arrow_head(stroke: f32) -> (f32, f32) {
     (len, len * 0.85)
 }
 
-/// Fills an arrowhead `len` long and `width` wide at `b`, the end of the
-/// curve from `a` with control `c`. It sits on the curve, pointing from
-/// where it meets the shaft to the tip.
-fn fill_head(pm: &mut Pixmap, paint: &Paint, (a, c, b): (Point, Point, Point), len: f32, width: f32) {
+/// An arrowhead `len` long and `width` wide at `b`, the end of the curve
+/// from `a` with control `c`. It sits on the curve, pointing from where it
+/// meets the shaft to the tip.
+fn head_path((a, c, b): (Point, Point, Point), len: f32, width: f32) -> Option<Path> {
     let meets = bezier(a, c, b, t_at_distance(a, c, b, len));
     let (dx, dy) = (b.0 - meets.0, b.1 - meets.1);
     let d = dx.hypot(dy).max(f32::EPSILON);
@@ -1028,9 +1147,41 @@ fn fill_head(pm: &mut Pixmap, paint: &Paint, (a, c, b): (Point, Point, Point), l
     head.line_to(base.0 + perp.0 * width / 2.0, base.1 + perp.1 * width / 2.0);
     head.line_to(base.0 - perp.0 * width / 2.0, base.1 - perp.1 * width / 2.0);
     head.close();
-    if let Some(path) = head.finish() {
-        pm.fill_path(&path, paint, FillRule::Winding, Transform::identity(), None);
+    head.finish()
+}
+
+/// A freehand stroke through `pts`, smoothed through the midpoints of
+/// successive samples.
+fn pen_path(pts: &[Point]) -> Option<Path> {
+    let mut pb = PathBuilder::new();
+    pb.move_to(pts.first()?.0, pts[0].1);
+    for w in pts.windows(2).skip(1) {
+        let mid = ((w[0].0 + w[1].0) / 2.0, (w[0].1 + w[1].1) / 2.0);
+        pb.quad_to(w[0].0, w[0].1, mid.0, mid.1);
     }
+    let last = pts[pts.len() - 1];
+    pb.line_to(last.0, last.1);
+    pb.finish()
+}
+
+/// A line from `a` to `b`, curved through control `c` if `curved`.
+fn curve_path(a: Point, c: Point, b: Point, curved: bool) -> Option<Path> {
+    let mut pb = PathBuilder::new();
+    pb.move_to(a.0, a.1);
+    if curved {
+        pb.quad_to(c.0, c.1, b.0, b.1);
+    } else {
+        pb.line_to(b.0, b.1);
+    }
+    pb.finish()
+}
+
+/// Which ends of an arrow have heads, and their size.
+struct Heads {
+    at_start: bool,
+    at_end: bool,
+    len: f32,
+    width: f32,
 }
 
 fn snap_45(a: Point, p: Point) -> Point {
@@ -1276,6 +1427,8 @@ pub struct Canvas {
     /// only update the shape; it's redrawn once per frame in `take_dirty`,
     /// however many mouse events arrive in between.
     stale: bool,
+    /// The last ring drawn around a hovered annotation, with what it was for.
+    ring: Mutex<Option<(u64, (i32, i32), Arc<Pixmap>)>>,
 }
 
 fn to_pixmap(img: RgbaImage) -> Pixmap {
@@ -1301,6 +1454,7 @@ impl Canvas {
             active: None,
             editing: None,
             stale: false,
+            ring: Mutex::new(None),
             active_area: None,
             dirty: Some(Rect {
                 x: 0,
@@ -1429,10 +1583,9 @@ impl Canvas {
 
     /// The topmost annotation under `p` that `tool` can move, if any.
     fn movable_index_at(&self, p: Point, tool: Tool) -> Option<usize> {
-        self.annotations.iter().rposition(|a| {
-            a.movable_rect(tool)
-                .is_some_and(|r| r.contains((p.0 as f64, p.1 as f64)))
-        })
+        self.annotations
+            .iter()
+            .rposition(|a| a.movable_under(p, tool).is_some())
     }
 
     /// Whether `tool` can pick something up at `p`.
@@ -1441,13 +1594,13 @@ impl Canvas {
     }
 
     /// Picks up the topmost annotation under `p` that `tool` can move (a
-    /// clip, or a blurred or pixelated area), to move it by dragging.
-    /// Returns whether there was one.
+    /// clip, an area, or a pen stroke), to move it by dragging. Returns
+    /// whether there was one.
     pub fn begin_move(&mut self, p: Point, tool: Tool) -> bool {
         let Some(i) = self.movable_index_at(p, tool) else {
             return false;
         };
-        let r = self.annotations[i].movable_rect(tool).expect("movable");
+        let r = self.annotations[i].movable_under(p, tool).expect("movable");
         let grab = (p.0 - r.x as f32, p.1 - r.y as f32);
         self.begin_edit(i, EditKind::Move { grab });
         true
@@ -1463,13 +1616,34 @@ impl Canvas {
             .find_map(|(i, a)| a.hit(p).map(|r| (i, r)))
     }
 
-    /// Where the annotation a right-click at `p` would delete is (global
-    /// pixels), to outline it.
-    pub fn deletable_rect(&self, p: Point) -> Option<Rect> {
-        self.deletable_at(p).map(|(_, r)| r)
+    /// What to outline around the annotation a right-click at `p` would
+    /// delete: a ring that follows a stroke, line or arrow, or a box.
+    pub fn deletable_highlight(&self, p: Point) -> Option<Highlight> {
+        let (i, rect) = self.deletable_at(p)?;
+        let a = &self.annotations[i];
+        // The same picture while it's the same annotation in the same place.
+        let mut hasher = std::hash::DefaultHasher::new();
+        (a.seed, rect.x, rect.y, rect.w, rect.h).hash(&mut hasher);
+        let id = hasher.finish();
+        let mut cached = self.ring.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((key, at, image)) = &*cached
+            && *key == id
+        {
+            return Some(Highlight::Ring {
+                id,
+                at: *at,
+                image: image.clone(),
+            });
+        }
+        let Some((at, image)) = a.ring() else {
+            return Some(Highlight::Box(rect));
+        };
+        let image = Arc::new(image);
+        *cached = Some((id, at, image.clone()));
+        Some(Highlight::Ring { id, at, image })
     }
 
-    /// Removes the annotation [`Self::deletable_rect`] finds at `p`.
+    /// Removes the annotation [`Self::deletable_highlight`] finds at `p`.
     /// Returns whether there was one.
     pub fn delete_at(&mut self, p: Point) -> bool {
         let Some((i, _)) = self.deletable_at(p) else {
@@ -1809,8 +1983,8 @@ mod tests {
         let erased = c.image();
 
         // A rectangle is picked by its outline, not its empty inside.
-        assert!(c.deletable_rect((80.0, 45.0)).is_none());
-        assert!(c.deletable_rect((95.0, 45.0)).is_some());
+        assert!(c.deletable_highlight((80.0, 45.0)).is_none());
+        assert!(c.deletable_highlight((95.0, 45.0)).is_some());
         assert!(c.delete_at((50.0, 20.0)));
         assert!(!c.delete_at((50.0, 20.0)));
         assert_eq!(c.annotations.len(), 1);
@@ -1819,9 +1993,109 @@ mod tests {
 
         // Lines and arrows go too, from near their stroke.
         draw(&mut c, Tool::Arrow, (10.0, 50.0), (90.0, 50.0));
-        assert!(c.deletable_rect((30.0, 40.0)).is_none());
+        assert!(c.deletable_highlight((30.0, 40.0)).is_none());
         assert!(c.delete_at((30.0, 52.0)));
         assert_eq!(c.annotations.len(), 2);
+    }
+
+    #[test]
+    fn pen_strokes_drag_with_their_own_tool() {
+        let mut c = canvas();
+        draw(&mut c, Tool::Pen, (1010.0, 510.0), (1050.0, 530.0));
+        let before = c.image();
+        // Off the line, or with another tool: nothing to pick up.
+        assert!(!c.movable_at((1030.0, 540.0), Tool::Pen));
+        assert!(!c.movable_at((1030.0, 520.0), Tool::Highlighter));
+        assert!(c.begin_move((1030.0, 520.0), Tool::Pen));
+        c.drag_to((1060.0, 540.0), false);
+        c.commit();
+        assert_eq!(c.annotations.len(), 1);
+        let Shape::Pen(pts) = &c.annotations[0].shape else {
+            panic!("still a pen stroke");
+        };
+        assert_eq!(pts.first(), Some(&(1040.0, 530.0)));
+        assert_eq!(pts.last(), Some(&(1080.0, 550.0)));
+        // Where it was is clear again, and undo puts it back.
+        assert_eq!(c.image().get_pixel(10, 10).0, [200, 200, 200, 255]);
+        c.undo();
+        assert_eq!(c.image().as_raw(), before.as_raw());
+    }
+
+    #[test]
+    fn hovered_strokes_get_a_ring_that_follows_them() {
+        let img = RgbaImage::from_pixel(200, 120, image::Rgba([90, 90, 90, 255]));
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            w: 200,
+            h: 120,
+        };
+        let mut c = Canvas::new(rect, img);
+        // A diagonal pen stroke: its bounding box is mostly empty.
+        let mut pen = Annotation::new(Tool::Pen, Style::default(), (20.0, 20.0)).unwrap();
+        if let Shape::Pen(pts) = &mut pen.shape {
+            pts.extend((1..=40).map(|i| (20.0 + i as f32 * 4.0, 20.0 + i as f32 * 2.0)));
+        }
+        c.begin(pen);
+        c.commit();
+        draw(&mut c, Tool::Rect, (30.0, 70.0), (80.0, 110.0));
+
+        let Some(Highlight::Ring { at, image, .. }) = c.deletable_highlight((100.0, 60.0)) else {
+            panic!("a pen stroke should get a ring");
+        };
+        let alpha = |x: f32, y: f32| {
+            let (x, y) = (x as i32 - at.0, y as i32 - at.1);
+            image.pixel(x as u32, y as u32).map_or(0, |p| p.alpha())
+        };
+        let white = Style::default().size.stroke() / 2.0 + RING_GAP + 0.75;
+        // Clear on the stroke and in the box's empty corners; white a little
+        // way out from the stroke, across it (perpendicular to (2, 1)).
+        assert_eq!(alpha(100.0, 60.0), 0);
+        assert_eq!(alpha(170.0, 30.0), 0);
+        assert_eq!(alpha(30.0, 55.0), 0);
+        let (nx, ny) = (-1.0 / 5f32.sqrt(), 2.0 / 5f32.sqrt());
+        assert_eq!(alpha(100.0 + nx * white, 60.0 + ny * white), 255);
+        assert_eq!(alpha(100.0 - nx * white, 60.0 - ny * white), 255);
+        // The same picture again while nothing changes.
+        let Some(Highlight::Ring { image: again, .. }) = c.deletable_highlight((100.0, 60.0)) else {
+            panic!();
+        };
+        assert!(Arc::ptr_eq(&image, &again));
+        // Boxy shapes keep a box.
+        assert!(matches!(c.deletable_highlight((30.0, 90.0)), Some(Highlight::Box(_))));
+    }
+
+    /// Renders a pen stroke and an arrow with their hover rings to
+    /// `target/hover-ring-preview.png`: `cargo test hover_ring_preview -- --ignored`.
+    #[test]
+    #[ignore]
+    fn hover_ring_preview() {
+        let img = RgbaImage::from_pixel(360, 200, image::Rgba([235, 235, 235, 255]));
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            w: 360,
+            h: 200,
+        };
+        let mut c = Canvas::new(rect, img);
+        let mut pen = Annotation::new(Tool::Pen, Style::default(), (30.0, 150.0)).unwrap();
+        if let Shape::Pen(pts) = &mut pen.shape {
+            pts.extend((1..=60).map(|i| {
+                let t = i as f32 / 60.0;
+                (30.0 + t * 150.0, 150.0 - t * 90.0 + (t * 12.0).sin() * 25.0)
+            }));
+        }
+        c.begin(pen);
+        c.commit();
+        draw(&mut c, Tool::Arrow, (220.0, 160.0), (330.0, 40.0));
+        let mut out = c.frame.clone();
+        for p in [(105.0, 105.0), (275.0, 100.0)] {
+            if let Some(Highlight::Ring { at, image, .. }) = c.deletable_highlight(p) {
+                out.draw_pixmap(at.0, at.1, image.as_ref().as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+            }
+        }
+        out.save_png(format!("{}/target/hover-ring-preview.png", env!("CARGO_MANIFEST_DIR")))
+            .unwrap();
     }
 
     #[test]

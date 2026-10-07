@@ -8,7 +8,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::monitor::MonitorHandle;
 use winit::window::{Window, WindowLevel};
 
-use crate::annotate::{Style, Tool};
+use crate::annotate::{Highlight, Style, Tool};
 use crate::capture::{PlacedShot, Rect, Shot};
 use crate::gpu::Gpu;
 use crate::toolbar;
@@ -40,7 +40,7 @@ pub struct Frame {
     pub arrow_nodes: Vec<(f64, f64)>,
     /// The annotation under the cursor (global pixels), outlined because it
     /// can be right-clicked away.
-    pub hovered: Option<Rect>,
+    pub hovered: Option<Highlight>,
     /// What to do, shown at the top of this monitor.
     pub hint: Option<&'static str>,
     /// The card beside the cursor (global pixels): the colour picker's
@@ -53,6 +53,8 @@ struct Ui {
     state: egui_winit::State,
     renderer: egui_wgpu::Renderer,
     repaint_at: Option<Instant>,
+    /// The ring around a hovered annotation, uploaded, and its id.
+    ring: Option<(u64, egui::TextureHandle)>,
 }
 
 /// A borderless, always-on-top window covering one monitor and showing its
@@ -228,6 +230,7 @@ impl Overlay {
                 state,
                 renderer,
                 repaint_at: None,
+                ring: None,
             },
             toolbar: None,
             shot,
@@ -400,9 +403,31 @@ impl Overlay {
                     )
                 })
                 .collect(),
-            hovered: frame.hovered.map(|r| {
-                let min = egui::pos2((r.x - win.x) as f32 / ppp, (r.y - win.y) as f32 / ppp);
-                egui::Rect::from_min_size(min, egui::vec2(r.w as f32 / ppp, r.h as f32 / ppp))
+            hovered: frame.hovered.as_ref().map(|h| {
+                let points = |x: i32, y: i32, w: u32, h: u32| {
+                    let min = egui::pos2((x - win.x) as f32 / ppp, (y - win.y) as f32 / ppp);
+                    egui::Rect::from_min_size(min, egui::vec2(w as f32 / ppp, h as f32 / ppp))
+                };
+                match h {
+                    Highlight::Box(r) => toolbar::Hover::Box(points(r.x, r.y, r.w, r.h)),
+                    Highlight::Ring { id, at, image } => {
+                        let texture = match &self.ui.ring {
+                            Some((uploaded, t)) if uploaded == id => t.clone(),
+                            _ => {
+                                let size = [image.width() as usize, image.height() as usize];
+                                let t = self.ui.state.egui_ctx().load_texture(
+                                    "ring",
+                                    egui::ColorImage::from_rgba_premultiplied(size, image.data()),
+                                    egui::TextureOptions::LINEAR,
+                                );
+                                self.ui.ring = Some((*id, t.clone()));
+                                t
+                            }
+                        };
+                        let rect = points(at.0, at.1, image.width(), image.height());
+                        toolbar::Hover::Ring(texture.id(), rect)
+                    }
+                }
             }),
             hint: frame.hint,
             cursor_info: frame.cursor_info.as_ref().map(|(c, info)| {

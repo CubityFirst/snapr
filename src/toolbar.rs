@@ -30,6 +30,14 @@ pub enum Action {
     Redo,
 }
 
+/// The outline around the annotation under the cursor, in points.
+pub enum Hover {
+    /// A box around it.
+    Box(Rect),
+    /// A ring drawn around its strokes, shown over this area.
+    Ring(egui::TextureId, Rect),
+}
+
 /// Everything the overlay UI needs for one frame, in window points.
 pub struct View {
     pub tool: Tool,
@@ -42,8 +50,9 @@ pub struct View {
     pub cursor: CursorIcon,
     /// Handles for curving lines or arrows, in points.
     pub arrow_nodes: Vec<egui::Pos2>,
-    /// The annotation under the cursor, in points.
-    pub hovered: Option<Rect>,
+    /// The annotation under the cursor, outlined because it can be
+    /// right-clicked away.
+    pub hovered: Option<Hover>,
     /// What to do, shown at the top of the screen.
     pub hint: Option<&'static str>,
     /// Details beside the cursor (in points): the colour picker's
@@ -140,12 +149,19 @@ fn ui(ui: &mut egui::Ui, view: &View) -> (Vec<Action>, Option<Rect>) {
         draw_cursor_info(ui.painter(), *at, info);
     }
 
-    if let Some(r) = view.hovered {
-        // Dark under light, to show on any background.
-        let r = r.expand(2.0);
-        let painter = ui.painter();
-        painter.rect_stroke(r, 3.0, Stroke::new(3.0, Color32::from_black_alpha(140)), StrokeKind::Middle);
-        painter.rect_stroke(r, 3.0, Stroke::new(1.5, Color32::WHITE), StrokeKind::Middle);
+    match view.hovered {
+        Some(Hover::Box(r)) => {
+            // Dark under light, to show on any background.
+            let r = r.expand(2.0);
+            let painter = ui.painter();
+            painter.rect_stroke(r, 3.0, Stroke::new(3.0, Color32::from_black_alpha(140)), StrokeKind::Middle);
+            painter.rect_stroke(r, 3.0, Stroke::new(1.5, Color32::WHITE), StrokeKind::Middle);
+        }
+        Some(Hover::Ring(texture, r)) => {
+            let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+            ui.painter().image(texture, r, uv, Color32::WHITE);
+        }
+        None => {}
     }
 
     for &node in &view.arrow_nodes {

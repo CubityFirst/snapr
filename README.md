@@ -26,12 +26,12 @@ region; the screenshot includes your annotations.
 | Tool | Key | |
 |------|-----|-|
 | Region | `S` | the default: drag to capture |
-| Pen | `P` or `F` | freehand |
+| Pen | `P` or `F` | freehand; drag a stroke to move it |
 | Line | `L` | Shift snaps to 45° |
 | Arrow | `A` | Shift snaps to 45° |
 | Box | `R` | Shift makes a square |
 | Ellipse | `E` | Shift makes a circle |
-| Highlighter | `H` | translucent marker |
+| Highlighter | `H` | translucent marker; drag a stroke to move it |
 | Blur | `B` | blurs the dragged area |
 | Pixelate | `X` | pixelates the dragged area |
 | Image redaction | `I` | covers the dragged area with an image chosen in Settings (stretched to fit, or cropped to keep its proportions); black boxes if none is set |

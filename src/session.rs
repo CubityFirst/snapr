@@ -383,7 +383,7 @@ impl Session {
         let hovered = canvas
             .zip(self.cursor)
             .filter(|_| self.annotate && self.grab == Grab::None && !self.over_toolbar())
-            .and_then(|(c, p)| c.deletable_rect((p.0 as f32, p.1 as f32)));
+            .and_then(|(c, p)| c.deletable_highlight((p.0 as f32, p.1 as f32)));
         let picking = self.purpose == Purpose::PickColor;
         let on_this_monitor = self
             .cursor
@@ -910,7 +910,7 @@ impl Session {
         } else if let Some(canvas) = &mut self.canvas
             && canvas.begin_move((p.0 as f32, p.1 as f32), self.tool)
         {
-            // Grabbed a clip, or a blurred or pixelated area: drag to move it.
+            // Grabbed a clip, an area or a pen stroke: drag to move it.
             self.grab = Grab::Draw;
         } else if self.ensure_canvas_at(p)
             && let (Some(canvas), Some(a)) = (
