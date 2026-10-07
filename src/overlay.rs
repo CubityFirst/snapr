@@ -38,11 +38,14 @@ pub struct Frame {
     /// Lines' or arrows' middle nodes (global pixels), shown as handles to
     /// curve them.
     pub arrow_nodes: Vec<(f64, f64)>,
+    /// The annotation under the cursor (global pixels), outlined because it
+    /// can be right-clicked away.
+    pub hovered: Option<Rect>,
     /// What to do, shown at the top of this monitor.
     pub hint: Option<&'static str>,
-    /// The colour picker's magnifier: the cursor (global pixels) and the
-    /// pixels around it.
-    pub loupe: Option<((f64, f64), image::RgbaImage)>,
+    /// The card beside the cursor (global pixels): the colour picker's
+    /// magnifier, or the crosshair info chosen in Settings.
+    pub cursor_info: Option<((f64, f64), toolbar::CursorInfo)>,
 }
 
 /// The egui context drawing the toolbar and decorations on this overlay.
@@ -73,6 +76,8 @@ pub struct Overlay {
     pub last_frame: Option<Instant>,
     /// A redraw postponed to respect the frame-rate limit.
     pub due: Option<Instant>,
+    /// A redraw was asked for and hasn't happened yet.
+    pub redraw_pending: bool,
 }
 
 impl Overlay {
@@ -226,6 +231,7 @@ impl Overlay {
             monitor_pos: pos,
             last_frame: None,
             due: None,
+            redraw_pending: false,
         })
     }
 
@@ -278,10 +284,21 @@ impl Overlay {
         ))
     }
 
+    /// Asks for a redraw. The session also draws pending overlays whenever
+    /// it draws another one, since Windows can leave them waiting.
+    pub fn request_redraw(&mut self) {
+        self.redraw_pending = true;
+        self.window.request_redraw();
+    }
+
     /// Feeds a window event to egui; requests a redraw if egui wants one.
     pub fn egui_event(&mut self, event: &WindowEvent) {
-        if self.ui.state.on_window_event(&self.window, event).repaint {
-            self.window.request_redraw();
+        let repaint = self.ui.state.on_window_event(&self.window, event).repaint;
+        // egui asks to repaint in answer to a redraw, too. Asking again while
+        // Windows is painting this overlay makes it paint it over and over,
+        // and the other monitors' overlays never get their turn to redraw.
+        if repaint && !matches!(event, WindowEvent::RedrawRequested) {
+            self.request_redraw();
         }
     }
 
@@ -380,13 +397,17 @@ impl Overlay {
                     )
                 })
                 .collect(),
+            hovered: frame.hovered.map(|r| {
+                let min = egui::pos2((r.x - win.x) as f32 / ppp, (r.y - win.y) as f32 / ppp);
+                egui::Rect::from_min_size(min, egui::vec2(r.w as f32 / ppp, r.h as f32 / ppp))
+            }),
             hint: frame.hint,
-            loupe: frame.loupe.as_ref().map(|(c, pixels)| {
+            cursor_info: frame.cursor_info.as_ref().map(|(c, info)| {
                 let at = egui::pos2(
                     (c.0 - win.x as f64) as f32 / ppp,
                     (c.1 - win.y as f64) as f32 / ppp,
                 );
-                (at, pixels.clone())
+                (at, info.clone())
             }),
         };
         let input = self.ui.state.take_egui_input(&self.window);
@@ -397,6 +418,7 @@ impl Overlay {
     }
 
     pub fn render(&mut self, gpu: &Gpu, frame: &Frame) -> Vec<toolbar::Action> {
+        self.redraw_pending = false;
         let size = self.window.inner_size();
         if size.width == 0 || size.height == 0 {
             return Vec::new();
@@ -437,7 +459,7 @@ impl Overlay {
             | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                 self.surface.configure(&gpu.device, &self.config);
-                self.window.request_redraw();
+                self.request_redraw();
                 self.free_textures(&freed);
                 return actions;
             }
@@ -587,8 +609,9 @@ mod close_timing {
             can_redo: false,
             cursor: egui::CursorIcon::Default,
             arrow_nodes: Vec::new(),
+            hovered: None,
             hint: None,
-            loupe: None,
+            cursor_info: None,
         };
         overlay.show(gpu, &frame);
         overlay

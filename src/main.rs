@@ -8,6 +8,8 @@ mod combine;
 mod cursor;
 mod decode;
 mod destinations_ui;
+#[cfg(windows)]
+mod dxgi;
 mod encode;
 mod gallery;
 mod gpu;
@@ -60,7 +62,7 @@ use crate::hotkey::GlobalHotkey;
 use crate::main_window::{Action, MainWindow, Page};
 use crate::output::Output;
 use crate::pin::{Pin, Place};
-use crate::session::{Outcome, Purpose, Session};
+use crate::session::{MAGNIFIER_PIXELS, Outcome, Purpose, Session};
 use crate::settings::{Loaded, RecordFormat, Settings, ToolAction, ToolHotkey, Upload};
 use crate::settings_ui::Form;
 use crate::settings_ui::Test;
@@ -177,6 +179,8 @@ struct App {
     sessions: Vec<Session>,
     /// Annotation colour and size, remembered between captures.
     style: Style,
+    /// Pixels across the magnifier (its zoom), remembered between captures.
+    magnifier: u32,
     main_window: Option<MainWindow>,
     /// The preview in the corner of the screen after a capture.
     toast: Option<Toast>,
@@ -398,11 +402,14 @@ impl App {
         // Every capture starts by selecting a region; a nested capture keeps
         // the colour and size of the one below.
         let style = self.sessions.last().map_or(self.style, |s| s.style);
+        let magnifier = self.sessions.last().map_or(self.magnifier, |s| s.magnifier);
         match Session::new(
             event_loop,
             gpu,
             s.annotate && purpose == Purpose::Screenshot,
             s.overlay_fps,
+            s.crosshair_info,
+            magnifier,
             Tool::Select,
             style,
         ) {
@@ -456,6 +463,7 @@ impl App {
             // Its windows close at the end of this block.
             let session = self.sessions.remove(index);
             self.style = session.style;
+            self.magnifier = session.magnifier;
             match outcome {
                 Outcome::Done {
                     image,
@@ -751,7 +759,8 @@ impl App {
                 self.pins_changed();
             }
             Action::SaveSettings(s, secrets) => self.apply_settings(event_loop, s, secrets),
-            Action::TestUpload(upload, secret) => self.test_upload(upload, secret),
+            Action::TestUpload(upload, secret) => self.test_upload(upload, secret, false),
+            Action::UploadIcon(upload, secret) => self.test_upload(upload, secret, true),
             Action::CheckForUpdates => self.check_for_updates(),
             Action::RestartToUpdate => {
                 if let Some(save) = self.main_window.as_mut().and_then(|w| w.flush_settings()) {
@@ -878,17 +887,39 @@ impl App {
         }
     }
 
-    /// Uploads a tiny file to the destination and deletes it again.
-    fn test_upload(&self, upload: Upload, secret: Option<String>) {
+    /// Uploads a tiny file to the destination and deletes it again, or with
+    /// `icon`, uploads snapr's icon where a screenshot would go and leaves
+    /// it there to look at.
+    fn test_upload(&self, upload: Upload, secret: Option<String>, icon: bool) {
         let proxy = Mutex::new(self.proxy.clone());
         let id = upload.id.clone();
         std::thread::spawn(move || {
             let result = (|| {
-                upload.validate()?;
+                let template = upload.validate()?;
                 let secret = secret
                     .or_else(|| secrets::get(&upload.id))
                     .ok_or("enter the secret access key")?;
                 let target = upload.target(secret);
+                if icon {
+                    const SIZE: u32 = 256;
+                    let image = image::RgbaImage::from_raw(SIZE, SIZE, crate::tray::icon_rgba(SIZE))
+                        .ok_or("couldn't draw the icon")?;
+                    let mut png = Vec::new();
+                    image
+                        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+                        .map_err(|e| format!("couldn't encode the icon: {e}"))?;
+                    let ctx = naming::Context {
+                        title: Some("snapr".into()),
+                        width: SIZE,
+                        height: SIZE,
+                        ..naming::Context::new(chrono::Local::now())
+                    };
+                    let key = template.render_key(&ctx, "png");
+                    let body = crate::upload::Body::Bytes(Arc::new(png));
+                    let progress = crate::upload::Progress::default();
+                    target.put_object(&key, &body, "image/png", &progress)?;
+                    return Ok(format!("Uploaded the icon: {}", upload.link(&key)?));
+                }
                 let key = format!(
                     "snapr-test-{}.txt",
                     (0..8).map(|_| fastrand::alphanumeric()).collect::<String>()
@@ -1550,6 +1581,7 @@ fn main() {
         output,
         sessions: Vec::new(),
         style: Style::default(),
+        magnifier: MAGNIFIER_PIXELS,
         main_window: None,
         toast: None,
         pins: Vec::new(),

@@ -3,6 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use egui::{Color32, RichText, TextEdit};
@@ -21,6 +22,9 @@ pub enum Action {
     Reveal(PathBuf),
     /// Try an upload destination, with a secret key typed but not yet saved.
     TestUpload(Upload, Option<String>),
+    /// Upload snapr's icon to a destination as a screenshot would be, with
+    /// a secret key typed but not yet saved.
+    UploadIcon(Upload, Option<String>),
     CheckForUpdates,
     /// Quit and start the updated program.
     RestartToUpdate,
@@ -76,6 +80,15 @@ pub struct Form {
     /// The last edit handed to the app to save, so one that failed isn't
     /// retried until something changes.
     submitted: Option<(Settings, HashMap<String, String>)>,
+    /// The last FFmpeg check: the path and format checked, and the outcome
+    /// once it's in.
+    ffmpeg_check: Option<FfmpegCheck>,
+}
+
+struct FfmpegCheck {
+    program: String,
+    webm: bool,
+    result: Arc<Mutex<Option<Result<String, String>>>>,
 }
 
 impl Form {
@@ -100,6 +113,7 @@ impl Form {
             microphones: None,
             seen: (settings.clone(), HashMap::new(), Instant::now()),
             submitted: None,
+            ffmpeg_check: None,
         }
     }
 
@@ -264,6 +278,20 @@ impl Form {
                 });
                 ui.end_row();
 
+                ui.label("Beside the crosshair").on_hover_text(
+                    "Shown next to the cursor while selecting a region",
+                );
+                ui.horizontal(|ui| {
+                    let info = &mut self.draft.crosshair_info;
+                    ui.checkbox(&mut info.position, "Position")
+                        .on_hover_text("The pixel's X and Y on the screen");
+                    ui.checkbox(&mut info.color, "Colour")
+                        .on_hover_text("The pixel's colour, as hex and RGB");
+                    ui.checkbox(&mut info.magnifier, "Magnifier")
+                        .on_hover_text("The pixels around the cursor, enlarged");
+                });
+                ui.end_row();
+
                 ui.label("Redaction image").on_hover_text(
                     "The image redaction tool (I) covers areas with this picture",
                 );
@@ -350,8 +378,10 @@ impl Form {
                         {
                             self.draft.ffmpeg_path = file.display().to_string();
                         }
+                        self.ffmpeg_check_button(ui);
                     });
                     ui.end_row();
+                    self.ffmpeg_check_result(ui);
 
                     // The settings for the format being recorded.
                     let ff = &mut self.draft.ffmpeg;
@@ -858,6 +888,63 @@ pub(crate) fn template_field(ui: &mut egui::Ui, id_salt: &str, text: &mut String
             });
         }
     });
+}
+
+impl Form {
+    /// Checks in the background that the FFmpeg path runs and can record
+    /// the chosen format.
+    fn ffmpeg_check_button(&mut self, ui: &mut egui::Ui) {
+        let webm = self.draft.record_format == crate::settings::RecordFormat::Webm;
+        let running = self.current_ffmpeg_check().is_some_and(|r| r.is_none());
+        if !ui
+            .add_enabled(!running, egui::Button::new("Test"))
+            .on_hover_text("Check that snapr can run this FFmpeg and record with it")
+            .clicked()
+        {
+            return;
+        }
+        let program = self.draft.ffmpeg_path.clone();
+        let result = Arc::new(Mutex::new(None));
+        let (out, ctx, path) = (result.clone(), ui.ctx().clone(), program.clone());
+        std::thread::spawn(move || {
+            *out.lock().unwrap() = Some(crate::encode::check_ffmpeg(&path, webm));
+            ctx.request_repaint();
+        });
+        self.ffmpeg_check = Some(FfmpegCheck { program, webm, result });
+    }
+
+    /// The outcome of the FFmpeg check, under the path, while it's for the
+    /// path and format shown.
+    fn ffmpeg_check_result(&self, ui: &mut egui::Ui) {
+        let Some(result) = self.current_ffmpeg_check() else {
+            return;
+        };
+        ui.label("");
+        match result {
+            None => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Checking\u{2026}");
+                });
+            }
+            Some(Ok(msg)) => {
+                ui.colored_label(SUCCESS, msg);
+            }
+            Some(Err(e)) => {
+                ui.colored_label(ERROR, e);
+            }
+        }
+        ui.end_row();
+    }
+
+    /// The last FFmpeg check's outcome (`None` while it runs), if it was of
+    /// the path and format now set.
+    fn current_ffmpeg_check(&self) -> Option<Option<Result<String, String>>> {
+        let check = self.ffmpeg_check.as_ref()?;
+        let webm = self.draft.record_format == crate::settings::RecordFormat::Webm;
+        (check.program == self.draft.ffmpeg_path && check.webm == webm)
+            .then(|| check.result.lock().unwrap().clone())
+    }
 }
 
 fn insert_at_cursor(ctx: &egui::Context, id: egui::Id, text: &mut String, token: &str) {

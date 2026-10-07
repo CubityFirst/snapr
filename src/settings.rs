@@ -39,6 +39,8 @@ pub struct Settings {
     pub show_toast: bool,
     /// Overlay frame-rate limit; 0 matches each monitor's refresh rate.
     pub overlay_fps: u32,
+    /// What's shown beside the crosshair while selecting a region.
+    pub crosshair_info: CrosshairInfo,
     /// The picture the image redaction tool covers areas with; empty draws
     /// black boxes.
     pub redact_image: String,
@@ -74,6 +76,25 @@ pub struct Settings {
     pub speed_unit: SpeedUnit,
     /// Look for a new release now and then, and install it.
     pub check_for_updates: bool,
+}
+
+/// Details shown beside the crosshair while selecting a region. The colour
+/// picker always shows the magnifier and colour, and the position if it's on.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CrosshairInfo {
+    /// The pixel's position on the screen.
+    pub position: bool,
+    /// The pixel's colour.
+    pub color: bool,
+    /// The pixels around the cursor, enlarged.
+    pub magnifier: bool,
+}
+
+impl CrosshairInfo {
+    pub fn any(self) -> bool {
+        self.position || self.color || self.magnifier
+    }
 }
 
 /// Recordings as MP4 (H.264 + AAC; plays everywhere), MP4 with AV1 video
@@ -208,6 +229,7 @@ impl Default for Settings {
             play_sounds: true,
             show_toast: true,
             overlay_fps: 0,
+            crosshair_info: CrosshairInfo::default(),
             redact_image: String::new(),
             redact_stretch: false,
             record_fps: 30,

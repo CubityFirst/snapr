@@ -1,5 +1,6 @@
-//! Screen recording of a region: frames from xcap's per-monitor recorder,
-//! cropped and handed to an encoder (see `encode`) along with the sound
+//! Screen recording of a region: frames from each monitor it's on (snapr's
+//! own duplication on Windows, see `dxgi`; xcap's recorders elsewhere),
+//! cropped, put together and handed to an encoder (see `encode`) along with the sound
 //! (see `audio`), mixed as it arrives.
 
 use std::collections::HashMap;
@@ -27,6 +28,7 @@ static RECORDERS: Mutex<Option<Recorders>> = Mutex::new(None);
 /// which objc2 doesn't mark `Send`, though AVFoundation lets a session be
 /// started and stopped from any thread (Apple's samples do it on a
 /// background queue).
+#[cfg_attr(windows, allow(dead_code))]
 struct Recorder(VideoRecorder);
 
 // SAFETY: see above; each recorder is used by one thread at a time, moving
@@ -35,7 +37,7 @@ unsafe impl Send for Recorder {}
 
 pub struct Recording {
     /// What's being recorded, in global physical pixels (the selection
-    /// clipped to one monitor and rounded down to even sizes).
+    /// clipped to the monitors and rounded down to even sizes).
     pub rect: Rect,
     flags: Arc<Flags>,
     /// Recording time, which the audio follows.
@@ -102,21 +104,29 @@ impl Recording {
         out: PathBuf,
         done: Done,
     ) -> Result<Self, String> {
-        let (monitor, region, origin) = monitor_for(rect)?;
+        let area = area_for(rect)?;
+        let region = area.rect;
         if let Some(dir) = out.parent() {
             std::fs::create_dir_all(dir)
                 .map_err(|e| format!("couldn't create {}: {e}", dir.display()))?;
         }
+        // HDR capture is of one display.
         #[cfg(windows)]
-        let hdr = hdr
-            && !encode::is_webm(&out)
-            && crate::hdr::displays().iter().any(|d| (d.rect.x, d.rect.y) == origin);
+        let hdr_display = match area.pieces.as_slice() {
+            [piece] if hdr && !encode::is_webm(&out) => crate::hdr::displays()
+                .iter()
+                .any(|d| (d.rect.x, d.rect.y) == piece.origin)
+                .then_some((piece.origin, piece.region)),
+            _ => None,
+        };
         #[cfg(not(windows))]
-        let hdr = false;
+        let hdr_display: Option<((i32, i32), Rect)> = None;
         // The usual capture starts right away, so frame 0 is the screen as
         // it is now. HDR capture starts on the recording thread (its
         // objects stay on one thread).
-        let screen = if hdr { None } else { Some(ScreenFrames::start(&monitor, region)?) };
+        let hdr = hdr_display.is_some();
+        let screen = if hdr { None } else { Some(ScreenFrames::start(&area)?) };
+        drop(area);
 
         // Open the audio devices before the video starts, so a missing
         // microphone stops the recording before it begins.
@@ -169,9 +179,9 @@ impl Recording {
                 // HDR: the GPU encoder takes a second to start, so the
                 // recording counts as started without waiting for it.
                 #[cfg(windows)]
-                let hdr_source = hdr.then(|| {
+                let hdr_source = hdr_display.map(|(origin, on_display)| {
                     let _ = ready_tx.send(Ok(()));
-                    open_hdr(origin, region, &out, format, audio_format)
+                    open_hdr(origin, on_display, &out, format, audio_format)
                         .inspect_err(|e| warning = Some(format!("recorded in SDR: {e}")))
                         .ok()
                 });
@@ -183,7 +193,13 @@ impl Recording {
                         let screen = match screen {
                             Some(s) => s,
                             // HDR didn't work out: the usual capture.
-                            None => ScreenFrames::start(&monitor_for(rect)?.0, region)?,
+                            None => {
+                                let area = area_for(rect)?;
+                                if area.rect != region {
+                                    return Err("the screens changed".into());
+                                }
+                                ScreenFrames::start(&area)?
+                            }
                         };
                         let first = screen.picture();
                         #[cfg(windows)]
@@ -230,8 +246,7 @@ impl Recording {
                 let mut sound = sound;
                 // The pointer is drawn in at its global position, relative
                 // to the region's top-left corner.
-                let cursor_origin =
-                    show_cursor.then_some((origin.0 + region.x, origin.1 + region.y));
+                let cursor_origin = show_cursor.then_some((region.x, region.y));
                 let result = pump(
                     frames.as_mut(),
                     fps,
@@ -293,11 +308,7 @@ impl Recording {
             Err(_) => return Err("the recording thread stopped".into()),
         }
         Ok(Self {
-            rect: Rect {
-                x: origin.0 + region.x,
-                y: origin.1 + region.y,
-                ..region
-            },
+            rect: region,
             flags,
             clock,
             thread: Some(thread),
@@ -332,12 +343,41 @@ impl Drop for Recording {
     }
 }
 
-/// The monitor holding most of `rect`, `rect` clipped to it (relative to the
-/// monitor, with an even width and height, as yuv420p needs) and the
-/// monitor's top-left corner.
-fn monitor_for(rect: Rect) -> Result<(Monitor, Rect, (i32, i32)), String> {
+/// What a recording of a selection covers.
+struct Area {
+    /// The selection clipped to the screens, with an even width and height
+    /// (as yuv420p needs), in global physical pixels.
+    rect: Rect,
+    /// Each monitor it's on.
+    pieces: Vec<Piece>,
+}
+
+/// The part of a recording on one monitor.
+struct Piece {
+    /// For xcap (Windows has its own capture; see `dxgi`).
+    #[cfg_attr(windows, allow(dead_code))]
+    monitor: Monitor,
+    /// The monitor's top-left corner.
+    origin: (i32, i32),
+    /// The part, relative to the monitor.
+    region: Rect,
+}
+
+impl Piece {
+    /// Where the part goes in a picture of `rect`.
+    fn at(&self, rect: Rect) -> (u32, u32) {
+        (
+            (self.origin.0 + self.region.x - rect.x) as u32,
+            (self.origin.1 + self.region.y - rect.y) as u32,
+        )
+    }
+}
+
+/// `rect` clipped to the monitors, and the part of it on each. Gaps
+/// between monitors inside it come out black.
+fn area_for(rect: Rect) -> Result<Area, String> {
     let monitors = Monitor::all().map_err(|e| format!("couldn't list monitors: {e}"))?;
-    let (monitor, clipped, origin) = monitors
+    let bounds: Vec<(Monitor, Rect)> = monitors
         .into_iter()
         .filter_map(|m| {
             let bounds = Rect {
@@ -346,33 +386,41 @@ fn monitor_for(rect: Rect) -> Result<(Monitor, Rect, (i32, i32)), String> {
                 w: m.width().ok()?,
                 h: m.height().ok()?,
             };
-            let clipped = rect.intersect(&bounds)?;
-            Some((m, clipped, bounds))
+            Some((m, bounds))
         })
-        .max_by_key(|(_, c, _)| c.w as u64 * c.h as u64)
-        .map(|(m, c, b)| {
-            (
-                m,
-                Rect {
-                    x: c.x - b.x,
-                    y: c.y - b.y,
-                    ..c
-                },
-                (b.x, b.y),
-            )
-        })
+        .collect();
+    let clipped = bounds
+        .iter()
+        .filter_map(|(_, b)| rect.intersect(b))
+        .reduce(|a, b| a.union(&b))
         .ok_or("the region isn't on any monitor")?;
-    let region = Rect {
+    let rect = Rect {
         w: clipped.w & !1,
         h: clipped.h & !1,
         ..clipped
     };
-    if region.w < 2 || region.h < 2 {
+    if rect.w < 2 || rect.h < 2 {
         return Err("the region is too small to record".into());
     }
-    Ok((monitor, region, origin))
+    let pieces = bounds
+        .into_iter()
+        .filter_map(|(monitor, b)| {
+            let c = rect.intersect(&b)?;
+            Some(Piece {
+                monitor,
+                origin: (b.x, b.y),
+                region: Rect {
+                    x: c.x - b.x,
+                    y: c.y - b.y,
+                    ..c
+                },
+            })
+        })
+        .collect();
+    Ok(Area { rect, pieces })
 }
 
+#[cfg(not(windows))]
 fn take_recorder(monitor: &Monitor, id: u32) -> Result<(Recorder, Receiver<Frame>), String> {
     if let Some(r) = RECORDERS
         .lock()
@@ -409,76 +457,151 @@ trait Frames {
     fn release(self: Box<Self>) {}
 }
 
-/// xcap's per-monitor recorder, cropped to the region: RGBA.
+/// Each monitor's picture of the region, put together: RGBA.
 struct ScreenFrames {
-    /// The recorder and its monitor's id, to hand back when done (`None`
-    /// when frames come from elsewhere, in tests).
-    recorder: Option<(Recorder, u32)>,
-    frames: Receiver<Frame>,
-    region: Rect,
+    parts: Vec<Part>,
+    /// The picture's width and height.
+    size: (u32, u32),
     /// The screen as last captured, and what's sent: that plus the pointer.
     latest: Vec<u8>,
     out: Vec<u8>,
 }
 
+/// One monitor's share of the picture.
+struct Part {
+    feed: Feed,
+    /// What's recorded, relative to the monitor.
+    region: Rect,
+    /// Where it goes in the picture.
+    at: (u32, u32),
+}
+
+/// Where a part's pictures come from.
+enum Feed {
+    /// Whole-monitor frames from xcap's recorder, with the recorder and its
+    /// monitor's id to hand back when done (`None` when the frames come
+    /// from elsewhere, in tests).
+    #[cfg_attr(all(windows, not(test)), allow(dead_code))]
+    Xcap(Option<(Recorder, u32)>, Receiver<Frame>),
+    /// The region, from snapr's own duplication of the display (see `dxgi`).
+    #[cfg(windows)]
+    Dxgi(crate::dxgi::Duplicator),
+}
+
 impl ScreenFrames {
-    /// Captures the region now (frame 0) and starts the recorder.
-    fn start(monitor: &Monitor, region: Rect) -> Result<Self, String> {
-        let first = monitor
-            .capture_region(region.x as u32, region.y as u32, region.w, region.h)
-            .map_err(|e| format!("screen capture failed: {e}"))?
-            .into_raw();
-        let id = monitor.id().map_err(|e| e.to_string())?;
-        let (recorder, frames) = take_recorder(monitor, id)?;
-        // Frames left over from the last recording on this monitor.
-        while frames.try_recv().is_ok() {}
-        if let Err(e) = recorder.0.start() {
-            put_recorder(id, recorder, frames);
-            return Err(format!("couldn't start recording: {e}"));
+    /// Captures the area now (frame 0) and starts capturing its monitors.
+    fn start(area: &Area) -> Result<Self, String> {
+        let size = (area.rect.w, area.rect.h);
+        // Opaque black, which is what's left in gaps between monitors.
+        let mut first: Vec<u8> = [0, 0, 0, 255].repeat((size.0 * size.1) as usize);
+        let mut parts = Vec::new();
+        let mut started = || -> Result<(), String> {
+            for piece in &area.pieces {
+                let region = piece.region;
+                let at = piece.at(area.rect);
+                let whole = Rect { x: 0, y: 0, ..region };
+                #[cfg(windows)]
+                let feed = {
+                    let duplicator = crate::dxgi::Duplicator::new(piece.origin, region)?;
+                    crop_into(duplicator.picture(), (region.w, region.h), whole, &mut first, size.0, at);
+                    Feed::Dxgi(duplicator)
+                };
+                #[cfg(not(windows))]
+                let feed = {
+                    let shot = piece
+                        .monitor
+                        .capture_region(region.x as u32, region.y as u32, region.w, region.h)
+                        .map_err(|e| format!("screen capture failed: {e}"))?;
+                    crop_into(&shot, (region.w, region.h), whole, &mut first, size.0, at);
+                    let id = piece.monitor.id().map_err(|e| e.to_string())?;
+                    let (recorder, frames) = take_recorder(&piece.monitor, id)?;
+                    // Frames left over from the last recording on this monitor.
+                    while frames.try_recv().is_ok() {}
+                    if let Err(e) = recorder.0.start() {
+                        put_recorder(id, recorder, frames);
+                        return Err(format!("couldn't start recording: {e}"));
+                    }
+                    Feed::Xcap(Some((recorder, id)), frames)
+                };
+                parts.push(Part { feed, region, at });
+            }
+            Ok(())
+        };
+        let result = started();
+        let screen = Self::new(parts, size, first);
+        match result {
+            Ok(()) => Ok(screen),
+            Err(e) => {
+                screen.release();
+                Err(e)
+            }
         }
-        Ok(Self::new(Some((recorder, id)), frames, first, region))
     }
 
-    fn new(recorder: Option<(Recorder, u32)>, frames: Receiver<Frame>, first: Vec<u8>, region: Rect) -> Self {
+    fn new(parts: Vec<Part>, size: (u32, u32), first: Vec<u8>) -> Self {
         Self {
-            recorder,
-            frames,
-            region,
+            parts,
+            size,
             out: first.clone(),
             latest: first,
         }
     }
 
     fn picture(&self) -> RgbaImage {
-        RgbaImage::from_raw(self.region.w, self.region.h, self.latest.clone()).expect("region-sized")
+        RgbaImage::from_raw(self.size.0, self.size.1, self.latest.clone()).expect("region-sized")
     }
 
     fn release(self) {
-        if let Some((recorder, id)) = self.recorder {
-            let _ = recorder.0.stop();
-            put_recorder(id, recorder, self.frames);
+        for part in self.parts {
+            if let Feed::Xcap(Some((recorder, id)), frames) = part.feed {
+                let _ = recorder.0.stop();
+                put_recorder(id, recorder, frames);
+            }
         }
     }
 }
 
 impl Frames for ScreenFrames {
     fn update(&mut self) -> Result<(), String> {
-        if let Some(frame) = self.frames.try_iter().last() {
-            crop_into(&frame, self.region, &mut self.latest);
+        for part in &mut self.parts {
+            match &mut part.feed {
+                Feed::Xcap(_, frames) => {
+                    if let Some(frame) = frames.try_iter().last() {
+                        let frame_size = (frame.width, frame.height);
+                        crop_into(&frame.raw, frame_size, part.region, &mut self.latest, self.size.0, part.at);
+                    }
+                }
+                #[cfg(windows)]
+                Feed::Dxgi(duplicator) => {
+                    if duplicator.poll()? {
+                        let (w, h) = (part.region.w, part.region.h);
+                        let whole = Rect { x: 0, y: 0, ..part.region };
+                        crop_into(duplicator.picture(), (w, h), whole, &mut self.latest, self.size.0, part.at);
+                    }
+                }
+            }
         }
         Ok(())
     }
 
     fn skip(&mut self) {
-        // Keep the channel from filling up with frames nobody wants.
-        while self.frames.try_recv().is_ok() {}
+        // Keep up with the screen, so frames nobody wants don't pile up.
+        for part in &mut self.parts {
+            match &mut part.feed {
+                Feed::Xcap(_, frames) => while frames.try_recv().is_ok() {},
+                #[cfg(windows)]
+                Feed::Dxgi(duplicator) => {
+                    let _ = duplicator.poll();
+                }
+            }
+        }
     }
 
     fn frame(&mut self, cursor: Option<((i32, i32), &cursor::Image)>) -> &[u8] {
         match cursor {
             Some((at, image)) => {
                 self.out.copy_from_slice(&self.latest);
-                cursor::blend(&mut self.out, self.region.w, self.region.h, image, at);
+                cursor::blend(&mut self.out, self.size.0, self.size.1, image, at);
                 &self.out
             }
             None => &self.latest,
@@ -599,18 +722,22 @@ fn pump(
     Ok(())
 }
 
-/// Copies `region` out of a whole-monitor RGBA frame.
-fn crop_into(frame: &Frame, region: Rect, out: &mut [u8]) {
+/// Copies `region` out of a picture of a monitor (RGBA, `src_size`) into
+/// `out`, a picture `width` pixels wide, with its top-left corner at `at`.
+fn crop_into(src: &[u8], src_size: (u32, u32), region: Rect, out: &mut [u8], width: u32, at: (u32, u32)) {
+    let (src_w, src_h) = (src_size.0 as usize, src_size.1 as usize);
     let row = region.w as usize * 4;
+    let stride = width as usize * 4;
     for y in 0..region.h as usize {
         let src_y = region.y as usize + y;
-        if src_y >= frame.height as usize {
+        if src_y >= src_h {
             break;
         }
-        let start = (src_y * frame.width as usize + region.x as usize) * 4;
-        let len = row.min((frame.width as usize * 4).saturating_sub(region.x as usize * 4));
-        if let Some(src) = frame.raw.get(start..start + len) {
-            out[y * row..y * row + len].copy_from_slice(src);
+        let start = (src_y * src_w + region.x as usize) * 4;
+        let len = row.min((src_w * 4).saturating_sub(region.x as usize * 4));
+        let dst = (at.1 as usize + y) * stride + at.0 as usize * 4;
+        if let (Some(src), Some(dst)) = (src.get(start..start + len), out.get_mut(dst..dst + len)) {
+            dst.copy_from_slice(src);
         }
     }
 }
@@ -667,7 +794,12 @@ mod tests {
         let pump_out = out.clone();
         let pumping = thread::spawn(move || {
             let mut encoder = encode::open(&pump_out, format, None, &Default::default()).unwrap();
-            let mut source = ScreenFrames::new(None, frames, first, region);
+            let part = Part {
+                feed: Feed::Xcap(None, frames),
+                region,
+                at: (0, 0),
+            };
+            let mut source = ScreenFrames::new(vec![part], (region.w, region.h), first);
             pump(
                 &mut source,
                 fps,
@@ -724,9 +856,27 @@ mod tests {
             h: 2,
         };
         let mut out = vec![0; 2 * 2 * 4];
-        crop_into(&frame, region, &mut out);
+        crop_into(&frame.raw, (4, 3), region, &mut out, 2, (0, 0));
         let reds: Vec<u8> = out.chunks(4).map(|p| p[0]).collect();
         assert_eq!(reds, [5, 6, 9, 10]);
+    }
+
+    #[test]
+    fn puts_monitors_side_by_side() {
+        // Two 2x2 monitors' frames, red 1 and 2, into a 4x2 picture.
+        let (tx1, frames1) = std::sync::mpsc::channel();
+        let (tx2, frames2) = std::sync::mpsc::channel();
+        let region = Rect { x: 0, y: 0, w: 2, h: 2 };
+        let parts = vec![
+            Part { feed: Feed::Xcap(None, frames1), region, at: (0, 0) },
+            Part { feed: Feed::Xcap(None, frames2), region, at: (2, 0) },
+        ];
+        let mut source = ScreenFrames::new(parts, (4, 2), vec![0; 4 * 2 * 4]);
+        tx1.send(Frame::new(2, 2, [1, 0, 0, 255].repeat(4))).unwrap();
+        tx2.send(Frame::new(2, 2, [2, 0, 0, 255].repeat(4))).unwrap();
+        source.update().unwrap();
+        let reds: Vec<u8> = source.frame(None).chunks(4).map(|p| p[0]).collect();
+        assert_eq!(reds, [1, 1, 2, 2, 1, 1, 2, 2]);
     }
 
     /// Records a small region for a second through the platform's encoder:
@@ -767,6 +917,78 @@ mod tests {
             .expect("not aborted")
             .path;
         assert!(std::fs::metadata(&path).unwrap().len() > 1000);
+    }
+
+    /// Records a second of a region straddling the primary monitor's right
+    /// edge, leaving the first and last frames in the temp folder to look at:
+    /// `cargo test record_across_monitors -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn record_across_monitors() {
+        // Like snapr itself (winit sets it); duplicating a display needs it.
+        #[cfg(windows)]
+        unsafe {
+            let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
+                windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            );
+        }
+        let primary = Monitor::all()
+            .unwrap()
+            .into_iter()
+            .find(|m| m.is_primary().unwrap_or(false))
+            .unwrap();
+        let right = primary.x().unwrap() + primary.width().unwrap() as i32;
+        let rect = Rect {
+            x: right - 400,
+            y: 200,
+            w: 800,
+            h: 300,
+        };
+        let area = area_for(rect).unwrap();
+        if area.pieces.len() < 2 {
+            println!("nothing to the right of the primary monitor; skipped");
+            return;
+        }
+        let out = std::env::temp_dir().join("snapr-across-test.mp4");
+        let _ = std::fs::remove_file(&out);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut rec = Recording::start(
+            rect,
+            30,
+            &Default::default(),
+            false,
+            &[],
+            true,
+            false,
+            false,
+            out.clone(),
+            Box::new(move |r| {
+                let _ = tx.send(r);
+            }),
+        )
+        .unwrap();
+        assert_eq!(rec.rect, rect);
+        thread::sleep(Duration::from_secs(1));
+        rec.stop();
+        let recorded = rx
+            .recv_timeout(Duration::from_secs(20))
+            .unwrap()
+            .unwrap()
+            .expect("not aborted");
+        assert_eq!(recorded.first_frame.dimensions(), (rect.w, rect.h));
+        let dir = std::env::temp_dir();
+        recorded.first_frame.save(dir.join("snapr-across-first.png")).unwrap();
+        let info = crate::decode::probe(&recorded.path, "").unwrap();
+        let mut last = None;
+        crate::decode::pictures(&recorded.path, "", info, 0.0, (rect.w, rect.h), &mut |p| {
+            last = Some(p.image.clone());
+            true
+        })
+        .unwrap();
+        let last = last.expect("a frame");
+        assert_eq!(last.dimensions(), (rect.w, rect.h));
+        last.save(dir.join("snapr-across-last.png")).unwrap();
+        println!("frames in {}", dir.display());
     }
 
     /// Records two seconds with system audio, pausing in the middle:

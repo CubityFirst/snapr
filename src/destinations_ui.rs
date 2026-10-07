@@ -54,11 +54,33 @@ impl Form {
                     self.secrets.remove(&u.id);
                     self.tests.remove(&u.id);
                 }
-                if ui.button("+ Add upload").clicked() {
-                    let u = Upload::default();
-                    self.expanded = Some(u.id.clone());
-                    self.draft.uploads.push(u);
-                }
+                ui.horizontal(|ui| {
+                    if ui.button("+ Add upload").clicked() {
+                        let u = Upload::default();
+                        self.expanded = Some(u.id.clone());
+                        self.draft.uploads.push(u);
+                    }
+                    let ticked: Vec<Upload> =
+                        self.draft.uploads.iter().filter(|u| u.enabled).cloned().collect();
+                    let running = ticked
+                        .iter()
+                        .any(|u| matches!(self.tests.get(&u.id), Some(Test::Running)));
+                    if ui
+                        .add_enabled(!ticked.is_empty() && !running, egui::Button::new("Test upload"))
+                        .on_hover_text(
+                            "Upload snapr's icon to each ticked destination, named as a screenshot \
+                             would be, and show its link. The icon stays there.",
+                        )
+                        .on_disabled_hover_text("Tick a destination to test it")
+                        .clicked()
+                    {
+                        for u in ticked {
+                            let secret = self.secrets.get(&u.id).filter(|s| !s.is_empty()).cloned();
+                            self.tests.insert(u.id.clone(), Test::Running);
+                            actions.push(Action::UploadIcon(u, secret));
+                        }
+                    }
+                });
                 ui.add_space(6.0);
                 ui.checkbox(
                     &mut self.draft.copy_link,

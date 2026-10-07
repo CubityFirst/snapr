@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use egui::CursorIcon;
 use egui_wgpu::wgpu;
 use image::RgbaImage;
-use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
 use winit::window::WindowId;
@@ -17,7 +17,8 @@ use crate::capture::{self, Rect};
 use crate::gpu::Gpu;
 use crate::naming::Context;
 use crate::overlay::{Frame, Overlay};
-use crate::toolbar::Action;
+use crate::settings::CrosshairInfo;
+use crate::toolbar::{Action, CursorInfo};
 
 pub enum Outcome {
     Continue,
@@ -59,7 +60,9 @@ impl Purpose {
             Purpose::Screenshot => None,
             Purpose::Record => Some("Select a region to record"),
             Purpose::Scan => Some("Select a QR code to read"),
-            Purpose::PickColor => Some("Click to pick a colour \u{2014} arrow keys move one pixel"),
+            Purpose::PickColor => Some(
+                "Click to pick a colour \u{2014} arrow keys move one pixel, scroll zooms",
+            ),
             Purpose::Pin => Some("Select a region to pin to the screen"),
         }
     }
@@ -76,9 +79,10 @@ enum Grab {
     Draw,
 }
 
-/// Side of the colour picker's loupe, in screen pixels (odd, so one is in
-/// the middle).
-pub const LOUPE_SIZE: u32 = 15;
+/// Pixels across the magnifier at first (odd, so one is in the middle).
+pub const MAGNIFIER_PIXELS: u32 = 15;
+/// The fewest and most pixels the mouse wheel zooms the magnifier between.
+const MAGNIFIER_ZOOM: (i32, i32) = (5, 45);
 
 /// How close (in pixels) a press must be to a line's or an arrow's middle
 /// node to grab it.
@@ -125,6 +129,13 @@ pub struct Session {
     pub purpose: Purpose,
     /// Custom frame-rate limit, if any.
     interval: Option<Duration>,
+    /// What's shown beside the crosshair while selecting a region.
+    crosshair_info: CrosshairInfo,
+    /// Pixels across the magnifier; the mouse wheel zooms it.
+    pub magnifier: u32,
+    /// Mouse wheel movement not yet used up by a whole step (touchpads
+    /// scroll in small amounts).
+    wheel: f64,
     cursor: Option<(f64, f64)>,
     grab: Grab,
     /// Other apps' windows when the capture started, topmost first. Hovering
@@ -151,11 +162,14 @@ pub struct Session {
 }
 
 impl Session {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         event_loop: &ActiveEventLoop,
         gpu: &Gpu,
         annotate: bool,
         overlay_fps: u32,
+        crosshair_info: CrosshairInfo,
+        magnifier: u32,
         tool: Tool,
         style: Style,
     ) -> Result<Self, String> {
@@ -192,6 +206,9 @@ impl Session {
             annotate,
             purpose: Purpose::Screenshot,
             interval: (overlay_fps > 0).then(|| Duration::from_secs_f64(1.0 / overlay_fps as f64)),
+            crosshair_info,
+            magnifier,
+            wheel: 0.0,
             cursor: capture::cursor_position(),
             grab: Grab::None,
             windows,
@@ -249,7 +266,7 @@ impl Session {
         self.cursor = capture::cursor_position().or(self.cursor);
         let target = self.focus_target();
         for (id, o) in &mut self.overlays {
-            o.window.request_redraw();
+            o.request_redraw();
             if Some(*id) == target {
                 o.window.focus_window();
             }
@@ -350,6 +367,10 @@ impl Session {
             && canvas
                 .zip(self.cursor)
                 .is_some_and(|(c, p)| c.movable_at((p.0 as f32, p.1 as f32), self.tool));
+        let hovered = canvas
+            .zip(self.cursor)
+            .filter(|_| self.annotate && self.grab == Grab::None && !self.over_toolbar())
+            .and_then(|(c, p)| c.deletable_rect((p.0 as f32, p.1 as f32)));
         let picking = self.purpose == Purpose::PickColor;
         let on_this_monitor = self
             .cursor
@@ -382,6 +403,7 @@ impl Session {
             } else {
                 CursorIcon::Crosshair
             },
+            hovered,
             arrow_nodes: arrow_nodes
                 .into_iter()
                 .map(|(x, y)| (x as f64, y as f64))
@@ -398,11 +420,33 @@ impl Session {
                         )
                 })
                 .filter(|_| !dragging && on_this_monitor),
-            loupe: self
+            cursor_info: self
                 .cursor
-                .filter(|_| picking && on_this_monitor)
-                .map(|c| (c, self.loupe_pixels(c))),
+                .filter(|_| on_this_monitor)
+                .and_then(|c| Some((c, self.cursor_info(c)?))),
         }
+    }
+
+    /// The card beside the cursor at `c`: the colour picker's magnifier and
+    /// colour, or while selecting a region, the crosshair info chosen in
+    /// Settings.
+    fn cursor_info(&self, c: (f64, f64)) -> Option<CursorInfo> {
+        let show = self.crosshair_info;
+        let selecting = (self.tool == Tool::Select || !self.annotate)
+            && self.grab != Grab::Draw
+            && !self.over_toolbar();
+        let (magnifier, color) = match self.purpose {
+            Purpose::PickColor => (true, true),
+            _ if selecting && show.any() => (show.magnifier, show.color),
+            _ => return None,
+        };
+        Some(CursorInfo {
+            magnifier: magnifier.then(|| self.loupe_pixels(c)),
+            color: color.then(|| self.pixel_at(c)),
+            position: show
+                .position
+                .then(|| [c.0.floor() as i32, c.1.floor() as i32]),
+        })
     }
 
     /// Whether the cursor is over the toolbar (or one of its popups).
@@ -575,7 +619,7 @@ impl Session {
         overlay.egui_event(event);
         match event {
             WindowEvent::RedrawRequested => return self.redraw(gpu, id),
-            WindowEvent::Resized(_) => overlay.window.request_redraw(),
+            WindowEvent::Resized(_) => overlay.request_redraw(),
             WindowEvent::ModifiersChanged(m) => {
                 // Shift changes the shape of the region being dragged.
                 let before = self.snap();
@@ -586,6 +630,7 @@ impl Session {
                 let p = overlay.to_global(*position);
                 self.on_move(p);
             }
+            WindowEvent::MouseWheel { delta, .. } => self.on_wheel(*delta),
             WindowEvent::MouseInput {
                 state,
                 button: MouseButton::Left,
@@ -638,8 +683,28 @@ impl Session {
         Outcome::Continue
     }
 
+    /// Draws the overlay Windows asked to paint, and any others waiting to
+    /// be redrawn. Windows paints one window at a time, and only once no input
+    /// is waiting: while the mouse moves, the overlay it's captured by gets
+    /// every turn, and one it's dragged onto would hardly ever update.
     fn redraw(&mut self, gpu: &Gpu, id: WindowId) -> Outcome {
         self.sync_layer(gpu);
+        let waiting: Vec<WindowId> = self
+            .overlays
+            .iter()
+            .filter(|(other, o)| **other != id && o.redraw_pending)
+            .map(|(other, _)| *other)
+            .collect();
+        for id in std::iter::once(id).chain(waiting) {
+            match self.render(gpu, id) {
+                Outcome::Continue => {}
+                done => return done,
+            }
+        }
+        Outcome::Continue
+    }
+
+    fn render(&mut self, gpu: &Gpu, id: WindowId) -> Outcome {
         let frame = self.frame_for(id);
         let Some(overlay) = self.overlays.get_mut(&id) else {
             return Outcome::Continue;
@@ -671,31 +736,62 @@ impl Session {
         Outcome::Continue
     }
 
-    /// The frozen pixels around `p`, `LOUPE_SIZE` square, for the colour
-    /// picker's loupe. Off-screen pixels are transparent.
+    /// The frozen pixels around `p` for the magnifier. Off-screen pixels
+    /// are transparent.
     fn loupe_pixels(&self, p: (f64, f64)) -> RgbaImage {
-        let half = LOUPE_SIZE as i32 / 2;
+        let n = self.magnifier;
+        let half = n as i32 / 2;
         self.crop(Rect {
             x: p.0.floor() as i32 - half,
             y: p.1.floor() as i32 - half,
-            w: LOUPE_SIZE,
-            h: LOUPE_SIZE,
+            w: n,
+            h: n,
         })
     }
 
-    /// The colour of the pixel under the cursor.
-    fn pick_color(&self) -> Outcome {
-        let Some(c) = self.cursor else {
-            return Outcome::Continue;
+    /// Zooms the magnifier, if it's showing: fewer, bigger pixels scrolling
+    /// up, more scrolling down. Its size stays the same.
+    fn on_wheel(&mut self, delta: MouseScrollDelta) {
+        let shown = self
+            .cursor
+            .and_then(|c| self.cursor_info(c))
+            .is_some_and(|i| i.magnifier.is_some());
+        if !shown {
+            return;
+        }
+        self.wheel += match delta {
+            MouseScrollDelta::LineDelta(_, y) => y as f64,
+            MouseScrollDelta::PixelDelta(p) => p.y / 60.0,
         };
+        let steps = self.wheel.trunc();
+        if steps == 0.0 {
+            return;
+        }
+        self.wheel -= steps;
+        let before = self.snap();
+        let (min, max) = MAGNIFIER_ZOOM;
+        self.magnifier = (self.magnifier as i32 - 2 * steps as i32).clamp(min, max) as u32;
+        self.invalidate(before, false);
+    }
+
+    /// The frozen colour of the pixel at `p`.
+    fn pixel_at(&self, p: (f64, f64)) -> [u8; 3] {
         let rect = Rect {
-            x: c.0.floor() as i32,
-            y: c.1.floor() as i32,
+            x: p.0.floor() as i32,
+            y: p.1.floor() as i32,
             w: 1,
             h: 1,
         };
         let [r, g, b, _] = self.crop(rect).get_pixel(0, 0).0;
-        Outcome::Color([r, g, b])
+        [r, g, b]
+    }
+
+    /// The colour of the pixel under the cursor.
+    fn pick_color(&self) -> Outcome {
+        match self.cursor {
+            Some(c) => Outcome::Color(self.pixel_at(c)),
+            None => Outcome::Continue,
+        }
     }
 
     /// Moves the mouse pointer by whole pixels, for picking a colour exactly.
@@ -746,6 +842,9 @@ impl Session {
         let previous = self.cursor.replace(p);
         match self.grab {
             Grab::Draw => {
+                // Dragging (say, a clip) onto another monitor: grow the canvas
+                // to cover it, or the drag disappears off its edge.
+                self.ensure_canvas_at(p);
                 let shift = self.modifiers.shift_key();
                 if let Some(c) = &mut self.canvas {
                     match previous {
@@ -838,7 +937,16 @@ impl Session {
     /// release) if there's none.
     fn on_right_press(&mut self) {
         let before = self.snap();
-        self.close_on_right_release = !self.cancel_grab();
+        // Right-clicking anything drawn deletes it; anywhere else it closes
+        // the overlay.
+        let deleted = self.grab == Grab::None
+            && self.annotate
+            && self
+                .canvas
+                .as_mut()
+                .zip(self.cursor)
+                .is_some_and(|(c, p)| c.delete_at((p.0 as f32, p.1 as f32)));
+        self.close_on_right_release = !deleted && !self.cancel_grab();
         self.invalidate(before, true);
     }
 
@@ -912,13 +1020,13 @@ impl Session {
             match o.due {
                 Some(t) if t <= now => {
                     o.due = None;
-                    o.window.request_redraw();
+                    o.request_redraw();
                 }
                 Some(t) => wake = Some(wake.map_or(t, |w| w.min(t))),
                 None => {}
             }
             match o.repaint_at() {
-                Some(t) if t <= now => o.window.request_redraw(),
+                Some(t) if t <= now => o.request_redraw(),
                 Some(t) => wake = Some(wake.map_or(t, |w| w.min(t))),
                 None => {}
             }
@@ -932,7 +1040,7 @@ fn request_redraw(o: &mut Overlay, interval: Option<Duration>) {
     let next = interval.zip(o.last_frame).map(|(i, last)| last + i);
     match next {
         Some(t) if t > Instant::now() => o.due = Some(o.due.map_or(t, |d| d.min(t))),
-        _ => o.window.request_redraw(),
+        _ => o.request_redraw(),
     }
 }
 

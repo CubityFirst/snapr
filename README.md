@@ -106,8 +106,9 @@ The *Destinations* tab of Settings sets where each screenshot goes: **Save to fo
 (Cloudflare R2, Amazon S3, MinIO, Backblaze B2, ...). Add one with
 *+ Cloudflare R2* (replace `ACCOUNT_ID` in the endpoint) or *+ S3-compatible*,
 fill in the bucket and keys, and press **Test** to upload and delete a tiny
-file. The object key uses the same placeholders as file names
-(default `%y-%mo/%rna{10}.png`); **Public URL** is the base for links, e.g. an
+file. **Test upload** sends snapr's icon to every ticked destination, named
+as a screenshot would be, and shows its link; that file stays. The object
+key uses the same placeholders as file names (default `%y-%mo/%rna{10}.png`); **Public URL** is the base for links, e.g. an
 `https://pub-....r2.dev` address or your own domain. After an upload the link
 is copied to the clipboard (optional) and the Recent page gets a *Copy link*
 button. Right-click an uploaded screenshot there and choose *Delete remotely* to
@@ -139,6 +140,7 @@ for a portable copy or a second, independent instance.
 | Play sounds        | on (sounds are synthesized in code, no audio assets) |
 | Corner preview     | on: click opens the link (or image), middle-click copies, right-click closes |
 | Overlay frame rate | match monitor (vsync), or a custom limit |
+| Beside the crosshair | off; any of *Position* (screen X/Y), *Colour* (hex and RGB) and *Magnifier*, shown next to the cursor while selecting a region |
 | Check for updates  | on (see [Updates](#updates)) |
 
 ### Naming templates
@@ -173,11 +175,15 @@ browsers), picked under *Settings → General → Recording*. Windows and macOS
 use the system's own encoders; WebM on Windows needs the VP9 Video
 Extensions (installed with Windows 10/11).
 
+A region can span several monitors, like a screenshot can; anything in it
+that isn't on a monitor (a gap in an uneven layout) comes out black.
+
 If [FFmpeg](https://ffmpeg.org) is installed, *Encoder: FFmpeg* (Windows and
 macOS) records MP4 with x264 and WebM with libvpx instead. They're sharper
 for the file size, especially on text, but use more CPU. FFmpeg isn't
-bundled; snapr finds it on `PATH`, or use the path set in Settings. Without
-it, recordings use the system's encoder and say so. AV1 and HDR recordings
+bundled; snapr finds it on `PATH`, or use the path set in Settings, where
+**Test** checks that it runs and has the encoder it needs. Without it,
+recordings use the system's encoder and say so. AV1 and HDR recordings
 are still made by the graphics card.
 
 With FFmpeg in use, Settings also has x264's *Preset* (default `veryfast`)
@@ -197,6 +203,7 @@ in full range and mapped to SDR, with your *SDR content brightness* as white,
 so they look like the screen. Recordings of an HDR display are HDR10 MP4s
 (10-bit HEVC, made by the graphics card; they start about a second late
 while it gets ready). Turn off *Record in HDR* for SDR recordings instead.
+A region spanning more than one display is recorded in SDR.
 
 ## Updates
 

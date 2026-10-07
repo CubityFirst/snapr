@@ -46,6 +46,8 @@ pub enum Action {
     /// New settings, and new secret keys to store (upload id → key).
     SaveSettings(Settings, HashMap<String, String>),
     TestUpload(Upload, Option<String>),
+    /// Upload snapr's icon to a destination, as a screenshot would be.
+    UploadIcon(Upload, Option<String>),
     CheckForUpdates,
     /// Quit and start the updated program.
     RestartToUpdate,
@@ -82,6 +84,7 @@ impl From<settings_ui::Action> for Action {
             settings_ui::Action::Save(s, secrets) => Action::SaveSettings(s, secrets),
             settings_ui::Action::Reveal(p) => Action::Reveal(p),
             settings_ui::Action::TestUpload(u, secret) => Action::TestUpload(u, secret),
+            settings_ui::Action::UploadIcon(u, secret) => Action::UploadIcon(u, secret),
             settings_ui::Action::CheckForUpdates => Action::CheckForUpdates,
             settings_ui::Action::RestartToUpdate => Action::RestartToUpdate,
             settings_ui::Action::OpenUrl(u) => Action::OpenUrl(u),

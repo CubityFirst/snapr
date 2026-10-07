@@ -28,6 +28,8 @@ const PANEL_STROKE: Color32 = Color32::from_rgb(58, 60, 66);
 const BAR_HEIGHT: f32 = 40.0;
 /// Gap between the border and the bar, in points.
 const BAR_GAP: f64 = 6.0;
+/// How often the timer is redrawn while recording (about 30 times a second).
+const TIMER_TICK: Duration = Duration::from_millis(33);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -186,15 +188,14 @@ impl RecordingUi {
             &bar.window,
         );
         output.textures_delta.clear();
-        // Tick the timer over at the next whole second; hover effects
+        // Keep the milliseconds running while recording; hover effects
         // repaint straight away.
-        let to_next_second =
-            Duration::from_secs(1) - Duration::from_nanos(elapsed.subsec_nanos() as u64);
+        let tick = if paused { Duration::MAX } else { TIMER_TICK };
         let delay = output
             .viewport_output
             .get(&egui::ViewportId::ROOT)
-            .map_or(to_next_second, |v| v.repaint_delay.min(to_next_second));
-        bar.repaint_at = (!paused || delay < to_next_second).then(|| Instant::now() + delay);
+            .map_or(tick, |v| v.repaint_delay.min(tick));
+        bar.repaint_at = (delay < tick || !paused).then(|| Instant::now() + delay);
         action
     }
 }
@@ -497,7 +498,7 @@ fn bar_contents(ui: &mut egui::Ui, elapsed: Duration, paused: bool) -> Option<Ac
             painter.text(
                 pos2(dot.x + 12.0, full.center().y),
                 egui::Align2::LEFT_CENTER,
-                format!("{:02}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60),
+                format!("{:02}:{:02}:{:03}", secs / 60, secs % 60, elapsed.subsec_millis()),
                 FontId::monospace(14.0),
                 Color32::from_rgb(230, 231, 235),
             );
@@ -631,7 +632,7 @@ mod tests {
                 ],
                 1.5,
                 |root| {
-                    super::bar_contents(root, Duration::from_secs(54), paused);
+                    super::bar_contents(root, Duration::from_millis(754_317), paused);
                 },
             );
         }

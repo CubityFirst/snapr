@@ -24,21 +24,31 @@ impl Gpu {
     pub fn new() -> Result<Self, String> {
         // One backend at a time: with all of them enabled, wgpu loads every
         // vendor's Vulkan, DX12 and OpenGL drivers just to pick one (100+ MB).
-        // Vulkan first on Windows, since the overlay's surface can't be
-        // configured on DX12; Metal on macOS and Vulkan on Linux otherwise.
-        // `WGPU_BACKEND` overrides it.
+        // DX12 first on Windows, presenting through DirectComposition: a
+        // fullscreen Vulkan window looks like a game, so NVIDIA's overlay
+        // announces itself on every capture and hooks in. Metal on macOS and
+        // Vulkan on Linux otherwise. `WGPU_BACKEND`
+        // and `WGPU_DX12_PRESENTATION_SYSTEM` override it.
         let preferred = if cfg!(windows) {
-            [wgpu::Backends::VULKAN, wgpu::Backends::DX12]
+            [wgpu::Backends::DX12, wgpu::Backends::VULKAN]
         } else {
             [wgpu::Backends::PRIMARY, wgpu::Backends::GL]
         };
         let (instance, adapter) = preferred
             .into_iter()
             .find_map(|backends| {
+                let defaults = wgpu::InstanceDescriptor::new_without_display_handle();
                 let instance = wgpu::Instance::new(
                     wgpu::InstanceDescriptor {
                         backends,
-                        ..wgpu::InstanceDescriptor::new_without_display_handle()
+                        backend_options: wgpu::BackendOptions {
+                            dx12: wgpu::Dx12BackendOptions {
+                                presentation_system: wgpu::Dx12SwapchainKind::DxgiFromVisual,
+                                ..defaults.backend_options.dx12.clone()
+                            },
+                            ..defaults.backend_options.clone()
+                        },
+                        ..defaults
                     }
                     .with_env(),
                 );

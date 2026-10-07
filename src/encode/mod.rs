@@ -132,6 +132,12 @@ pub fn open_ffmpeg(
     Ok(Box::new(ffmpeg::Ffmpeg::open(ffmpeg, out, video, audio)?))
 }
 
+/// Whether the FFmpeg at `program` (blank: on `PATH`) can record MP4, or
+/// with `webm` WebM: a line to show either way.
+pub fn check_ffmpeg(program: &str, webm: bool) -> Result<String, String> {
+    ffmpeg::check(program, webm)
+}
+
 /// A bit rate that keeps text sharp: about 0.15 bits per pixel per frame.
 pub fn video_bitrate(v: VideoFormat) -> u32 {
     let bits = v.width as f64 * v.height as f64 * v.fps as f64 * 0.15;

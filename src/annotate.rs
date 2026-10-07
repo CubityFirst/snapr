@@ -246,6 +246,9 @@ enum Shape {
     Erase(Point, Point, [u8; 4]),
 }
 
+/// How close (in pixels) the mouse has to be to a line or stroke to pick it.
+const HIT_TOLERANCE: i32 = 5;
+
 /// Shadow under a clip, in pixels.
 const CLIP_SHADOW: i32 = 5;
 
@@ -398,6 +401,51 @@ impl Annotation {
             }
             _ => None,
         }
+    }
+
+    /// The tool that moves it, for the ones that can be picked up.
+    fn mover(&self) -> Option<Tool> {
+        match self.shape {
+            Shape::Clip(..) => Some(Tool::Clip),
+            Shape::Blur(..) => Some(Tool::Blur),
+            Shape::Pixelate(..) => Some(Tool::Pixelate),
+            Shape::Image(..) => Some(Tool::Image),
+            Shape::Erase(..) => Some(Tool::Eraser),
+            Shape::Step(..) => Some(Tool::Step),
+            _ => None,
+        }
+    }
+
+    /// Whether `p` is on it, and if so the area to outline (global pixels):
+    /// anywhere inside a clip or area; within a few pixels of what's drawn
+    /// for lines, shapes and strokes.
+    fn hit(&self, p: Point) -> Option<Rect> {
+        if let Some(tool) = self.mover() {
+            return self
+                .movable_rect(tool)
+                .filter(|r| r.contains((p.0 as f64, p.1 as f64)));
+        }
+        let bounds = self.bounds();
+        let reach = HIT_TOLERANCE as f64;
+        let near = (p.0 as f64) >= bounds.x as f64 - reach
+            && (p.1 as f64) >= bounds.y as f64 - reach
+            && (p.0 as f64) < bounds.right() as f64 + reach
+            && (p.1 as f64) < bounds.bottom() as f64 + reach;
+        if !near {
+            return None;
+        }
+        // Draw it into a little square around `p` and look for paint.
+        let side = 2 * HIT_TOLERANCE as u32 + 1;
+        let mut pm = Pixmap::new(side, side)?;
+        let origin = (
+            p.0.round() as i32 - HIT_TOLERANCE,
+            p.1.round() as i32 - HIT_TOLERANCE,
+        );
+        self.draw(&mut pm, origin);
+        pm.pixels()
+            .iter()
+            .any(|px| px.alpha() > 0)
+            .then_some(bounds)
     }
 
     /// Moves a clip or area so its top-left corner is at `p`.
@@ -1397,6 +1445,35 @@ impl Canvas {
         true
     }
 
+    /// The topmost annotation under `p`, whatever the tool, and where it is
+    /// on screen.
+    fn deletable_at(&self, p: Point) -> Option<(usize, Rect)> {
+        self.annotations
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(i, a)| a.hit(p).map(|r| (i, r)))
+    }
+
+    /// Where the annotation a right-click at `p` would delete is (global
+    /// pixels), to outline it.
+    pub fn deletable_rect(&self, p: Point) -> Option<Rect> {
+        self.deletable_at(p).map(|(_, r)| r)
+    }
+
+    /// Removes the annotation [`Self::deletable_rect`] finds at `p`.
+    /// Returns whether there was one.
+    pub fn delete_at(&mut self, p: Point) -> bool {
+        let Some((i, _)) = self.deletable_at(p) else {
+            return false;
+        };
+        self.undo.push(self.annotations.clone());
+        self.redo.clear();
+        self.annotations.remove(i);
+        self.replay();
+        true
+    }
+
     /// Whether an existing annotation is being bent or moved.
     pub fn is_editing(&self) -> bool {
         self.editing.is_some()
@@ -1703,6 +1780,40 @@ mod tests {
         let untouched = [200, 200, 200, 255];
         assert_ne!(below_clip(true), untouched);
         assert_eq!(below_clip(false), untouched);
+    }
+
+    #[test]
+    fn right_click_deletes_anything_whatever_the_tool() {
+        let img = RgbaImage::from_pixel(100, 60, image::Rgba([255, 255, 255, 255]));
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            w: 100,
+            h: 60,
+        };
+        let mut c = Canvas::new(rect, img);
+        c.begin(Annotation::new(Tool::Rect, Style::default(), (5.0, 5.0)).unwrap());
+        c.drag_to((95.0, 55.0), false);
+        c.commit();
+        c.begin(Annotation::new(Tool::Eraser, Style::default(), (40.0, 10.0)).unwrap());
+        c.drag_to((60.0, 30.0), false);
+        c.commit();
+        let erased = c.image();
+
+        // A rectangle is picked by its outline, not its empty inside.
+        assert!(c.deletable_rect((80.0, 45.0)).is_none());
+        assert!(c.deletable_rect((95.0, 45.0)).is_some());
+        assert!(c.delete_at((50.0, 20.0)));
+        assert!(!c.delete_at((50.0, 20.0)));
+        assert_eq!(c.annotations.len(), 1);
+        c.undo();
+        assert_eq!(c.image().as_raw(), erased.as_raw());
+
+        // Lines and arrows go too, from near their stroke.
+        draw(&mut c, Tool::Arrow, (10.0, 50.0), (90.0, 50.0));
+        assert!(c.deletable_rect((30.0, 40.0)).is_none());
+        assert!(c.delete_at((30.0, 52.0)));
+        assert_eq!(c.annotations.len(), 2);
     }
 
     #[test]

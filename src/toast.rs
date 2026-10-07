@@ -1,7 +1,8 @@
 //! The preview that pops up in the corner of the screen after a capture.
 //! Left-click opens the link (or the image, before it's uploaded), middle-click
-//! copies the image, right-click dismisses it. It goes away by itself after a
-//! few seconds, unless the mouse is over it.
+//! copies the image, right-click dismisses it, and dragging it drops the file
+//! into another app. It goes away by itself after a few seconds, unless the
+//! mouse is over it.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,6 +26,9 @@ const SCREEN_GAP: f64 = 16.0;
 /// How long it stays up, and how long after the mouse leaves it.
 const SHOWN_FOR: Duration = Duration::from_secs(6);
 const AFTER_HOVER: Duration = Duration::from_secs(2);
+/// How far (in points) the mouse moves with the button down before it's a
+/// drag rather than a click.
+const DRAG_THRESHOLD: f64 = 6.0;
 /// Pixels decoded for the preview (twice the size, for high-DPI screens).
 pub const DECODE_SIZE: (u32, u32) = (640, 400);
 
@@ -47,6 +51,9 @@ pub struct Toast {
     pub video: bool,
     /// When it goes away; `None` while the mouse is over it.
     pub expires_at: Option<Instant>,
+    cursor: PhysicalPosition<f64>,
+    /// Where the left button went down, until it's released or a drag starts.
+    pressed_at: Option<PhysicalPosition<f64>>,
 }
 
 impl Toast {
@@ -117,6 +124,8 @@ impl Toast {
             link,
             video,
             expires_at: Some(Instant::now() + SHOWN_FOR),
+            cursor: PhysicalPosition::new(0.0, 0.0),
+            pressed_at: None,
         };
         // Paint before showing it, so it doesn't flash white.
         toast.paint();
@@ -132,15 +141,35 @@ impl Toast {
     pub fn on_event(&mut self, event: &WindowEvent) -> Option<Action> {
         match event {
             WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => self.pressed_at = Some(self.cursor),
+            WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button,
                 ..
             } => match button {
-                MouseButton::Left => return Some(Action::Open),
+                // Not if the press turned into a drag.
+                MouseButton::Left if self.pressed_at.take().is_some() => return Some(Action::Open),
                 MouseButton::Middle => return Some(Action::CopyImage),
                 MouseButton::Right => return Some(Action::Dismiss),
                 _ => {}
             },
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = *position;
+                // Also after a drag, which swallows the mouse's comings and goings.
+                self.expires_at = None;
+                if let Some(from) = self.pressed_at {
+                    let (dx, dy) = (position.x - from.x, position.y - from.y);
+                    let threshold = DRAG_THRESHOLD * self.window.scale_factor();
+                    if dx * dx + dy * dy >= threshold * threshold {
+                        self.pressed_at = None;
+                        drag_file(&self.window, &self.path);
+                        self.expires_at = Some(Instant::now() + AFTER_HOVER);
+                    }
+                }
+            }
             WindowEvent::CursorEntered { .. } => self.expires_at = None,
             WindowEvent::CursorLeft { .. } => self.expires_at = Some(Instant::now() + AFTER_HOVER),
             WindowEvent::RedrawRequested => self.paint(),
@@ -239,6 +268,38 @@ fn contents(
             });
         });
 }
+
+/// Drags the file out of the toast, as if from Explorer; returns once it's
+/// dropped (or the drag is cancelled).
+#[cfg(windows)]
+fn drag_file(window: &Window, path: &std::path::Path) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::System::Com::IDataObject;
+    use windows::Win32::System::Ole::{DROPEFFECT_COPY, DROPEFFECT_LINK, IDropSource};
+    use windows::Win32::UI::Shell::{BHID_DataObject, IShellItem, SHCreateItemFromParsingName, SHDoDragDrop};
+    use windows::core::HSTRING;
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(handle) = window.window_handle() else { return };
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else { return };
+    let hwnd = HWND(handle.hwnd.get() as _);
+    // SAFETY: COM calls on the event loop's thread, which winit set up for
+    // OLE. The shell's data object carries the file (and its drag image),
+    // and a null drop source gets the shell's default one.
+    let result = unsafe {
+        SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(path.as_os_str()), None)
+            .and_then(|item| item.BindToHandler::<_, IDataObject>(None, &BHID_DataObject))
+            .and_then(|data| {
+                SHDoDragDrop(Some(hwnd), &data, None::<&IDropSource>, DROPEFFECT_COPY | DROPEFFECT_LINK)
+            })
+    };
+    if let Err(e) = result {
+        eprintln!("couldn't drag {}: {}", path.display(), e.message());
+    }
+}
+
+#[cfg(not(windows))]
+fn drag_file(_window: &Window, _path: &std::path::Path) {}
 
 /// Bottom-right of the primary screen's work area (above the taskbar).
 fn corner_position(event_loop: &ActiveEventLoop, window: &Window) -> Option<PhysicalPosition<i32>> {

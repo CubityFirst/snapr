@@ -41,11 +41,25 @@ pub struct View {
     pub cursor: CursorIcon,
     /// Handles for curving lines or arrows, in points.
     pub arrow_nodes: Vec<egui::Pos2>,
+    /// The annotation under the cursor, in points.
+    pub hovered: Option<Rect>,
     /// What to do, shown at the top of the screen.
     pub hint: Option<&'static str>,
-    /// The colour picker's magnifier: the cursor, and the screen pixels
-    /// around it (an odd-sided square centred on it).
-    pub loupe: Option<(egui::Pos2, image::RgbaImage)>,
+    /// Details beside the cursor (in points): the colour picker's
+    /// magnifier, or the crosshair info chosen in Settings.
+    pub cursor_info: Option<(egui::Pos2, CursorInfo)>,
+}
+
+/// What's shown in the card beside the cursor.
+#[derive(Debug, Clone, Default)]
+pub struct CursorInfo {
+    /// The screen pixels around the cursor, enlarged (an odd-sided square
+    /// centred on it; off-screen pixels are transparent).
+    pub magnifier: Option<image::RgbaImage>,
+    /// The colour of the pixel under the cursor.
+    pub color: Option<[u8; 3]>,
+    /// That pixel's position on the screen.
+    pub position: Option<[i32; 2]>,
 }
 
 /// Runs egui for one overlay frame. egui needs extra passes when the toolbar
@@ -117,8 +131,16 @@ fn ui(ui: &mut egui::Ui, view: &View) -> (Vec<Action>, Option<Rect>) {
         painter.galley(bg.min + vec2(12.0, 7.0), galley, Color32::WHITE);
     }
 
-    if let Some((at, pixels)) = &view.loupe {
-        draw_loupe(ui.painter(), *at, pixels);
+    if let Some((at, info)) = &view.cursor_info {
+        draw_cursor_info(ui.painter(), *at, info);
+    }
+
+    if let Some(r) = view.hovered {
+        // Dark under light, to show on any background.
+        let r = r.expand(2.0);
+        let painter = ui.painter();
+        painter.rect_stroke(r, 3.0, Stroke::new(3.0, Color32::from_black_alpha(140)), StrokeKind::Middle);
+        painter.rect_stroke(r, 3.0, Stroke::new(1.5, Color32::WHITE), StrokeKind::Middle);
     }
 
     for &node in &view.arrow_nodes {
@@ -166,22 +188,44 @@ fn ui(ui: &mut egui::Ui, view: &View) -> (Vec<Action>, Option<Rect>) {
     (actions, Some(covered))
 }
 
-/// The colour picker's magnifier beside the cursor: the pixels around it
-/// enlarged, the middle one outlined, and its colour underneath.
-fn draw_loupe(painter: &egui::Painter, at: egui::Pos2, pixels: &image::RgbaImage) {
-    const CELL: f32 = 9.0;
+/// The card beside the cursor: the pixels around it enlarged (the middle one
+/// outlined), then rows for its colour and position.
+fn draw_cursor_info(painter: &egui::Painter, at: egui::Pos2, info: &CursorInfo) {
     const GAP: f32 = 22.0;
-    let n = pixels.width();
-    let side = n as f32 * CELL;
-    let [r, g, b, _] = pixels.get_pixel(n / 2, n / 2).0;
-    let hex = format!("#{r:02X}{g:02X}{b:02X}");
-    let label = painter.layout_no_wrap(
-        format!("{hex}   {r}, {g}, {b}"),
-        FontId::monospace(12.0),
-        Color32::WHITE,
-    );
-    let label_h = label.size().y + 10.0;
-    let size = vec2(side.max(label.size().x + 34.0), side + label_h);
+    /// The magnifier's smallest side, whatever its zoom; it fills the card's
+    /// width.
+    const SIDE: f32 = 135.0;
+    const ROW: f32 = 24.0;
+    /// Room on the left of each row for its swatch or icon.
+    const INDENT: f32 = 28.0;
+    let font = FontId::monospace(12.0);
+    let color = info.color.map(|[r, g, b]| {
+        let text = format!("#{r:02X}{g:02X}{b:02X}   {r}, {g}, {b}");
+        let label = painter.layout_no_wrap(text, font.clone(), Color32::WHITE);
+        (Color32::from_rgb(r, g, b), label)
+    });
+    let position = info.position.map(|[x, y]| {
+        painter.layout_no_wrap(format!("X {x}   Y {y}"), font.clone(), Color32::WHITE)
+    });
+    let labels = [color.as_ref().map(|c| &c.1), position.as_ref()];
+    let rows_h = labels.iter().flatten().count() as f32 * ROW;
+    // Room for the widest colour (the font is monospace), so the card doesn't
+    // change width as the colour does.
+    let widest_color = info.color.map_or(0.0, |_| {
+        let text = "#FFFFFF   255, 255, 255".to_string();
+        painter.layout_no_wrap(text, font.clone(), Color32::WHITE).size().x
+    });
+    let text_w = labels
+        .iter()
+        .flatten()
+        .map(|g| g.size().x)
+        .fold(widest_color, f32::max);
+    let width = text_w + INDENT + 8.0;
+    let side = if info.magnifier.is_some() { width.max(SIDE) } else { 0.0 };
+    let size = vec2(width.max(side), side + rows_h);
+    if size.y == 0.0 {
+        return;
+    }
     // Below right of the cursor, flipped where it would leave the screen.
     let screen = painter.clip_rect();
     let mut min = at + vec2(GAP, GAP);
@@ -193,60 +237,80 @@ fn draw_loupe(painter: &egui::Painter, at: egui::Pos2, pixels: &image::RgbaImage
     }
     let card = Rect::from_min_size(min, size);
     painter.rect_filled(card.expand(3.0), 8.0, Color32::from_black_alpha(200));
-    let grid = Rect::from_min_size(
-        pos2(card.center().x - side / 2.0, card.top()),
-        vec2(side, side),
-    );
-    for (x, y, p) in pixels.enumerate_pixels() {
-        let [r, g, b, a] = p.0;
-        let color = if a == 0 {
-            Color32::from_gray(30) // off screen
-        } else {
-            Color32::from_rgb(r, g, b)
+
+    let mut top = card.top();
+    if let Some(pixels) = &info.magnifier {
+        let n = pixels.width();
+        let grid = Rect::from_min_size(pos2(card.center().x - side / 2.0, top), vec2(side, side));
+        // Cell edges on whole screen pixels, so the cells are crisp and evenly
+        // sized at any zoom. One mesh, so there are no seams between them.
+        let ppp = painter.pixels_per_point();
+        let edge = |from: f32, i: u32| (((from + i as f32 * side / n as f32) * ppp).round()) / ppp;
+        let cell = |x: u32, y: u32| {
+            Rect::from_min_max(
+                pos2(edge(grid.left(), x), edge(grid.top(), y)),
+                pos2(edge(grid.left(), x + 1), edge(grid.top(), y + 1)),
+            )
         };
-        let cell = Rect::from_min_size(
-            grid.min + vec2(x as f32 * CELL, y as f32 * CELL),
-            vec2(CELL, CELL),
+        let mut mesh = egui::Mesh::default();
+        for (x, y, p) in pixels.enumerate_pixels() {
+            let [r, g, b, a] = p.0;
+            let color = if a == 0 {
+                Color32::from_gray(30) // off screen
+            } else {
+                Color32::from_rgb(r, g, b)
+            };
+            mesh.add_colored_rect(cell(x, y), color);
+        }
+        painter.add(mesh);
+        let middle = cell(n / 2, n / 2);
+        painter.rect_stroke(
+            middle,
+            0.0,
+            Stroke::new(1.0, Color32::BLACK),
+            StrokeKind::Outside,
         );
-        painter.rect_filled(cell, 0.0, color);
+        painter.rect_stroke(
+            middle.expand(1.0),
+            0.0,
+            Stroke::new(1.0, Color32::WHITE),
+            StrokeKind::Outside,
+        );
+        painter.rect_stroke(
+            grid,
+            0.0,
+            Stroke::new(1.0, Color32::from_white_alpha(90)),
+            StrokeKind::Outside,
+        );
+        top = grid.bottom();
     }
-    let middle = Rect::from_min_size(
-        grid.min + vec2((n / 2) as f32 * CELL, (n / 2) as f32 * CELL),
-        vec2(CELL, CELL),
-    );
-    painter.rect_stroke(
-        middle,
-        0.0,
-        Stroke::new(1.0, Color32::BLACK),
-        StrokeKind::Outside,
-    );
-    painter.rect_stroke(
-        middle.expand(1.0),
-        0.0,
-        Stroke::new(1.0, Color32::WHITE),
-        StrokeKind::Outside,
-    );
-    painter.rect_stroke(
-        grid,
-        0.0,
-        Stroke::new(1.0, Color32::from_white_alpha(90)),
-        StrokeKind::Outside,
-    );
-    // The colour's swatch and value.
-    let row = Rect::from_min_max(pos2(card.left(), grid.bottom()), card.max);
-    let swatch = Rect::from_center_size(pos2(row.left() + 14.0, row.center().y), vec2(14.0, 14.0));
-    painter.rect_filled(swatch, 3.0, Color32::from_rgb(r, g, b));
-    painter.rect_stroke(
-        swatch,
-        3.0,
-        Stroke::new(1.0, Color32::from_white_alpha(140)),
-        StrokeKind::Inside,
-    );
-    painter.galley(
-        pos2(swatch.right() + 8.0, row.center().y - label.size().y / 2.0),
-        label,
-        Color32::WHITE,
-    );
+    // Lays out the next row's text; returns where its swatch or icon goes.
+    let mut row = |label: std::sync::Arc<egui::Galley>| {
+        let r = Rect::from_min_size(pos2(card.left(), top), vec2(size.x, ROW));
+        painter.galley(
+            pos2(r.left() + INDENT, r.center().y - label.size().y / 2.0),
+            label,
+            Color32::WHITE,
+        );
+        top = r.bottom();
+        Rect::from_center_size(pos2(r.left() + 14.0, r.center().y), vec2(14.0, 14.0))
+    };
+    if let Some((fill, label)) = color {
+        let swatch = row(label);
+        painter.rect_filled(swatch, 3.0, fill);
+        painter.rect_stroke(
+            swatch,
+            3.0,
+            Stroke::new(1.0, Color32::from_white_alpha(140)),
+            StrokeKind::Inside,
+        );
+    }
+    if let Some(label) = position {
+        let icon = row(label).shrink(1.0);
+        let stroke = Stroke::new(1.5, Color32::from_white_alpha(200));
+        painter.line_segment([icon.center_top(), icon.center_bottom()], stroke);
+        painter.line_segment([icon.left_center(), icon.right_center()], stroke);
+    }
 }
 
 /// A toolbar button that opens a popup of choices underneath it.
@@ -909,8 +973,9 @@ mod tests {
             )),
             cursor: CursorIcon::Crosshair,
             arrow_nodes: vec![pos2(900.0, 200.0)],
+            hovered: None,
             hint: None,
-            loupe: None,
+            cursor_info: None,
         };
         let mut laid_out = false;
         crate::preview::render("toolbar-preview", [1200, 260], 1.5, |root| {
@@ -936,8 +1001,9 @@ mod tests {
                 selection: None,
                 cursor: CursorIcon::Crosshair,
                 arrow_nodes: Vec::new(),
+                hovered: None,
                 hint: None,
-                loupe: None,
+                cursor_info: None,
             };
             let name = format!("options-preview-{tool:?}").to_lowercase();
             crate::preview::render(&name, [1200, 300], 1.5, |root| {
@@ -953,7 +1019,7 @@ mod tests {
     #[test]
     #[ignore]
     fn loupe_preview() {
-        let n = crate::session::LOUPE_SIZE;
+        let n = crate::session::MAGNIFIER_PIXELS;
         let pixels = image::RgbaImage::from_fn(n, n, |x, y| {
             if x + 3 < y {
                 image::Rgba([0, 0, 0, 0]) // off screen
@@ -972,10 +1038,51 @@ mod tests {
             selection: None,
             cursor: CursorIcon::Crosshair,
             arrow_nodes: Vec::new(),
-            hint: Some("Click to pick a colour \u{2014} arrow keys move one pixel"),
-            loupe: Some((pos2(560.0, 300.0), pixels)),
+            hovered: None,
+            hint: Some("Click to pick a colour \u{2014} arrow keys move one pixel, scroll zooms"),
+            cursor_info: Some((
+                pos2(560.0, 300.0),
+                CursorInfo {
+                    magnifier: Some(pixels),
+                    color: Some([0x3d, 0x9b, 0xff]),
+                    position: Some([1847, -212]),
+                },
+            )),
         };
         crate::preview::render("loupe-preview", [640, 360], 1.0, |root| {
+            root.painter()
+                .rect_filled(root.max_rect(), 0.0, Color32::from_rgb(200, 120, 60));
+            ui(root, &view);
+        });
+    }
+
+    /// Renders the crosshair info without the magnifier, to
+    /// `target/crosshair-info-preview.png`:
+    /// `cargo test crosshair_info_preview -- --ignored`.
+    #[test]
+    #[ignore]
+    fn crosshair_info_preview() {
+        let view = View {
+            tool: Tool::Select,
+            style: Style::default(),
+            can_undo: false,
+            can_redo: false,
+            show_toolbar: false,
+            selection: None,
+            cursor: CursorIcon::Crosshair,
+            arrow_nodes: Vec::new(),
+            hovered: None,
+            hint: None,
+            cursor_info: Some((
+                pos2(60.0, 30.0),
+                CursorInfo {
+                    magnifier: None,
+                    color: Some([200, 120, 60]),
+                    position: Some([640, 1080]),
+                },
+            )),
+        };
+        crate::preview::render("crosshair-info-preview", [600, 240], 1.5, |root| {
             root.painter()
                 .rect_filled(root.max_rect(), 0.0, Color32::from_rgb(200, 120, 60));
             ui(root, &view);

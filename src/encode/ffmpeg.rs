@@ -188,6 +188,42 @@ fn pick_encoder(ffmpeg: &str, webm: bool) -> Result<&'static str, String> {
         .ok_or_else(|| "this FFmpeg has no H.264 or MPEG-4 encoder".into())
 }
 
+/// Whether `program` (blank: `ffmpeg` on `PATH`) runs and can record
+/// MP4, or with `webm` WebM: its version and the encoder it would use, or
+/// what's wrong.
+pub fn check(program: &str, webm: bool) -> Result<String, String> {
+    let program = match program.trim() {
+        "" => "ffmpeg",
+        p => p,
+    };
+    let output = command(program)
+        .arg("-version")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|e| format!("couldn't run {program}: {e}"))?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let first = text.lines().next().unwrap_or_default();
+    // "ffmpeg version 7.1-full_build-www.gyan.dev Copyright (c) ..."
+    let version = match first.strip_prefix("ffmpeg version ") {
+        Some(rest) if output.status.success() => {
+            let full = rest.split_whitespace().next().unwrap_or("?");
+            // "7.1-full_build-…" is 7.1; a git build ("N-11234-g…") stays whole.
+            match full.split_once('-') {
+                Some((number, _)) if number.starts_with(|c: char| c.is_ascii_digit()) => number,
+                _ => full,
+            }
+        }
+        _ => return Err(format!("{program} doesn't look like FFmpeg")),
+    };
+    let encoder = pick_encoder(program, webm)?;
+    let format = if webm { "WebM" } else { "MP4" };
+    Ok(match encoder {
+        "libx264" | "libvpx-vp9" => format!("FFmpeg {version} works: {format} with {encoder}"),
+        _ => format!("FFmpeg {version} works, but has no libx264: {format} with {encoder}, which is less sharp"),
+    })
+}
+
 fn command(program: &str) -> Command {
     #[allow(unused_mut)]
     let mut cmd = Command::new(program);
@@ -297,6 +333,20 @@ fn move_file(from: &Path, to: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A missing program or one that isn't FFmpeg fails the check; the
+    /// FFmpeg on `PATH`, if any, passes it.
+    #[test]
+    fn checks_the_path() {
+        assert!(check("snapr-no-such-ffmpeg", false).unwrap_err().starts_with("couldn't run"));
+        #[cfg(windows)]
+        assert!(check("whoami", false).unwrap_err().contains("doesn't look like FFmpeg"));
+        if command("ffmpeg").arg("-version").output().is_ok() {
+            let msg = check("", false).unwrap();
+            println!("{msg}");
+            assert!(msg.starts_with("FFmpeg "), "{msg}");
+        }
+    }
 
     /// Encodes a few frames of one colour with sound, then decodes them
     /// back as NV12: the colours come through (give or take compression)
