@@ -165,7 +165,7 @@ impl Toast {
                     let threshold = DRAG_THRESHOLD * self.window.scale_factor();
                     if dx * dx + dy * dy >= threshold * threshold {
                         self.pressed_at = None;
-                        drag_file(&self.window, &self.path);
+                        crate::output::drag_out(&self.window, std::slice::from_ref(&self.path));
                         self.expires_at = Some(Instant::now() + AFTER_HOVER);
                     }
                 }
@@ -268,38 +268,6 @@ fn contents(
             });
         });
 }
-
-/// Drags the file out of the toast, as if from Explorer; returns once it's
-/// dropped (or the drag is cancelled).
-#[cfg(windows)]
-fn drag_file(window: &Window, path: &std::path::Path) {
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::System::Com::IDataObject;
-    use windows::Win32::System::Ole::{DROPEFFECT_COPY, DROPEFFECT_LINK, IDropSource};
-    use windows::Win32::UI::Shell::{BHID_DataObject, IShellItem, SHCreateItemFromParsingName, SHDoDragDrop};
-    use windows::core::HSTRING;
-    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-
-    let Ok(handle) = window.window_handle() else { return };
-    let RawWindowHandle::Win32(handle) = handle.as_raw() else { return };
-    let hwnd = HWND(handle.hwnd.get() as _);
-    // SAFETY: COM calls on the event loop's thread, which winit set up for
-    // OLE. The shell's data object carries the file (and its drag image),
-    // and a null drop source gets the shell's default one.
-    let result = unsafe {
-        SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(path.as_os_str()), None)
-            .and_then(|item| item.BindToHandler::<_, IDataObject>(None, &BHID_DataObject))
-            .and_then(|data| {
-                SHDoDragDrop(Some(hwnd), &data, None::<&IDropSource>, DROPEFFECT_COPY | DROPEFFECT_LINK)
-            })
-    };
-    if let Err(e) = result {
-        eprintln!("couldn't drag {}: {}", path.display(), e.message());
-    }
-}
-
-#[cfg(not(windows))]
-fn drag_file(_window: &Window, _path: &std::path::Path) {}
 
 /// Bottom-right of the primary screen's work area (above the taskbar).
 fn corner_position(event_loop: &ActiveEventLoop, window: &Window) -> Option<PhysicalPosition<i32>> {

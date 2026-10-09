@@ -4,7 +4,8 @@
 //! in the large preview (see `player`).
 //!
 //! Images can be combined: Ctrl-click several and right-click one, or drag one
-//! onto another and drop it on *Horizontal* or *Vertical*.
+//! onto another and drop it on *Horizontal* or *Vertical*. Dragging a card
+//! (or the preview) out of the window drops its file in another app.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -72,6 +73,10 @@ pub struct Gallery {
     player: Option<Player>,
     /// Where the seek bar is being dragged to, 0-1.
     scrub: Option<f32>,
+    /// Whether the large preview is shown above the grid.
+    show_preview: bool,
+    /// Files to drag out to another app, once this frame is painted.
+    pub drag_out: Option<Vec<PathBuf>>,
 }
 
 impl Gallery {
@@ -117,6 +122,8 @@ impl Gallery {
             ffmpeg: player_ffmpeg,
             player: None,
             scrub: None,
+            show_preview: !preview_hidden_file().is_some_and(|f| f.exists()),
+            drag_out: None,
         }
     }
 
@@ -150,6 +157,26 @@ impl Gallery {
     pub fn stop_playback(&mut self) {
         self.player = None;
         self.scrub = None;
+    }
+
+    /// Shows or hides the large preview, and remembers it.
+    fn set_show_preview(&mut self, show: bool) {
+        self.show_preview = show;
+        let Some(file) = preview_hidden_file() else {
+            return;
+        };
+        let result = if show {
+            std::fs::remove_file(&file).or_else(|e| match e.kind() {
+                std::io::ErrorKind::NotFound => Ok(()),
+                _ => Err(e),
+            })
+        } else {
+            std::fs::create_dir_all(file.parent().unwrap_or(&file))
+                .and_then(|()| std::fs::write(&file, ""))
+        };
+        if let Err(e) = result {
+            eprintln!("couldn't remember the preview setting: {e}");
+        }
     }
 
     /// Empties the list (and the history file) without touching the files.
@@ -214,6 +241,24 @@ impl Gallery {
                 };
                 ui.colored_label(color, msg);
             }
+            if !self.items.is_empty() {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let (label, tip) = if self.show_preview {
+                        (
+                            "Hide preview",
+                            "Hide the large preview, to see more of the grid",
+                        )
+                    } else {
+                        (
+                            "Show preview",
+                            "Show the selected screenshot large, above the grid",
+                        )
+                    };
+                    if ui.button(label).on_hover_text(tip).clicked() {
+                        self.set_show_preview(!self.show_preview);
+                    }
+                });
+            }
         });
         if !self.picked.is_empty() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.picked.clear();
@@ -229,122 +274,16 @@ impl Gallery {
             empty_state(ui, hotkey, actions);
             return;
         };
-        let is_video = thumbnail::kind(&selected) == Kind::Video;
         if self.player.as_ref().is_some_and(|p| p.path != selected) {
             self.stop_playback();
         }
 
-        // Large preview of the selected screenshot.
-        let preview_h = (ui.available_height() * 0.55).clamp(160.0, 560.0);
-        let (rect, resp) =
-            ui.allocate_exact_size(vec2(ui.available_width(), preview_h), Sense::click());
-        let bg = ui.visuals().extreme_bg_color;
-        ui.painter().rect_filled(rect, 8.0, bg);
-        let mut full_size = None;
-        // The picture to show and its size at full preview quality. While the
-        // large preview loads, the grid's thumbnail stands in for it, so the
-        // preview doesn't blank out (or jump) on every click.
-        let picture = match self.thumb(&selected, true) {
-            Thumb::Ready { texture, size } => {
-                Ok(Some((texture.clone(), *size, texture.size_vec2())))
-            }
-            Thumb::Loading => Ok(None),
-            Thumb::Failed => Err(()),
-        };
-        let picture = match picture {
-            Ok(None) => match self.thumb(&selected, false) {
-                Thumb::Ready { texture, size } => {
-                    Ok(Some((texture.clone(), *size, fit(*size, LARGE))))
-                }
-                _ => Ok(None),
-            },
-            other => other,
-        };
-        // A playing video's current frame replaces the poster, at the
-        // poster's size so the picture doesn't jump when it starts.
-        let frame = self
-            .player
-            .as_mut()
-            .and_then(|p| p.update(ui.ctx()))
-            .cloned();
-        match picture {
-            Ok(Some((texture, size, tex))) => {
-                full_size = Some(size);
-                let scale = ((rect.width() - 16.0) / tex.x)
-                    .min((rect.height() - 16.0) / tex.y)
-                    .min(1.0);
-                let img_rect = egui::Rect::from_center_size(rect.center(), tex * scale);
-                let shown = frame.as_ref().unwrap_or(&texture);
-                egui::Image::new((shown.id(), tex))
-                    .corner_radius(4.0)
-                    .paint_at(ui, img_rect);
-                if is_video {
-                    match &self.player {
-                        None => thumbnail::draw_play_badge(ui.painter(), img_rect.center(), 28.0),
-                        Some(p) if p.loading() => egui::Spinner::new().paint_at(
-                            ui,
-                            egui::Rect::from_center_size(img_rect.center(), vec2(28.0, 28.0)),
-                        ),
-                        Some(_) => {}
-                    }
-                }
-            }
-            // No poster, but the video plays anyway.
-            _ if let Some(frame) = &frame => {
-                let tex = frame.size_vec2();
-                let scale = ((rect.width() - 16.0) / tex.x)
-                    .min((rect.height() - 16.0) / tex.y)
-                    .min(1.0);
-                let img_rect = egui::Rect::from_center_size(rect.center(), tex * scale);
-                egui::Image::new((frame.id(), tex))
-                    .corner_radius(4.0)
-                    .paint_at(ui, img_rect);
-            }
-            // Painted rather than added, so it doesn't move what follows.
-            Ok(None) => egui::Spinner::new().paint_at(
-                ui,
-                egui::Rect::from_center_size(rect.center(), vec2(24.0, 24.0)),
-            ),
-            Err(()) if thumbnail::kind(&selected) == Kind::Image => {
-                ui.painter().text(
-                    rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    "Couldn't load image",
-                    egui::FontId::proportional(14.0),
-                    ui.visuals().weak_text_color(),
-                );
-            }
-            Err(()) => thumbnail::draw_file_icon(ui.painter(), rect, &selected),
-        }
-        let hover = if is_video {
-            "Click to play or pause, double-click to open"
+        let full_size = if self.show_preview {
+            self.preview(ui, &selected, actions)
         } else {
-            "Double-click to open"
+            self.stop_playback();
+            None
         };
-        let resp = resp.on_hover_text(hover);
-        if is_video && resp.clicked() {
-            match &mut self.player {
-                Some(p) => p.toggle(),
-                None => self.player = Some(Player::new(selected.clone(), &self.ffmpeg)),
-            }
-        }
-        if is_video && let Some(p) = &mut self.player {
-            if ui.rect_contains_pointer(rect) || p.is_paused() || self.scrub.is_some() {
-                video_controls(ui, rect, p, &mut self.scrub);
-            }
-            if p.failed() {
-                ui.painter().text(
-                    rect.center_top() + vec2(0.0, 14.0),
-                    egui::Align2::CENTER_TOP,
-                    "Couldn't play this video",
-                    egui::FontId::proportional(13.0),
-                    crate::settings_ui::ERROR,
-                );
-            }
-        }
-        if resp.double_clicked() {
-            actions.push(Action::Open(selected.clone()));
-        }
 
         // Details and actions.
         ui.add_space(6.0);
@@ -447,11 +386,148 @@ impl Gallery {
         }
     }
 
+    /// The large preview of the selected screenshot. Returns its full size,
+    /// once known.
+    fn preview(
+        &mut self,
+        ui: &mut egui::Ui,
+        selected: &Path,
+        actions: &mut Vec<Action>,
+    ) -> Option<[u32; 2]> {
+        let is_video = thumbnail::kind(selected) == Kind::Video;
+        let preview_h = (ui.available_height() * 0.55).clamp(160.0, 560.0);
+        let (rect, resp) = ui.allocate_exact_size(
+            vec2(ui.available_width(), preview_h),
+            Sense::click_and_drag(),
+        );
+        let bg = ui.visuals().extreme_bg_color;
+        ui.painter().rect_filled(rect, 8.0, bg);
+        let mut full_size = None;
+        // The picture to show and its size at full preview quality. While the
+        // large preview loads, the grid's thumbnail stands in for it, so the
+        // preview doesn't blank out (or jump) on every click.
+        let picture = match self.thumb(selected, true) {
+            Thumb::Ready { texture, size } => {
+                Ok(Some((texture.clone(), *size, texture.size_vec2())))
+            }
+            Thumb::Loading => Ok(None),
+            Thumb::Failed => Err(()),
+        };
+        let picture = match picture {
+            Ok(None) => match self.thumb(selected, false) {
+                Thumb::Ready { texture, size } => {
+                    Ok(Some((texture.clone(), *size, fit(*size, LARGE))))
+                }
+                _ => Ok(None),
+            },
+            other => other,
+        };
+        // A playing video's current frame replaces the poster, at the
+        // poster's size so the picture doesn't jump when it starts.
+        let frame = self
+            .player
+            .as_mut()
+            .and_then(|p| p.update(ui.ctx()))
+            .cloned();
+        match picture {
+            Ok(Some((texture, size, tex))) => {
+                full_size = Some(size);
+                let scale = ((rect.width() - 16.0) / tex.x)
+                    .min((rect.height() - 16.0) / tex.y)
+                    .min(1.0);
+                let img_rect = egui::Rect::from_center_size(rect.center(), tex * scale);
+                let shown = frame.as_ref().unwrap_or(&texture);
+                egui::Image::new((shown.id(), tex))
+                    .corner_radius(4.0)
+                    .paint_at(ui, img_rect);
+                if is_video {
+                    match &self.player {
+                        None => thumbnail::draw_play_badge(ui.painter(), img_rect.center(), 28.0),
+                        Some(p) if p.loading() => egui::Spinner::new().paint_at(
+                            ui,
+                            egui::Rect::from_center_size(img_rect.center(), vec2(28.0, 28.0)),
+                        ),
+                        Some(_) => {}
+                    }
+                }
+            }
+            // No poster, but the video plays anyway.
+            _ if let Some(frame) = &frame => {
+                let tex = frame.size_vec2();
+                let scale = ((rect.width() - 16.0) / tex.x)
+                    .min((rect.height() - 16.0) / tex.y)
+                    .min(1.0);
+                let img_rect = egui::Rect::from_center_size(rect.center(), tex * scale);
+                egui::Image::new((frame.id(), tex))
+                    .corner_radius(4.0)
+                    .paint_at(ui, img_rect);
+            }
+            // Painted rather than added, so it doesn't move what follows.
+            Ok(None) => egui::Spinner::new().paint_at(
+                ui,
+                egui::Rect::from_center_size(rect.center(), vec2(24.0, 24.0)),
+            ),
+            Err(()) if thumbnail::kind(selected) == Kind::Image => {
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "Couldn't load image",
+                    egui::FontId::proportional(14.0),
+                    ui.visuals().weak_text_color(),
+                );
+            }
+            Err(()) => thumbnail::draw_file_icon(ui.painter(), rect, selected),
+        }
+        let hover = if is_video {
+            "Click to play or pause, double-click to open, drag to another app"
+        } else {
+            "Double-click to open, drag to another app"
+        };
+        let resp = resp.on_hover_text(hover);
+        if is_video && resp.clicked() {
+            match &mut self.player {
+                Some(p) => p.toggle(),
+                None => self.player = Some(Player::new(selected.to_owned(), &self.ffmpeg)),
+            }
+        }
+        if is_video && let Some(p) = &mut self.player {
+            if ui.rect_contains_pointer(rect) || p.is_paused() || self.scrub.is_some() {
+                video_controls(ui, rect, p, &mut self.scrub);
+            }
+            if p.failed() {
+                ui.painter().text(
+                    rect.center_top() + vec2(0.0, 14.0),
+                    egui::Align2::CENTER_TOP,
+                    "Couldn't play this video",
+                    egui::FontId::proportional(13.0),
+                    crate::settings_ui::ERROR,
+                );
+            }
+        }
+        if resp.drag_started() {
+            self.drag_out = Some(vec![selected.to_owned()]);
+        }
+        if resp.double_clicked() {
+            actions.push(Action::Open(selected.to_owned()));
+        }
+        full_size
+    }
+
     /// The images dragged along with `path`: the whole Ctrl-click selection
     /// if it's part of it.
     fn dragged_with(&self, path: &Path) -> Vec<PathBuf> {
         if self.picked.len() > 1 && self.picked.iter().any(|p| p == path) {
             self.picked_images()
+        } else {
+            vec![path.to_owned()]
+        }
+    }
+
+    /// The files dragged out to another app along with `path`: the whole
+    /// Ctrl-click selection if it's part of it.
+    fn dragged_out_with(&self, path: &Path) -> Vec<PathBuf> {
+        if self.picked.iter().any(|p| p == path) {
+            self.picked.clone()
         } else {
             vec![path.to_owned()]
         }
@@ -477,12 +553,7 @@ impl Gallery {
     ) -> Option<(PathBuf, Option<Direction>)> {
         let path = entry.path.as_path();
         let is_image = thumbnail::kind(path) == Kind::Image;
-        let sense = if is_image {
-            Sense::click_and_drag()
-        } else {
-            Sense::click()
-        };
-        let (rect, resp) = ui.allocate_exact_size(CARD, sense);
+        let (rect, resp) = ui.allocate_exact_size(CARD, Sense::click_and_drag());
         if !ui.is_rect_visible(rect) {
             return None; // don't load thumbnails that are scrolled away
         }
@@ -556,6 +627,7 @@ impl Gallery {
         let mut target = None;
         if let Some(dragged) = &self.dragging
             && is_image
+            && thumbnail::kind(dragged) == Kind::Image
             && !self.dragged_with(dragged).iter().any(|p| p == path)
             && let Some(pos) = ui.input(|i| i.pointer.latest_pos())
             && rect.contains(pos)
@@ -648,7 +720,8 @@ impl Gallery {
     }
 
     /// Follows a card being dragged: a ghost of it under the pointer, and
-    /// on release over a drop button, the combine action.
+    /// on release over a drop button, the combine action. Once it leaves the
+    /// window, it's dragged out to other apps instead.
     fn finish_drag(
         &mut self,
         ui: &mut egui::Ui,
@@ -668,9 +741,18 @@ impl Gallery {
             }
             return;
         }
+        if !pos.is_some_and(|p| ui.ctx().content_rect().contains(p)) {
+            self.dragging = None;
+            self.drag_out = Some(self.dragged_out_with(&dragged));
+            return;
+        }
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
         let Some(pos) = pos else { return };
-        let count = self.dragged_with(&dragged).len();
+        let count = if thumbnail::kind(&dragged) == Kind::Image {
+            self.dragged_with(&dragged).len()
+        } else {
+            self.dragged_out_with(&dragged).len()
+        };
         let painter = ui.ctx().layer_painter(egui::LayerId::new(
             egui::Order::Tooltip,
             egui::Id::new("combine-drag"),
@@ -698,6 +780,11 @@ impl Gallery {
             }
         }
     }
+}
+
+/// Exists while the large preview is hidden.
+fn preview_hidden_file() -> Option<PathBuf> {
+    Some(crate::settings::Settings::config_dir()?.join("recent-preview-hidden"))
 }
 
 /// Covers a card with *Horizontal* and *Vertical* drop buttons while an

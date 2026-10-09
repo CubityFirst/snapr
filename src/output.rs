@@ -525,6 +525,61 @@ pub fn show_in_folder(path: &Path) {
     }
 }
 
+/// Drags files out of a window, as if from Explorer; returns once they're
+/// dropped (or the drag is cancelled).
+#[cfg(windows)]
+pub fn drag_out(window: &winit::window::Window, paths: &[PathBuf]) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::System::Com::IDataObject;
+    use windows::Win32::System::Ole::{DROPEFFECT_COPY, DROPEFFECT_LINK, IDropSource};
+    use windows::Win32::UI::Shell::{
+        BHID_DataObject, ILCreateFromPathW, ILFree, SHCreateShellItemArrayFromIDLists, SHDoDragDrop,
+    };
+    use windows::core::HSTRING;
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        return;
+    };
+    let hwnd = HWND(handle.hwnd.get() as _);
+    // SAFETY: COM calls on the event loop's thread, which winit set up for
+    // OLE. The shell's data object carries the files (and their drag image),
+    // and a null drop source gets the shell's default one. Each ID list is
+    // freed once, after the data object no longer needs it.
+    unsafe {
+        let ids: Vec<_> = paths
+            .iter()
+            .map(|p| ILCreateFromPathW(&HSTRING::from(p.as_os_str())).cast_const())
+            .filter(|id| !id.is_null())
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        let result = SHCreateShellItemArrayFromIDLists(&ids)
+            .and_then(|items| items.BindToHandler::<_, IDataObject>(None, &BHID_DataObject))
+            .and_then(|data| {
+                SHDoDragDrop(
+                    Some(hwnd),
+                    &data,
+                    None::<&IDropSource>,
+                    DROPEFFECT_COPY | DROPEFFECT_LINK,
+                )
+            });
+        for id in ids {
+            ILFree(Some(id));
+        }
+        if let Err(e) = result {
+            eprintln!("couldn't drag files out: {}", e.message());
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn drag_out(_window: &winit::window::Window, _paths: &[PathBuf]) {}
+
 /// Opens a folder (created if missing) or file in the system file manager.
 pub fn reveal(path: &Path) {
     if path.extension().is_none() {

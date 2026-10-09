@@ -623,6 +623,21 @@ impl MainWindow {
         // Anything the painter couldn't apply (e.g. the window was minimized).
         output.textures_delta.clear();
 
+        if let Some(paths) = self.gallery.drag_out.take() {
+            crate::output::drag_out(&self.window, &paths);
+            // The drag swallowed the button's release; let egui know.
+            let pos = ctx.input(|i| i.pointer.latest_pos()).unwrap_or_default();
+            let events = &mut self.state.egui_input_mut().events;
+            events.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+            events.push(egui::Event::PointerGone);
+            self.window.request_redraw();
+        }
+
         self.repaint_at = None;
         if let Some(vp) = output.viewport_output.get(&egui::ViewportId::ROOT) {
             if vp.repaint_delay.is_zero() {
