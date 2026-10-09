@@ -12,13 +12,14 @@ use windows_sys::Win32::UI::Shell::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIcon, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
-    DestroyMenu, DestroyWindow, FindWindowW, GetCursorPos, GetSystemMetrics, HICON, MF_SEPARATOR,
-    MF_STRING, PostMessageW, RegisterClassW, RegisterWindowMessageW, SM_CXSMICON,
+    DestroyMenu, DestroyWindow, FindWindowW, GetCursorPos, GetSystemMetrics, HICON, MF_POPUP,
+    MF_SEPARATOR, MF_STRING, PostMessageW, RegisterClassW, RegisterWindowMessageW, SM_CXSMICON,
     SetForegroundWindow, SetMenuDefaultItem, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
     WM_APP, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WNDCLASSW,
 };
 
 use super::{Callback, TrayAction, capture_label};
+use crate::settings::ToolAction;
 
 const CLASS_NAME: &str = "snapr.tray";
 const WM_TRAY: u32 = WM_APP + 1;
@@ -32,6 +33,8 @@ const MENU: &[(usize, TrayAction)] = &[
     (3, TrayAction::OpenFolder),
     (4, TrayAction::Quit),
 ];
+/// The Tools submenu's items take IDs from here, in `ToolAction::ALL` order.
+const TOOL_ID: usize = 100;
 
 struct State {
     hwnd: HWND,
@@ -206,6 +209,7 @@ fn show_menu(hwnd: HWND) {
         for &(id, action) in MENU {
             let label = match action {
                 TrayAction::Capture => capture.clone(),
+                TrayAction::Tool(_) => unreachable!(),
                 TrayAction::Recent => "Recent screenshots\u{2026}".into(),
                 TrayAction::Settings => "Settings\u{2026}".into(),
                 TrayAction::OpenFolder => "Open screenshots folder".into(),
@@ -215,6 +219,14 @@ fn show_menu(hwnd: HWND) {
                 }
             };
             AppendMenuW(menu, MF_STRING, id, wide(&label).as_ptr());
+            if action == TrayAction::Capture {
+                // Destroyed along with `menu`.
+                let tools = CreatePopupMenu();
+                for (i, tool) in ToolAction::ALL.into_iter().enumerate() {
+                    AppendMenuW(tools, MF_STRING, TOOL_ID + i, wide(tool.label()).as_ptr());
+                }
+                AppendMenuW(menu, MF_POPUP, tools as usize, wide("Tools").as_ptr());
+            }
         }
         SetMenuDefaultItem(menu, 5, 0);
         let mut pt = POINT { x: 0, y: 0 };
@@ -232,7 +244,12 @@ fn show_menu(hwnd: HWND) {
         );
         PostMessageW(hwnd, WM_NULL, 0, 0);
         DestroyMenu(menu);
-        if let Some(&(_, action)) = MENU.iter().find(|(id, _)| *id as i32 == cmd) {
+        let tool = (cmd as usize)
+            .checked_sub(TOOL_ID)
+            .and_then(|i| ToolAction::ALL.get(i));
+        if let Some(&tool) = tool {
+            dispatch(TrayAction::Tool(tool));
+        } else if let Some(&(_, action)) = MENU.iter().find(|(id, _)| *id as i32 == cmd) {
             dispatch(action);
         }
     }

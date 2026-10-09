@@ -11,6 +11,7 @@ use objc2_app_kit::{
 use objc2_foundation::{NSData, NSSize, NSString};
 
 use super::{Callback, TrayAction, capture_label};
+use crate::settings::ToolAction;
 
 struct Ivars {
     callback: Callback,
@@ -28,6 +29,21 @@ define_class!(
         #[unsafe(method(capture:))]
         fn capture(&self, _sender: Option<&AnyObject>) {
             (self.ivars().callback)(TrayAction::Capture);
+        }
+
+        #[unsafe(method(pickColor:))]
+        fn pick_color(&self, _sender: Option<&AnyObject>) {
+            (self.ivars().callback)(TrayAction::Tool(ToolAction::PickColor));
+        }
+
+        #[unsafe(method(scanQr:))]
+        fn scan_qr(&self, _sender: Option<&AnyObject>) {
+            (self.ivars().callback)(TrayAction::Tool(ToolAction::ScanQr));
+        }
+
+        #[unsafe(method(pinRegion:))]
+        fn pin_region(&self, _sender: Option<&AnyObject>) {
+            (self.ivars().callback)(TrayAction::Tool(ToolAction::PinRegion));
         }
 
         #[unsafe(method(recent:))]
@@ -71,12 +87,12 @@ impl Tray {
         let mtm = MainThreadMarker::new().ok_or("the tray must be created on the main thread")?;
         let target = Target::new(mtm, callback);
         let menu = NSMenu::new(mtm);
-        let add = |title: &str, action: Sel| {
+        let add_to = |menu: &NSMenu, title: &str, action: Option<Sel>| {
             let item = unsafe {
                 NSMenuItem::initWithTitle_action_keyEquivalent(
                     NSMenuItem::alloc(mtm),
                     &NSString::from_str(title),
-                    Some(action),
+                    action,
                     &NSString::from_str(""),
                 )
             };
@@ -84,7 +100,18 @@ impl Tray {
             menu.addItem(&item);
             item
         };
+        let add = |title: &str, action: Sel| add_to(&menu, title, Some(action));
         let capture_item = add(&capture_label(hotkey), sel!(capture:));
+        let tools = NSMenu::new(mtm);
+        for tool in ToolAction::ALL {
+            let action = match tool {
+                ToolAction::PickColor => sel!(pickColor:),
+                ToolAction::ScanQr => sel!(scanQr:),
+                ToolAction::PinRegion => sel!(pinRegion:),
+            };
+            add_to(&tools, tool.label(), Some(action));
+        }
+        add_to(&menu, "Tools", None).setSubmenu(Some(&tools));
         add("Recent screenshots\u{2026}", sel!(recent:));
         add("Settings\u{2026}", sel!(settings:));
         add("Open screenshots folder", sel!(openFolder:));

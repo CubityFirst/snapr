@@ -1266,7 +1266,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.gallery_notice(event_loop, msg, is_error);
             }
             UserEvent::ToastReady(path, image) => self.show_toast(event_loop, path, image),
-            UserEvent::ToolHotkey(action) => {
+            UserEvent::ToolHotkey(action) | UserEvent::Tray(TrayAction::Tool(action)) => {
                 let purpose = match action {
                     ToolAction::PickColor => Purpose::PickColor,
                     ToolAction::ScanQr => Purpose::Scan,

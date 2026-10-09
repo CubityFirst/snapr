@@ -2,9 +2,10 @@
 //! desktops; GNOME needs the AppIndicator extension).
 
 use ksni::blocking::{Handle, TrayMethods};
-use ksni::menu::{MenuItem, StandardItem};
+use ksni::menu::{MenuItem, StandardItem, SubMenu};
 
 use super::{Callback, TrayAction, capture_label};
+use crate::settings::ToolAction;
 
 struct Sni {
     capture_label: String,
@@ -49,6 +50,15 @@ impl ksni::Tray for Sni {
         };
         vec![
             item(self.capture_label.clone(), TrayAction::Capture),
+            SubMenu {
+                label: "Tools".into(),
+                submenu: ToolAction::ALL
+                    .into_iter()
+                    .map(|t| item(t.label().into(), TrayAction::Tool(t)))
+                    .collect(),
+                ..Default::default()
+            }
+            .into(),
             item("Recent screenshots\u{2026}".into(), TrayAction::Recent),
             item("Settings\u{2026}".into(), TrayAction::Settings),
             item("Open screenshots folder".into(), TrayAction::OpenFolder),

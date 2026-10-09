@@ -16,9 +16,13 @@ pub use windows::{Tray, signal_running_instance};
 
 use std::sync::Arc;
 
+use crate::settings::ToolAction;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayAction {
     Capture,
+    /// Start one of the tools, from the Tools submenu.
+    Tool(ToolAction),
     /// Open the main window on the Recent page.
     Recent,
     Settings,
