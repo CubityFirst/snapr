@@ -298,7 +298,8 @@ impl Overlay {
     }
 
     /// Feeds a window event to egui; requests a redraw if egui wants one.
-    pub fn egui_event(&mut self, event: &WindowEvent) {
+    /// Returns whether a text field (like the font search) has the keyboard.
+    pub fn egui_event(&mut self, event: &WindowEvent) -> bool {
         let repaint = self.ui.state.on_window_event(&self.window, event).repaint;
         // egui asks to repaint in answer to a redraw, too. Asking again while
         // Windows is painting this overlay makes it paint it over and over,
@@ -306,6 +307,7 @@ impl Overlay {
         if repaint && !matches!(event, WindowEvent::RedrawRequested) {
             self.request_redraw();
         }
+        self.ui.state.egui_ctx().egui_wants_keyboard_input()
     }
 
     /// When egui wants to animate next (e.g. a tooltip appearing).

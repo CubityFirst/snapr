@@ -83,13 +83,15 @@ enum Grab {
         anchor: (f64, f64),
     },
     Draw,
+    /// Typing text: keys go to it until Enter, Esc or a click elsewhere.
+    Type,
 }
 
 /// Pixels across the magnifier at first (odd, so one is in the middle).
 pub const MAGNIFIER_PIXELS: u32 = 15;
 /// The fewest and most pixels the mouse wheel zooms (or resizes) the
 /// magnifier between. Resizing goes one step smaller still, to hide it.
-const MAGNIFIER_ZOOM: (i32, i32) = (5, 45);
+pub const MAGNIFIER_ZOOM: (i32, i32) = (5, 45);
 
 /// How close (in pixels) a press must be to a line's or an arrow's middle
 /// node to grab it.
@@ -146,6 +148,8 @@ pub struct Session {
     wheel: f64,
     cursor: Option<(f64, f64)>,
     grab: Grab,
+    /// Where the left button last went down, to tell clicks from drags.
+    pressed_at: Option<(f64, f64)>,
     /// Other apps' windows when the capture started, topmost first. Hovering
     /// one highlights it, and a click takes it.
     windows: Vec<Rect>,
@@ -224,6 +228,7 @@ impl Session {
             wheel: 0.0,
             cursor: capture::cursor_position(),
             grab: Grab::None,
+            pressed_at: None,
             windows,
             canvas: None,
             layer: None,
@@ -274,6 +279,7 @@ impl Session {
 
     /// Takes focus back after a capture stacked on top of this one closed.
     pub fn resume(&mut self) {
+        self.finish_typing();
         self.grab = Grab::None;
         // The cursor may have moved while the other capture was open.
         self.cursor = capture::cursor_position().or(self.cursor);
@@ -307,7 +313,7 @@ impl Session {
         let choosing = match self.grab {
             Grab::None => true,
             Grab::Region { .. } => self.selection().is_none(),
-            Grab::Draw => false,
+            Grab::Draw | Grab::Type => false,
         };
         if !region_tool || !choosing || self.over_toolbar() || self.purpose == Purpose::PickColor {
             return None;
@@ -413,6 +419,8 @@ impl Session {
                 CursorIcon::Grabbing
             } else if over_node || over_movable {
                 CursorIcon::Grab
+            } else if self.tool == Tool::Text && self.annotate {
+                CursorIcon::Text
             } else {
                 CursorIcon::Crosshair
             },
@@ -425,6 +433,11 @@ impl Session {
             hint: self
                 .purpose
                 .hint(self.crosshair_info.scroll)
+                .or_else(|| {
+                    (self.grab == Grab::Type).then_some(
+                        "Type your text \u{2014} Enter to finish, Shift+Enter for a new line",
+                    )
+                })
                 .or_else(|| {
                     (self.annotate && self.tool == Tool::Image && self.redact_image.is_none())
                         .then_some(
@@ -637,7 +650,7 @@ impl Session {
         let Some(overlay) = self.overlays.get_mut(&id) else {
             return Outcome::Continue;
         };
-        overlay.egui_event(event);
+        let typing_in_field = overlay.egui_event(event);
         match event {
             WindowEvent::RedrawRequested => return self.redraw(gpu, id),
             WindowEvent::Resized(_) => overlay.request_redraw(),
@@ -680,9 +693,21 @@ impl Session {
             } => {
                 let key = event.physical_key;
                 match event.state {
+                    // Typed into a field, like the font search: not a
+                    // shortcut.
+                    ElementState::Pressed if typing_in_field => {}
                     ElementState::Released => {
                         self.keys_down.remove(&key);
                         self.stale_keys.remove(&key);
+                    }
+                    // Holding a key down repeats it into text.
+                    ElementState::Pressed
+                        if event.repeat
+                            && !*is_synthetic
+                            && self.grab == Grab::Type
+                            && self.keys_down.contains(&key) =>
+                    {
+                        return self.on_key(event);
                     }
                     // A key held as the overlay opened shows up as a synthetic
                     // press when it takes focus, or as auto-repeat.
@@ -744,14 +769,29 @@ impl Session {
     fn apply(&mut self, action: Action) -> Outcome {
         let before = self.snap();
         match action {
-            Action::Tool(t) => self.tool = t,
+            Action::Tool(t) => {
+                if t != self.tool {
+                    self.finish_typing();
+                }
+                self.tool = t;
+            }
             Action::Color(c) => self.style.color = c,
             Action::Size(s) => self.style.size = s,
             Action::Pixelate(o) => self.style.pixelate = o,
             Action::Arrow(o) => self.style.arrow = o,
             Action::ClipShadow(on) => self.style.clip_shadow = on,
-            Action::Undo => self.canvas.iter_mut().for_each(Canvas::undo),
-            Action::Redo => self.canvas.iter_mut().for_each(Canvas::redo),
+            Action::Text(t) => self.style.text = t,
+            Action::Undo => {
+                self.finish_typing();
+                self.canvas.iter_mut().for_each(Canvas::undo);
+            }
+            Action::Redo => {
+                self.finish_typing();
+                self.canvas.iter_mut().for_each(Canvas::redo);
+            }
+        }
+        if let Some(c) = &mut self.canvas {
+            c.restyle_typing(self.style);
         }
         self.invalidate(before, true);
         Outcome::Continue
@@ -892,7 +932,7 @@ impl Session {
                     };
                 }
             }
-            Grab::Region { .. } | Grab::None => {}
+            Grab::Region { .. } | Grab::Type | Grab::None => {}
         }
         self.invalidate(before, false);
     }
@@ -900,6 +940,9 @@ impl Session {
     fn on_press(&mut self) {
         let Some(p) = self.cursor else { return };
         let before = self.snap();
+        // A click anywhere finishes the text being typed first.
+        self.finish_typing();
+        self.pressed_at = Some(p);
         if self.tool == Tool::Select || !self.annotate {
             self.grab = Grab::Region { anchor: p };
         } else if let Some(canvas) = &mut self.canvas
@@ -910,7 +953,7 @@ impl Session {
         } else if let Some(canvas) = &mut self.canvas
             && canvas.begin_move((p.0 as f32, p.1 as f32), self.tool)
         {
-            // Grabbed a clip, an area or a pen stroke: drag to move it.
+            // Grabbed a clip, an area, a pen stroke or text: drag to move it.
             self.grab = Grab::Draw;
         } else if self.ensure_canvas_at(p)
             && let (Some(canvas), Some(a)) = (
@@ -919,6 +962,8 @@ impl Session {
                     .map(|a| a.with_image(self.redact_image.clone())),
             )
         {
+            // Text is typed once the click, or the drag out of a box for it,
+            // is let go.
             canvas.begin(a);
             self.grab = Grab::Draw;
         }
@@ -951,14 +996,70 @@ impl Session {
                 }
             }
             Grab::Draw => {
+                // New text, and text clicked without dragging it, open for
+                // typing.
+                let clicked = self
+                    .pressed_at
+                    .zip(self.cursor)
+                    .is_some_and(|(a, b)| (a.0 - b.0).hypot(a.1 - b.1) < 3.0);
                 if let Some(c) = &mut self.canvas {
-                    c.commit();
+                    if self.tool == Tool::Text && (clicked || !c.is_editing()) && c.begin_typing() {
+                        self.grab = Grab::Type;
+                    } else {
+                        c.commit();
+                    }
                 }
             }
+            // Still typing: the release of the click that placed it.
+            Grab::Type => self.grab = Grab::Type,
             Grab::None => {}
         }
         self.invalidate(before, true);
         Outcome::Continue
+    }
+
+    /// Finishes typing, keeping the text (unless there's none).
+    fn finish_typing(&mut self) {
+        if self.grab == Grab::Type {
+            self.grab = Grab::None;
+            if let Some(c) = &mut self.canvas {
+                c.commit();
+            }
+        }
+    }
+
+    /// Keys typed into text. Returns whether the key was used.
+    fn type_key(&mut self, event: &KeyEvent, ctrl: bool) -> bool {
+        let Some(c) = &mut self.canvas else {
+            return false;
+        };
+        match &event.logical_key {
+            Key::Named(NamedKey::Escape) => self.finish_typing(),
+            Key::Named(NamedKey::Enter) if self.modifiers.shift_key() => c.type_text("\n"),
+            Key::Named(NamedKey::Enter) => self.finish_typing(),
+            Key::Named(NamedKey::Backspace) => c.backspace(),
+            Key::Character(k) if ctrl && k.eq_ignore_ascii_case("v") => {
+                let pasted = arboard::Clipboard::new().and_then(|mut cb| cb.get_text());
+                if let Ok(text) = pasted {
+                    let text = text.replace("\r\n", "\n").replace('\t', "    ");
+                    c.type_text(&text.chars().filter(|ch| *ch == '\n' || !ch.is_control()).collect::<String>());
+                }
+            }
+            // Other shortcuts (Ctrl+C, Ctrl+Z, ...) finish the text and go
+            // on to do what they do. AltGr (Ctrl+Alt) types characters.
+            _ if ctrl && !self.modifiers.alt_key() => {
+                self.finish_typing();
+                return false;
+            }
+            _ => match &event.text {
+                Some(text) => {
+                    let text: String = text.chars().filter(|ch| !ch.is_control()).collect();
+                    c.type_text(&text);
+                }
+                None => {}
+            },
+        }
+        true
     }
 
     /// Right-click abandons the current drag, or closes the capture (on
@@ -989,12 +1090,21 @@ impl Session {
                 true
             }
             Grab::Region { .. } => true,
+            Grab::Type => {
+                self.grab = Grab::Type;
+                self.finish_typing();
+                true
+            }
         }
     }
 
     fn on_key(&mut self, event: &KeyEvent) -> Outcome {
         let before = self.snap();
         let ctrl = self.modifiers.control_key() || self.modifiers.super_key();
+        if self.grab == Grab::Type && self.type_key(event, ctrl) {
+            self.invalidate(before, true);
+            return Outcome::Continue;
+        }
         match &event.logical_key {
             Key::Named(NamedKey::Escape) => {
                 if !self.cancel_grab() {

@@ -13,6 +13,7 @@ mod destinations_ui;
 #[cfg(windows)]
 mod dxgi;
 mod encode;
+mod fonts;
 mod gallery;
 mod gpu;
 #[cfg(windows)]
@@ -33,6 +34,7 @@ mod preview;
 mod qr;
 mod record;
 mod record_ui;
+mod remembered;
 mod secrets;
 mod session;
 mod settings;
@@ -65,7 +67,7 @@ use crate::hotkey::GlobalHotkey;
 use crate::main_window::{Action, MainWindow, Page};
 use crate::output::Output;
 use crate::pin::{Pin, Place};
-use crate::session::{MAGNIFIER_PIXELS, Outcome, Purpose, Session};
+use crate::session::{Outcome, Purpose, Session};
 use crate::settings::{Loaded, RecordFormat, Settings, ToolAction, ToolHotkey, Upload};
 use crate::settings_ui::Form;
 use crate::settings_ui::Test;
@@ -186,6 +188,12 @@ struct App {
     style: Style,
     /// Pixels across the magnifier (its zoom), remembered between captures.
     magnifier: u32,
+    /// Both of those (and the text tool's font) as last saved, for the next
+    /// run.
+    remembered: remembered::Remembered,
+    /// The saved font, looked up among the installed fonts at the first
+    /// capture rather than holding up the start.
+    font_pending: Option<String>,
     main_window: Option<MainWindow>,
     /// The preview in the corner of the screen after a capture.
     toast: Option<Toast>,
@@ -411,6 +419,9 @@ impl App {
             Ok(g) => g,
             Err(e) => return self.report(event_loop, e.clone(), true),
         };
+        if let Some(family) = self.font_pending.take() {
+            self.style.text.font = fonts::find(&family);
+        }
         let s = &self.settings;
         // Every capture starts by selecting a region; a nested capture keeps
         // the colour and size of the one below.
@@ -485,6 +496,11 @@ impl App {
             let session = self.sessions.remove(index);
             self.style = session.style;
             self.magnifier = session.magnifier;
+            let remembered = remembered::Remembered::new(self.style, self.magnifier);
+            if remembered != self.remembered {
+                remembered.save();
+                self.remembered = remembered;
+            }
             match outcome {
                 Outcome::Done {
                     image,
@@ -1543,6 +1559,8 @@ fn main() {
         }
     }
     update::init();
+    // Ready for the text tool's font list by the time it's opened.
+    fonts::preload();
     let lock = if once { None } else { single_instance() };
 
     let (settings, loaded) = Settings::load();
@@ -1634,6 +1652,7 @@ fn main() {
         eprintln!("{msg}");
     }
 
+    let remembered = remembered::Remembered::load();
     let mut app = App {
         proxy,
         settings,
@@ -1646,8 +1665,10 @@ fn main() {
         tray: None,
         output,
         sessions: Vec::new(),
-        style: Style::default(),
-        magnifier: MAGNIFIER_PIXELS,
+        style: remembered.style(),
+        magnifier: remembered.magnifier(),
+        font_pending: remembered.font().map(String::from),
+        remembered,
         main_window: None,
         toast: None,
         pins: Vec::new(),

@@ -24,6 +24,7 @@ pub enum Tool {
     Pen,
     Line,
     Arrow,
+    Text,
     Step,
     Rect,
     Ellipse,
@@ -36,11 +37,12 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 13] = [
+    pub const ALL: [Tool; 14] = [
         Tool::Select,
         Tool::Pen,
         Tool::Line,
         Tool::Arrow,
+        Tool::Text,
         Tool::Step,
         Tool::Rect,
         Tool::Ellipse,
@@ -58,6 +60,10 @@ impl Tool {
             Tool::Pen => "Pen",
             Tool::Line => "Line",
             Tool::Arrow => "Arrow",
+            Tool::Text => {
+                "Text: click and type; Enter finishes, Shift+Enter starts a new line. \
+                 Drag text to move it, click it to change it"
+            }
             Tool::Step => "Step: click to place numbered markers 1, 2, 3\u{2026}",
             Tool::Rect => "Box",
             Tool::Ellipse => "Ellipse",
@@ -81,6 +87,7 @@ impl Tool {
             Tool::Pen => 'P',
             Tool::Line => 'L',
             Tool::Arrow => 'A',
+            Tool::Text => 'T',
             Tool::Step => 'N',
             Tool::Rect => 'R',
             Tool::Ellipse => 'E',
@@ -181,6 +188,21 @@ fn premultiplied_pixmap(img: &RgbaImage) -> Option<Pixmap> {
     Some(pm)
 }
 
+/// How the text tool writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextOptions {
+    /// An installed font (its place in `fonts::installed`), or `None` for
+    /// the bundled one.
+    pub font: Option<u16>,
+    /// Pixels per em.
+    pub size: u16,
+    /// Edge it in black or white, whichever stands out from its colour.
+    pub outline: bool,
+}
+
+/// The text sizes offered, in pixels per em.
+pub const TEXT_SIZES: std::ops::RangeInclusive<u16> = 10..=160;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ArrowOptions {
     /// A head at both ends.
@@ -209,6 +231,7 @@ pub struct Style {
     pub arrow: ArrowOptions,
     /// Clips get a soft drop shadow, lifting them off the screen under them.
     pub clip_shadow: bool,
+    pub text: TextOptions,
 }
 
 impl Default for Style {
@@ -225,6 +248,11 @@ impl Default for Style {
                 head_at_start: false,
             },
             clip_shadow: true,
+            text: TextOptions {
+                font: None,
+                size: 28,
+                outline: true,
+            },
         }
     }
 }
@@ -250,6 +278,12 @@ enum Shape {
     Clip(Arc<Pixmap>, (i32, i32)),
     /// A numbered marker: its centre and number.
     Step(Point, u32),
+    /// Typed text, by its top-left corner; lines split at `\n`. In a box
+    /// dragged out for it, the box's size: the text wraps to its width.
+    Text(Point, String, Option<(f32, f32)>),
+    /// The box being dragged out for text: where the drag started, and the
+    /// mouse.
+    TextSelect(Point, Point),
     /// A box filled with the colour sampled where it was started
     /// (premultiplied RGBA, as stored in the pixmap).
     Erase(Point, Point, [u8; 4]),
@@ -277,6 +311,10 @@ pub enum Highlight {
 
 /// Shadow under a clip, in pixels.
 const CLIP_SHADOW: i32 = 5;
+
+/// Room (in pixels) around text for its outline and, while it's typed, the
+/// dashed box.
+const TEXT_PAD: i32 = 5;
 
 /// One annotation, in global (virtual desktop) pixel coordinates.
 #[derive(Debug, Clone)]
@@ -306,6 +344,9 @@ impl Annotation {
             Tool::Clip => Shape::ClipSelect(p, p),
             // Numbered when it's added to the canvas.
             Tool::Step => Shape::Step(p, 0),
+            // Typed into once it's let go: in the box it's dragged out to,
+            // or, clicked, with the click in the middle of its first line.
+            Tool::Text => Shape::TextSelect(p, p),
             // Its colour is sampled when it's added to the canvas.
             Tool::Eraser => Shape::Erase(p, p, [0, 0, 0, 255]),
         };
@@ -345,7 +386,8 @@ impl Annotation {
             | Shape::Image(_, b, _)
             | Shape::ClipSelect(_, b)
             | Shape::Erase(_, b, _) => *b = p,
-            Shape::Clip(..) => {}
+            Shape::TextSelect(_, b) => *b = p,
+            Shape::Clip(..) | Shape::Text(..) => {}
             // It follows the mouse until it's dropped.
             Shape::Step(c, _) => *c = p,
         }
@@ -369,11 +411,12 @@ impl Annotation {
             | Shape::Pixelate(a, b)
             | Shape::Image(a, b, _)
             | Shape::ClipSelect(a, b)
+            | Shape::TextSelect(a, b)
             | Shape::Erase(a, b, _) => {
                 mv(a);
                 mv(b);
             }
-            Shape::Step(c, _) => mv(c),
+            Shape::Step(c, _) | Shape::Text(c, _, _) => mv(c),
             Shape::Clip(_, at) => *at = (at.0 + d.0.round() as i32, at.1 + d.1.round() as i32),
         }
     }
@@ -392,6 +435,9 @@ impl Annotation {
             | Shape::Erase(a, b, _) => (b.0 - a.0).abs() < 2.0 || (b.1 - a.1).abs() < 2.0,
             Shape::ClipSelect(a, b) => (b.0 - a.0).abs() < 4.0 || (b.1 - a.1).abs() < 4.0,
             Shape::Clip(..) | Shape::Step(..) => false,
+            Shape::Text(_, text, _) => text.trim().is_empty(),
+            // Typing starts in it when it's let go.
+            Shape::TextSelect(..) => true,
         }
     }
 
@@ -410,6 +456,7 @@ impl Annotation {
             (Shape::Pen(_), Tool::Pen) | (Shape::Highlighter(_), Tool::Highlighter) => {
                 self.stroke_box()
             }
+            (Shape::Text(..), Tool::Text) => self.text_box(),
             (Shape::Clip(img, (x, y)), Tool::Clip) => Some(Rect {
                 x: *x,
                 y: *y,
@@ -429,6 +476,48 @@ impl Annotation {
                 Some(Rect::from_points((c.0 - r, c.1 - r), (c.0 + r, c.1 + r)))
             }
             _ => None,
+        }
+    }
+
+    /// The box text takes up (global pixels), with room for the caret
+    /// when there's nothing typed yet.
+    fn text_box(&self) -> Option<Rect> {
+        let Shape::Text(at, text, boxed) = &self.shape else {
+            return None;
+        };
+        let (w, h) = layout_text(self.style.text, text, *at, boxed.map(|b| b.0)).size;
+        let (w, h) = match boxed {
+            Some((bw, bh)) => (*bw, h.max(*bh)),
+            None => (w.max(self.style.text.size as f32 * 0.3), h),
+        };
+        Some(Rect::from_points(
+            (at.0 as f64, at.1 as f64),
+            ((at.0 + w) as f64, (at.1 + h) as f64),
+        ))
+    }
+
+    /// While text is being typed: a dashed box around it and the caret at
+    /// its end. Not part of the screenshot.
+    fn draw_typing(&self, pm: &mut Pixmap, origin: (i32, i32)) {
+        let (Shape::Text(at, text, boxed), Some(r)) = (&self.shape, self.text_box()) else {
+            return;
+        };
+        let local = |p: Point| (p.0 - origin.0 as f32, p.1 - origin.1 as f32);
+        let pad = TEXT_PAD as f32;
+        dashed_outline(
+            pm,
+            local((r.x as f32 - pad, r.y as f32 - pad)),
+            local((r.right() as f32 + pad, r.bottom() as f32 + pad)),
+        );
+        let px = self.style.text.size as f32;
+        let (top, height) = layout_text(self.style.text, text, *at, boxed.map(|b| b.0)).caret;
+        let top = local(top);
+        let [r, g, b] = self.style.color;
+        let mut paint = Paint::default();
+        paint.set_color_rgba8(r, g, b, 255);
+        let width = (px * 0.07).max(2.0);
+        if let Some(caret) = tiny_skia::Rect::from_xywh(top.0 + 1.0, top.1, width, height) {
+            pm.fill_rect(caret, &paint, Transform::identity(), None);
         }
     }
 
@@ -556,6 +645,7 @@ impl Annotation {
             Shape::Image(..) => Some(Tool::Image),
             Shape::Erase(..) => Some(Tool::Eraser),
             Shape::Step(..) => Some(Tool::Step),
+            Shape::Text(..) => Some(Tool::Text),
             _ => None,
         }
     }
@@ -611,6 +701,7 @@ impl Annotation {
             }
             // `p` is the top-left of its square; the centre is a radius in.
             Shape::Step(c, _) => *c = (p.0 + radius, p.1 + radius),
+            Shape::Text(at, _, _) => *at = p,
             _ => {}
         }
     }
@@ -664,6 +755,16 @@ impl Annotation {
                 h: r.h + 2 * CLIP_SHADOW as u32 + 2,
             };
         }
+        if let Some(r) = self.text_box() {
+            // The outline, and the dashed box and caret while typing.
+            let pad = TEXT_PAD + 3;
+            return Rect {
+                x: r.x - pad,
+                y: r.y - pad,
+                w: r.w + 2 * pad as u32,
+                h: r.h + 2 * pad as u32,
+            };
+        }
         if let Shape::Step(c, _) = self.shape {
             let r = self.step_radius() + 2.0;
             return Rect::from_points(
@@ -683,13 +784,16 @@ impl Annotation {
             | Shape::Pixelate(a, b)
             | Shape::Image(a, b, _)
             | Shape::ClipSelect(a, b)
+            | Shape::TextSelect(a, b)
             | Shape::Erase(a, b, _) => vec![*a, *b],
-            Shape::Clip(..) | Shape::Step(..) => unreachable!("handled above"),
+            Shape::Clip(..) | Shape::Step(..) | Shape::Text(..) => unreachable!("handled above"),
         };
         let pad = match self.shape {
             Shape::Arrow(..) => arrow_head(self.stroke_width()).0 + 2.0,
             Shape::Blur(..) | Shape::Pixelate(..) => 1.0,
-            Shape::ClipSelect(..) | Shape::Erase(..) | Shape::Image(..) => 3.0,
+            Shape::ClipSelect(..) | Shape::TextSelect(..) | Shape::Erase(..) | Shape::Image(..) => {
+                3.0
+            }
             _ => self.stroke_width() / 2.0 + 2.0,
         };
         let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
@@ -852,7 +956,9 @@ impl Annotation {
                     pixelate(pm, r, opts.block, opts.secure.then_some(self.seed));
                 }
             }
-            Shape::ClipSelect(a, b) => dashed_outline(pm, local(a), local(b)),
+            Shape::ClipSelect(a, b) | Shape::TextSelect(a, b) => {
+                dashed_outline(pm, local(a), local(b))
+            }
             Shape::Image(a, b, img) => {
                 let (a, b) = (local(a), local(b));
                 // Whole pixels, so no soft edge lets anything show through.
@@ -912,6 +1018,10 @@ impl Annotation {
                 let mut fill = Paint::default();
                 fill.set_color(color);
                 pm.fill_rect(rect, &fill, id, None);
+            }
+            Shape::Text(at, text, boxed) => {
+                let wrap = boxed.map(|b| b.0);
+                draw_text(pm, self.style.text, text, local(at), wrap, self.style.color);
             }
             Shape::Step(c, n) => {
                 let c = local(c);
@@ -1064,6 +1174,174 @@ fn draw_number(pm: &mut Pixmap, n: u32, c: Point, r: f32, paint: &Paint) {
         ..Stroke::default()
     };
     pm.stroke_path(&path, paint, &stroke, id, None);
+}
+
+/// Runs `f` with the face of `font`: an installed font, or the bundled one
+/// (also when an installed one can't be read). `None` with neither.
+fn with_face<R>(font: Option<u16>, f: impl FnOnce(&ttf_parser::Face) -> R) -> Option<R> {
+    if let Some((data, index)) = font.and_then(crate::fonts::data)
+        && let Ok(face) = ttf_parser::Face::parse(&data, index)
+    {
+        return Some(f(&face));
+    }
+    FONT.as_ref().map(f)
+}
+
+/// The height of a line of text in `face` at `px` pixels per em.
+fn line_height(face: &ttf_parser::Face, px: f32) -> f32 {
+    let units = face.units_per_em() as f32;
+    let line = face.ascender() as f32 - face.descender() as f32 + face.line_gap() as f32;
+    (line / units * px).ceil()
+}
+
+/// Text laid out in its font.
+struct TextLayout {
+    /// Every glyph's outline.
+    path: Option<Path>,
+    /// Width and height of the lines.
+    size: (f32, f32),
+    /// The caret after the last character: its top, and height.
+    caret: (Point, f32),
+}
+
+/// The height of a line of text.
+fn text_line(opts: TextOptions) -> f32 {
+    layout_text(opts, "", (0.0, 0.0), None).caret.1
+}
+
+/// Where text clicked at `p` goes: with the click in the middle of its first
+/// line.
+fn text_at_click(opts: TextOptions, p: Point) -> Point {
+    (p.0, (p.1 - text_line(opts) / 2.0).round())
+}
+
+/// Text in the box dragged from `p` to `q`, or (if that's too narrow for
+/// it) clicked at `p`.
+fn text_in_box(opts: TextOptions, p: Point, q: Point) -> Shape {
+    let pad = TEXT_PAD as f32;
+    let (x0, y0) = (p.0.min(q.0), p.1.min(q.1));
+    let (w, h) = ((q.0 - p.0).abs() - 2.0 * pad, (q.1 - p.1).abs() - 2.0 * pad);
+    if w < opts.size as f32 {
+        return Shape::Text(text_at_click(opts, p), String::new(), None);
+    }
+    Shape::Text(((x0 + pad).round(), (y0 + pad).round()), String::new(), Some((w, h.max(0.0))))
+}
+
+/// Splits a line of text where it gets wider than `width`: after the last
+/// space that fits, or mid-word for a word wider than the line. Spaces at a
+/// break stay at the end of the line before it.
+fn wrap_line(line: &str, width: f32, advance: impl Fn(char) -> f32) -> Vec<&str> {
+    let mut lines = Vec::new();
+    let mut start = 0;
+    let mut x = 0.0;
+    let mut space_end = None;
+    for (i, ch) in line.char_indices() {
+        let w = advance(ch);
+        if ch != ' ' && x + w > width && i > start {
+            let end = space_end.filter(|&e| e > start).unwrap_or(i);
+            lines.push(&line[start..end]);
+            start = end;
+            x = line[start..i].chars().map(&advance).sum();
+            space_end = None;
+        }
+        x += w;
+        if ch == ' ' {
+            space_end = Some(i + 1);
+        }
+    }
+    lines.push(&line[start..]);
+    lines
+}
+
+/// Lays `text` out in the font and size of `opts` with its top-left at
+/// `at`, one line per `\n`, and wrapped to `wrap` pixels wide if given.
+fn layout_text(opts: TextOptions, text: &str, at: Point, wrap: Option<f32>) -> TextLayout {
+    let px = opts.size as f32;
+    let laid_out = with_face(opts.font, |face| {
+        let line = line_height(face, px);
+        let scale = px / face.units_per_em() as f32;
+        // Characters the font lacks show as its empty box.
+        let glyph = |ch: char| face.glyph_index(ch).unwrap_or(ttf_parser::GlyphId(0));
+        let advance = |ch: char| face.glyph_hor_advance(glyph(ch)).unwrap_or(0) as f32 * scale;
+        let lines: Vec<&str> = match wrap {
+            Some(width) => text.split('\n').flat_map(|l| wrap_line(l, width, advance)).collect(),
+            None => text.split('\n').collect(),
+        };
+        // Lines share the leading evenly above and below.
+        let ascent = face.ascender() as f32 * scale + face.line_gap() as f32 * scale / 2.0;
+        let mut pb = PathBuilder::new();
+        let (mut width, mut x) = (0.0f32, 0.0);
+        for (i, text) in lines.iter().enumerate() {
+            x = 0.0;
+            let baseline = at.1 + i as f32 * line + ascent;
+            for ch in text.chars() {
+                let mut out = GlyphPath {
+                    pb: &mut pb,
+                    scale,
+                    origin: (at.0 + x, baseline),
+                };
+                face.outline_glyph(glyph(ch), &mut out);
+                x += advance(ch);
+            }
+            width = width.max(x);
+        }
+        let last_top = at.1 + (lines.len() - 1) as f32 * line;
+        TextLayout {
+            path: pb.finish(),
+            size: (width.ceil(), line * lines.len() as f32),
+            caret: ((at.0 + x, last_top), line),
+        }
+    });
+    laid_out.unwrap_or(TextLayout {
+        path: None,
+        size: (0.0, px * 1.2),
+        caret: (at, px * 1.2),
+    })
+}
+
+/// Draws `text` with its top-left at `at` in `color`, edged (if `opts` says
+/// so) in black or white, whichever stands out from it, to read over anything.
+fn draw_text(
+    pm: &mut Pixmap,
+    opts: TextOptions,
+    text: &str,
+    at: Point,
+    wrap: Option<f32>,
+    [r, g, b]: [u8; 3],
+) {
+    let Some(path) = layout_text(opts, text, at, wrap).path else {
+        return;
+    };
+    let px = opts.size as f32;
+    let id = Transform::identity();
+    let round = |width: f32| Stroke {
+        width,
+        line_join: LineJoin::Round,
+        ..Stroke::default()
+    };
+    if opts.outline {
+        let luma = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
+        let mut edge = Paint {
+            anti_alias: true,
+            ..Paint::default()
+        };
+        if luma > 150.0 {
+            edge.set_color_rgba8(0x1c, 0x1c, 0x1e, 220);
+        } else {
+            edge.set_color_rgba8(255, 255, 255, 230);
+        }
+        pm.stroke_path(&path, &edge, &round((px * 0.16).max(3.0)), id, None);
+    }
+    let mut paint = Paint {
+        anti_alias: true,
+        ..Paint::default()
+    };
+    paint.set_color_rgba8(r, g, b, 255);
+    pm.fill_path(&path, &paint, FillRule::Winding, id, None);
+    // The bundled face is light; a thin stroke gives it a regular weight.
+    if opts.font.is_none() {
+        pm.stroke_path(&path, &paint, &round(px * 0.035), id, None);
+    }
 }
 
 /// A dashed box from `a` to `b` (local pixels) that shows on light and dark
@@ -1429,6 +1707,8 @@ pub struct Canvas {
     stale: bool,
     /// The last ring drawn around a hovered annotation, with what it was for.
     ring: Mutex<Option<(u64, (i32, i32), Arc<Pixmap>)>>,
+    /// The active annotation is text being typed.
+    typing: bool,
 }
 
 fn to_pixmap(img: RgbaImage) -> Pixmap {
@@ -1455,6 +1735,7 @@ impl Canvas {
             editing: None,
             stale: false,
             ring: Mutex::new(None),
+            typing: false,
             active_area: None,
             dirty: Some(Rect {
                 x: 0,
@@ -1505,6 +1786,9 @@ impl Canvas {
         self.active_area = None;
         if let Some(a) = &self.active {
             a.draw_active(&mut self.frame, origin);
+            if self.typing {
+                a.draw_typing(&mut self.frame, origin);
+            }
             self.active_area = self.local(a.bounds());
         }
         self.dirty = Some(self.bounds());
@@ -1522,6 +1806,9 @@ impl Canvas {
             copy_rect(&self.committed, &mut self.frame, area);
             if let Some(a) = &self.active {
                 a.draw_active(&mut self.frame, (self.rect.x, self.rect.y));
+                if self.typing {
+                    a.draw_typing(&mut self.frame, (self.rect.x, self.rect.y));
+                }
             }
             self.dirty = Some(union(self.dirty, area));
         }
@@ -1656,6 +1943,47 @@ impl Canvas {
         true
     }
 
+    /// Starts typing into the active annotation, if it's text (just placed,
+    /// or picked up to change). Returns whether it is.
+    pub fn begin_typing(&mut self) -> bool {
+        if let Some(a) = &mut self.active
+            && let Shape::TextSelect(p, q) = a.shape
+        {
+            a.shape = text_in_box(a.style.text, p, q);
+        }
+        self.typing = matches!(self.active.as_ref().map(|a| &a.shape), Some(Shape::Text(..)));
+        self.stale = true;
+        self.typing
+    }
+
+    /// Types `s` into the text being typed; `\n` starts a new line.
+    pub fn type_text(&mut self, s: &str) {
+        if let (true, Some(Annotation { shape: Shape::Text(_, text, _), .. })) =
+            (self.typing, &mut self.active)
+        {
+            text.push_str(s);
+            self.stale = true;
+        }
+    }
+
+    /// Deletes the last character typed.
+    pub fn backspace(&mut self) {
+        if let (true, Some(Annotation { shape: Shape::Text(_, text, _), .. })) =
+            (self.typing, &mut self.active)
+        {
+            text.pop();
+            self.stale = true;
+        }
+    }
+
+    /// Recolours or resizes the text being typed.
+    pub fn restyle_typing(&mut self, style: Style) {
+        if let (true, Some(a)) = (self.typing, &mut self.active) {
+            a.style = style;
+            self.stale = true;
+        }
+    }
+
     /// Whether an existing annotation is being bent or moved.
     pub fn is_editing(&self) -> bool {
         self.editing.is_some()
@@ -1722,13 +2050,17 @@ impl Canvas {
     }
 
     pub fn commit(&mut self) {
+        self.typing = false;
         let Some(a) = self.active.take() else { return };
         if let Some(edit) = self.editing.take() {
             let mut before = self.annotations.clone();
             before.insert(edit.index, edit.original);
             self.undo.push(before);
             self.redo.clear();
-            self.annotations.insert(edit.index, a);
+            // Text typed away to nothing is gone.
+            if !a.is_empty() {
+                self.annotations.insert(edit.index, a);
+            }
             self.replay();
             return;
         }
@@ -1751,6 +2083,7 @@ impl Canvas {
     }
 
     pub fn cancel_active(&mut self) {
+        self.typing = false;
         self.active = None;
         if let Some(edit) = self.editing.take() {
             self.annotations.insert(edit.index, edit.original);
@@ -1996,6 +2329,253 @@ mod tests {
         assert!(c.deletable_highlight((30.0, 40.0)).is_none());
         assert!(c.delete_at((30.0, 52.0)));
         assert_eq!(c.annotations.len(), 2);
+    }
+
+    /// Places text at `at` and types `text` into it, without finishing.
+    fn type_at(c: &mut Canvas, at: Point, text: &str) {
+        c.begin(Annotation::new(Tool::Text, Style::default(), at).unwrap());
+        assert!(c.begin_typing());
+        c.type_text(text);
+    }
+
+    #[test]
+    fn typed_text_is_kept_without_the_caret() {
+        let mut c = canvas();
+        type_at(&mut c, (1010.0, 520.0), "Hix");
+        c.backspace();
+        c.type_text("\nyo");
+        c.commit();
+        assert_eq!(c.annotations.len(), 1);
+        let Shape::Text(_, text, _) = &c.annotations[0].shape else {
+            panic!("text");
+        };
+        assert_eq!(text, "Hi\nyo");
+        let typed = c.image();
+        assert_ne!(typed.get_pixel(15, 20).0, [200, 200, 200, 255], "something drawn");
+
+        // The same text placed without typing looks the same: no caret or
+        // dashed box left behind.
+        let mut d = canvas();
+        d.begin(Annotation {
+            shape: c.annotations[0].shape.clone(),
+            ..Annotation::new(Tool::Text, Style::default(), (0.0, 0.0)).unwrap()
+        });
+        d.commit();
+        assert_eq!(d.image().as_raw(), typed.as_raw());
+    }
+
+    #[test]
+    fn empty_text_is_dropped_and_text_typed_away_is_deleted() {
+        let mut c = canvas();
+        type_at(&mut c, (1010.0, 520.0), "  ");
+        c.commit();
+        assert!(c.annotations.is_empty());
+        assert!(!c.can_undo());
+
+        type_at(&mut c, (1010.0, 520.0), "ab");
+        c.commit();
+        let before = c.image();
+        // Pick it up again (as a click with the text tool does) and delete it all.
+        assert!(c.begin_move((1012.0, 520.0), Tool::Text));
+        assert!(c.begin_typing());
+        c.backspace();
+        c.backspace();
+        c.commit();
+        assert!(c.annotations.is_empty());
+        c.undo();
+        assert_eq!(c.image().as_raw(), before.as_raw());
+    }
+
+    #[test]
+    fn text_drags_with_the_text_tool_and_restyles_while_typed() {
+        let mut c = canvas();
+        type_at(&mut c, (1010.0, 520.0), "a");
+        let big = TextOptions {
+            size: 60,
+            outline: false,
+            ..Style::default().text
+        };
+        c.restyle_typing(Style {
+            text: big,
+            ..Style::default()
+        });
+        c.commit();
+        assert_eq!(c.annotations[0].style.text, big);
+        let Shape::Text(at, _, _) = c.annotations[0].shape else {
+            panic!("text");
+        };
+        assert!(!c.movable_at((1012.0, 520.0), Tool::Pen));
+        assert!(c.begin_move((1012.0, 520.0), Tool::Text));
+        c.drag_to((1032.0, 530.0), false);
+        c.commit();
+        let Shape::Text(moved, _, _) = c.annotations[0].shape else {
+            panic!("text");
+        };
+        assert_eq!((moved.0 - at.0, moved.1 - at.1), (20.0, 10.0));
+    }
+
+    #[test]
+    fn lines_wrap_after_spaces_or_mid_word() {
+        let wrap = |s, width| wrap_line(s, width, |_| 1.0);
+        assert_eq!(wrap("one two three", 8.0), ["one two ", "three"]);
+        assert_eq!(wrap("one two", 3.0), ["one ", "two"]);
+        assert_eq!(wrap("abcdefgh", 3.0), ["abc", "def", "gh"]);
+        assert_eq!(wrap("ab  ", 2.0), ["ab  "]);
+        assert_eq!(wrap("", 2.0), [""]);
+    }
+
+    #[test]
+    fn text_typed_in_a_dragged_out_box_wraps_to_it() {
+        let mut c = canvas();
+        c.begin(Annotation::new(Tool::Text, Style::default(), (1010.0, 505.0)).unwrap());
+        c.drag_to((1090.0, 520.0), false);
+        assert!(c.begin_typing());
+        c.type_text("wrapped words in a box");
+        let a = c.active.clone().unwrap();
+        let Shape::Text(at, _, Some((w, _))) = a.shape else {
+            panic!("boxed text");
+        };
+        assert_eq!(at, (1010.0 + TEXT_PAD as f32, 505.0 + TEXT_PAD as f32));
+        assert_eq!(w, 80.0 - 2.0 * TEXT_PAD as f32);
+        let r = a.text_box().unwrap();
+        assert_eq!(r.w as f32, w);
+        // Taller than one line once it wraps.
+        assert!(r.h as f32 > 2.0 * text_line(a.style.text));
+        c.commit();
+        assert_eq!(c.annotations.len(), 1);
+
+        // Too narrow for the text: placed where the drag started, unwrapped.
+        c.begin(Annotation::new(Tool::Text, Style::default(), (1010.0, 530.0)).unwrap());
+        c.drag_to((1014.0, 550.0), false);
+        assert!(c.begin_typing());
+        let Some(Shape::Text(at, _, None)) = c.active.as_ref().map(|a| &a.shape) else {
+            panic!("unboxed text");
+        };
+        assert_eq!(*at, text_at_click(Style::default().text, (1010.0, 530.0)));
+    }
+
+    #[test]
+    fn text_outline_can_be_turned_off() {
+        let dark_pixels = |outline: bool| {
+            let mut c = canvas();
+            let style = Style {
+                color: COLORS[6], // white: edged in black
+                text: TextOptions {
+                    outline,
+                    ..Style::default().text
+                },
+                ..Style::default()
+            };
+            c.begin(Annotation::new(Tool::Text, style, (1010.0, 530.0)).unwrap());
+            c.begin_typing();
+            c.type_text("Hello");
+            c.commit();
+            c.image().pixels().filter(|p| p.0[0] < 150).count()
+        };
+        assert!(dark_pixels(true) > 50);
+        assert_eq!(dark_pixels(false), 0);
+    }
+
+    #[test]
+    fn text_uses_an_installed_font() {
+        while crate::fonts::installed().is_none() {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        if crate::fonts::installed().unwrap().is_empty() {
+            return; // none to try
+        }
+        let typed = |font: Option<u16>| {
+            let mut c = canvas();
+            let style = Style {
+                text: TextOptions {
+                    font,
+                    ..Style::default().text
+                },
+                ..Style::default()
+            };
+            c.begin(Annotation::new(Tool::Text, style, (1010.0, 530.0)).unwrap());
+            c.begin_typing();
+            c.type_text("Hello");
+            c.commit();
+            c.image()
+        };
+        let installed = typed(Some(0));
+        assert_ne!(installed.as_raw(), typed(None).as_raw());
+        assert_ne!(installed.as_raw(), canvas().image().as_raw(), "something drawn");
+    }
+
+    /// Renders text in each colour, sizes, a font and with no outline to
+    /// `target/text-preview.png`,
+    /// with one still being typed: `cargo test text_preview -- --ignored`.
+    #[test]
+    #[ignore]
+    fn text_preview() {
+        let img = RgbaImage::from_fn(520, 360, |x, _| {
+            // Light on the left, dark on the right, to see the edging on both.
+            let v = if x < 260 { 235 } else { 40 };
+            image::Rgba([v, v, v, 255])
+        });
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            w: 520,
+            h: 360,
+        };
+        let mut c = Canvas::new(rect, img);
+        while crate::fonts::installed().is_none() {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let arial = crate::fonts::installed()
+            .unwrap()
+            .iter()
+            .position(|f| f.family == "Arial")
+            .map(|i| i as u16);
+        // Rows: small bundled; bigger, in Arial; outline off.
+        let rows = [
+            TextOptions {
+                size: 20,
+                ..Style::default().text
+            },
+            TextOptions {
+                size: 34,
+                font: arial,
+                ..Style::default().text
+            },
+            TextOptions {
+                size: 34,
+                outline: false,
+                ..Style::default().text
+            },
+        ];
+        for (i, text) in rows.into_iter().enumerate() {
+            for (j, color) in [COLORS[0], COLORS[4], COLORS[6], COLORS[7]].into_iter().enumerate() {
+                let style = Style {
+                    color,
+                    text,
+                    ..Style::default()
+                };
+                let at = (10.0 + j as f32 * 130.0, 30.0 + i as f32 * 60.0);
+                c.begin(Annotation::new(Tool::Text, style, at).unwrap());
+                c.begin_typing();
+                c.type_text("Text 12");
+                c.commit();
+            }
+        }
+        c.begin(Annotation::new(Tool::Text, Style::default(), (10.0, 250.0)).unwrap());
+        c.drag_to((250.0, 350.0), false);
+        c.begin_typing();
+        c.type_text("Wrapped in a box dragged out for it");
+        c.commit();
+        type_at(&mut c, (20.0, 215.0), "Typing\u{2026}");
+        c.commit();
+        c.begin(Annotation::new(Tool::Text, Style::default(), (270.0, 250.0)).unwrap());
+        c.drag_to((510.0, 350.0), false);
+        c.begin_typing();
+        c.type_text("Still typing in a box");
+        c.take_dirty();
+        c.frame
+            .save_png(format!("{}/target/text-preview.png", env!("CARGO_MANIFEST_DIR")))
+            .unwrap();
     }
 
     #[test]

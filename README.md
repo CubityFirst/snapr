@@ -29,6 +29,7 @@ region; the screenshot includes your annotations.
 | Pen | `P` or `F` | freehand; drag a stroke to move it |
 | Line | `L` | Shift snaps to 45° |
 | Arrow | `A` | Shift snaps to 45° |
+| Text | `T` | click and type, or drag out a box first and the text wraps to its width; **Enter** finishes, **Shift+Enter** starts a new line, **Ctrl+V** pastes. Its settings pick the font (any installed one, with a search), the size and whether it has an outline; they and the colour apply as you type. Drag text to move it, click it to change it |
 | Box | `R` | Shift makes a square |
 | Ellipse | `E` | Shift makes a circle |
 | Highlighter | `H` | translucent marker; drag a stroke to move it |
@@ -36,7 +37,7 @@ region; the screenshot includes your annotations.
 | Pixelate | `X` | pixelates the dragged area |
 | Image redaction | `I` | covers the dragged area with an image chosen in Settings (stretched to fit, or cropped to keep its proportions); black boxes if none is set |
 
-Plus 8 colours, 3 sizes and undo/redo (`Ctrl+Z` / `Ctrl+Y`). **Enter** / ✓
+Plus 8 colours (or any, from the picker under them), 3 sizes and undo/redo (`Ctrl+Z` / `Ctrl+Y`). The colour, size and each tool's settings are kept for the next capture, and the next time snapr starts. **Enter** / ✓
 saves the whole monitor under the cursor, **Ctrl+C** copies it to the clipboard
 without saving a file. Turn off *Show the annotation toolbar* in settings for a
 plain region capture.

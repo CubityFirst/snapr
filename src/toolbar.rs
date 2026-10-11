@@ -6,7 +6,9 @@ use egui::{
     StrokeKind, Vec2, pos2, vec2,
 };
 
-use crate::annotate::{ArrowOptions, COLORS, PIXEL_BLOCKS, PixelateOptions, Size, Style, Tool};
+use crate::annotate::{
+    ArrowOptions, COLORS, PIXEL_BLOCKS, PixelateOptions, Size, Style, TEXT_SIZES, TextOptions, Tool,
+};
 use crate::session::MAGNIFIER_PIXELS;
 
 const ACCENT: Color32 = Color32::from_rgb(0x3d, 0x9b, 0xff);
@@ -26,6 +28,7 @@ pub enum Action {
     Pixelate(PixelateOptions),
     Arrow(ArrowOptions),
     ClipShadow(bool),
+    Text(TextOptions),
     Undo,
     Redo,
 }
@@ -406,6 +409,11 @@ fn show_popup(
                                     }
                                 });
                             }
+                            // Any colour; stays open while it's being chosen.
+                            ui.add_space(4.0);
+                            if let Some(color) = custom_color(ui, view.style.color) {
+                                actions.push(Action::Color(color));
+                            }
                         }
                         Popup::Size => {
                             for size in Size::ALL {
@@ -428,6 +436,91 @@ fn show_popup(
         set_popup(ctx, None);
     }
     Some(area.response)
+}
+
+/// A picker for any colour: saturation and brightness in the square, hue
+/// in the strip under it. Returns the colour while it's being changed.
+fn custom_color(ui: &mut egui::Ui, current: [u8; 3]) -> Option<[u8; 3]> {
+    use egui::ecolor::Hsva;
+    // The hue is kept while the colour stays the same, so it isn't lost at
+    // grey, black or white.
+    let id = egui::Id::new("custom-colour");
+    let mut hsv = ui
+        .data(|d| d.get_temp::<([f32; 3], [u8; 3])>(id))
+        .filter(|(_, c)| *c == current)
+        .map_or_else(
+            || {
+                let [r, g, b] = current;
+                let h = Hsva::from(Color32::from_rgb(r, g, b));
+                [h.h, h.s, h.v]
+            },
+            |(hsv, _)| hsv,
+        );
+    let color = |h: f32, s: f32, v: f32| Color32::from(Hsva::new(h, s, v, 1.0));
+    // As wide as the palette's rows of dots.
+    let columns = PALETTE_COLUMNS as f32;
+    let width = columns * 26.0 + (columns - 1.0) * ui.spacing().item_spacing.x;
+    let (square, square_resp) = ui.allocate_exact_size(vec2(width, 80.0), Sense::drag());
+    let (strip, strip_resp) = ui.allocate_exact_size(vec2(width, 14.0), Sense::drag());
+    let p = ui.painter();
+
+    // A grid of cells, coloured exactly at their corners.
+    const CELLS: usize = 12;
+    let mut mesh = egui::Mesh::default();
+    for row in 0..=CELLS {
+        for col in 0..=CELLS {
+            let (s, v) = (col as f32 / CELLS as f32, 1.0 - row as f32 / CELLS as f32);
+            let at = pos2(square.left() + s * square.width(), square.top() + (1.0 - v) * square.height());
+            mesh.colored_vertex(at, color(hsv[0], s, v));
+        }
+    }
+    let mut hue = egui::Mesh::default();
+    for i in 0..=CELLS {
+        let h = i as f32 / CELLS as f32;
+        let x = strip.left() + h * strip.width();
+        hue.colored_vertex(pos2(x, strip.top()), color(h, 1.0, 1.0));
+        hue.colored_vertex(pos2(x, strip.bottom()), color(h, 1.0, 1.0));
+    }
+    let n = CELLS as u32 + 1;
+    for row in 0..CELLS as u32 {
+        for col in 0..CELLS as u32 {
+            let i = row * n + col;
+            mesh.add_triangle(i, i + 1, i + n);
+            mesh.add_triangle(i + 1, i + n + 1, i + n);
+        }
+    }
+    for i in 0..CELLS as u32 {
+        hue.add_triangle(2 * i, 2 * i + 1, 2 * i + 2);
+        hue.add_triangle(2 * i + 1, 2 * i + 3, 2 * i + 2);
+    }
+    p.add(mesh);
+    p.add(hue);
+
+    let mut changed = false;
+    if let Some(at) = square_resp.interact_pointer_pos() {
+        hsv[1] = ((at.x - square.left()) / square.width()).clamp(0.0, 1.0);
+        hsv[2] = (1.0 - (at.y - square.top()) / square.height()).clamp(0.0, 1.0);
+        changed = true;
+    }
+    if let Some(at) = strip_resp.interact_pointer_pos() {
+        hsv[0] = ((at.x - strip.left()) / strip.width()).clamp(0.0, 1.0);
+        changed = true;
+    }
+    // Where the colour is, ringed dark under light.
+    let dot = pos2(square.left() + hsv[1] * square.width(), square.top() + (1.0 - hsv[2]) * square.height());
+    p.circle_stroke(dot, 5.0, Stroke::new(3.0, Color32::from_black_alpha(140)));
+    p.circle_stroke(dot, 5.0, Stroke::new(1.5, Color32::WHITE));
+    let x = strip.left() + hsv[0] * strip.width();
+    let mark = Rect::from_min_max(pos2(x - 2.0, strip.top() - 1.0), pos2(x + 2.0, strip.bottom() + 1.0));
+    p.rect_stroke(mark, 1.0, Stroke::new(1.5, Color32::WHITE), StrokeKind::Middle);
+    for r in [square_resp, strip_resp] {
+        r.on_hover_cursor(CursorIcon::Crosshair);
+    }
+
+    let picked = color(hsv[0], hsv[1], hsv[2]);
+    let rgb = [picked.r(), picked.g(), picked.b()];
+    ui.data_mut(|d| d.insert_temp(id, (hsv, rgb)));
+    (changed && rgb != current).then_some(rgb)
 }
 
 /// One colour to pick: a dot, ringed when selected or hovered.
@@ -558,6 +651,8 @@ fn toolbar_contents(ui: &mut egui::Ui, view: &View, actions: &mut Vec<Action>) -
     let sized = uses_size(view.tool);
     let tip = if sized {
         format!("Thickness: {label}")
+    } else if view.tool == Tool::Text {
+        "Text size is in the tool settings".into()
     } else {
         "This tool has no thickness".into()
     };
@@ -600,13 +695,13 @@ fn toolbar_contents(ui: &mut egui::Ui, view: &View, actions: &mut Vec<Action>) -
 fn uses_size(tool: Tool) -> bool {
     !matches!(
         tool,
-        Tool::Select | Tool::Pixelate | Tool::Image | Tool::Eraser | Tool::Clip
+        Tool::Select | Tool::Pixelate | Tool::Image | Tool::Eraser | Tool::Clip | Tool::Text
     )
 }
 
 /// Whether `tool` has settings of its own.
 fn has_options(tool: Tool) -> bool {
-    matches!(tool, Tool::Pixelate | Tool::Arrow | Tool::Clip)
+    matches!(tool, Tool::Pixelate | Tool::Arrow | Tool::Clip | Tool::Text)
 }
 
 /// The current tool's settings, in the options popup.
@@ -668,6 +763,87 @@ fn tool_options(ui: &mut egui::Ui, view: &View, actions: &mut Vec<Action>) {
                     }));
                 }
             }
+        }
+        Tool::Text => {
+            let opts = view.style.text;
+            let fonts = crate::fonts::installed();
+            let current = opts
+                .font
+                .and_then(|i| fonts?.get(i as usize))
+                .map_or("Default (Ubuntu)", |f| f.family.as_str());
+            // The popup is as wide as its other settings; long names wrap.
+            ui.set_max_width(230.0);
+            option_heading(ui, &format!("Font: {current}"));
+            let id = egui::Id::new("font-search");
+            let mut search: String = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+            let field = ui.add(
+                egui::TextEdit::singleline(&mut search)
+                    .hint_text("Search fonts")
+                    .desired_width(230.0),
+            );
+            if field.changed() {
+                ui.data_mut(|d| d.insert_temp(id, search.clone()));
+            }
+            let query = search.trim().to_lowercase();
+            let matches = |name: &str| name.to_lowercase().contains(&query);
+            // Enter in the search picks the first font found.
+            let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let mut first = None;
+            ui.add_space(2.0);
+            egui::ScrollArea::vertical()
+                .max_height(180.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.set_width(230.0);
+                    if matches("Default (Ubuntu)") {
+                        first = Some(None);
+                        if option(ui, "Default (Ubuntu)", 230.0, opts.font.is_none(), true).clicked() {
+                            actions.push(Action::Text(TextOptions { font: None, ..opts }));
+                        }
+                    }
+                    let Some(fonts) = fonts else {
+                        ui.label(egui::RichText::new("Finding fonts\u{2026}").color(Color32::GRAY));
+                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+                        return;
+                    };
+                    for (i, font) in fonts.iter().enumerate() {
+                        if !matches(&font.family) {
+                            continue;
+                        }
+                        let i = Some(i as u16);
+                        first.get_or_insert(i);
+                        let selected = opts.font == i;
+                        if option(ui, &font.family, 230.0, selected, true).clicked() {
+                            actions.push(Action::Text(TextOptions { font: i, ..opts }));
+                        }
+                    }
+                    if first.is_none() {
+                        ui.label(egui::RichText::new("No fonts found").color(Color32::GRAY));
+                    }
+                });
+            if enter && let Some(font) = first {
+                actions.push(Action::Text(TextOptions { font, ..opts }));
+            }
+            option_heading(ui, "Size");
+            let mut size = opts.size;
+            ui.spacing_mut().slider_width = 180.0;
+            if ui
+                .add(egui::Slider::new(&mut size, TEXT_SIZES).suffix(" px"))
+                .changed()
+            {
+                actions.push(Action::Text(TextOptions { size, ..opts }));
+            }
+            option_heading(ui, "Outline");
+            ui.horizontal(|ui| {
+                for (outline, label) in [(true, "On"), (false, "Off")] {
+                    if option(ui, label, 114.0, opts.outline == outline, true)
+                        .on_hover_text("A black or white edge, whichever stands out from the colour")
+                        .clicked()
+                    {
+                        actions.push(Action::Text(TextOptions { outline, ..opts }));
+                    }
+                }
+            });
         }
         Tool::Clip => {
             option_heading(ui, "Drop shadow");
@@ -884,6 +1060,11 @@ fn draw_icon(p: &egui::Painter, r: Rect, icon: Icon, color: Color32) {
                 p.circle_filled(r.center(), rad, c);
             }
         }
+        Icon::Tool(Tool::Text) => {
+            // A capital T.
+            p.line_segment([at(0.15, 0.18), at(0.85, 0.18)], Stroke::new(2.2, color));
+            p.line_segment([at(0.5, 0.18), at(0.5, 0.86)], Stroke::new(2.2, color));
+        }
         Icon::Tool(Tool::Step) => {
             p.circle_stroke(r.center(), r.width() * 0.48, Stroke::new(1.7, color));
             p.text(
@@ -1017,7 +1198,11 @@ mod tests {
     #[test]
     #[ignore]
     fn options_preview() {
-        for tool in [Tool::Pixelate, Tool::Arrow, Tool::Clip] {
+        // The text tool's font list, once it's been found.
+        while crate::fonts::installed().is_none() {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        for tool in [Tool::Pixelate, Tool::Arrow, Tool::Clip, Tool::Text] {
             let mut style = Style::default();
             style.arrow.double = true;
             let view = View {
@@ -1034,11 +1219,36 @@ mod tests {
                 cursor_info: None,
             };
             let name = format!("options-preview-{tool:?}").to_lowercase();
-            crate::preview::render(&name, [1200, 300], 1.5, |root| {
+            crate::preview::render(&name, [1200, 560], 1.5, |root| {
                 set_popup(root.ctx(), Some(Popup::Options));
                 ui(root, &view);
             });
+            if tool == Tool::Text {
+                crate::preview::render("options-preview-font-search", [2400, 560], 1.5, |root| {
+                    set_popup(root.ctx(), Some(Popup::Options));
+                    root.ctx()
+                        .data_mut(|d| d.insert_temp(egui::Id::new("font-search"), "seg".to_string()));
+                    ui(root, &view);
+                });
+            }
         }
+        let view = View {
+            tool: Tool::Pen,
+            style: Style::default(),
+            can_undo: true,
+            can_redo: false,
+            show_toolbar: true,
+            selection: None,
+            cursor: CursorIcon::Crosshair,
+            arrow_nodes: Vec::new(),
+            hovered: None,
+            hint: None,
+            cursor_info: None,
+        };
+        crate::preview::render("options-preview-colour", [1200, 560], 1.5, |root| {
+            set_popup(root.ctx(), Some(Popup::Color));
+            ui(root, &view);
+        });
     }
 
     /// Renders the colour picker's hint and loupe, near the bottom-right
