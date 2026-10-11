@@ -77,6 +77,8 @@ pub enum Action {
     /// Pin an image file to the screen.
     PinFile(PathBuf),
     ClosePins,
+    /// Use the capture tools' settings from an imported file.
+    ImportTools(crate::remembered::Remembered),
 }
 
 impl From<settings_ui::Action> for Action {
@@ -89,6 +91,7 @@ impl From<settings_ui::Action> for Action {
             settings_ui::Action::CheckForUpdates => Action::CheckForUpdates,
             settings_ui::Action::RestartToUpdate => Action::RestartToUpdate,
             settings_ui::Action::OpenUrl(u) => Action::OpenUrl(u),
+            settings_ui::Action::ImportTools(t) => Action::ImportTools(t),
         }
     }
 }
@@ -422,8 +425,12 @@ impl MainWindow {
                 }
                 Page::Tools => {
                     let mut tool_actions = Vec::new();
-                    self.tools
-                        .ui(ui, &self.form.saved.tool_hotkeys, &mut tool_actions);
+                    self.tools.ui(
+                        ui,
+                        &self.form.saved.tool_hotkeys,
+                        &mut self.form.draft.color_picker,
+                        &mut tool_actions,
+                    );
                     for a in tool_actions {
                         actions.push(match a {
                             tools::Action::ScanQr => Action::ScanQr,

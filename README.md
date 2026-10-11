@@ -32,7 +32,7 @@ region; the screenshot includes your annotations.
 | Text | `T` | click and type, or drag out a box first and the text wraps to its width; **Enter** finishes, **Shift+Enter** starts a new line, **Ctrl+V** pastes. Its settings pick the font (any installed one, with a search), the size and whether it has an outline; they and the colour apply as you type. Drag text to move it, click it to change it |
 | Box | `R` | Shift makes a square |
 | Ellipse | `E` | Shift makes a circle |
-| Highlighter | `H` | translucent marker; drag a stroke to move it |
+| Highlighter | `H` | translucent marker, drawn freehand, straight (Shift snaps to 45°) or as a filled box (Shift makes a square), chosen in its settings; drag a stroke or box to move it |
 | Blur | `B` | blurs the dragged area |
 | Pixelate | `X` | pixelates the dragged area |
 | Image redaction | `I` | covers the dragged area with an image chosen in Settings (stretched to fit, or cropped to keep its proportions); black boxes if none is set |
@@ -68,7 +68,10 @@ bottom, *Open screenshots folder*.
     image* or *Save as…* a PNG.
   - **Colour picker**: *Pick colour…* freezes the screen (undimmed) with a
     magnifier beside the cursor; click a pixel (or press **Enter**) to copy
-    its hex code. Arrow keys move the pointer one pixel (Shift: ten); scrolling
+    it, as chosen under *Copy as*: `#3D9BFF`, `3D9BFF`, `rgb(61, 155, 255)`,
+    `61, 155, 255` or `hsl(211, 100%, 62%)`. Picked with a hotkey or from the
+    tray, it's just copied (with a sound) unless *Open this tab after picking*
+    is ticked. Arrow keys move the pointer one pixel (Shift: ten); scrolling
     resizes the magnifier, or zooms it (see *Scrolling the magnifier*). The
     colour is shown as HEX, `rgb()` and `hsl()`, each with *Copy*, and recent
     picks are kept as swatches while the window is open.
@@ -113,7 +116,9 @@ as a screenshot would be, and shows its link; that file stays. The object
 key uses the same placeholders as file names (default `%y-%mo/%rna{10}.png`); **Public URL** is the base for links, e.g. an
 `https://pub-....r2.dev` address or your own domain. After an upload the link
 is copied to the clipboard (optional) and the Recent page gets a *Copy link*
-button. Right-click an uploaded screenshot there and choose *Delete remotely* to
+button. With more than one destination ticked, *Link from* picks whose link
+that is (or, if it fails, the first that works); by default it's whichever
+finishes first. Right-click an uploaded screenshot there and choose *Delete remotely* to
 remove the uploaded copy (the local file is kept); *Clear recent* empties the
 list without deleting any files.
 
@@ -137,7 +142,18 @@ Changes on the Settings pages save as you make them (once a change is valid).
 Settings are stored in `<config dir>/snapr/config.toml`
 (`%APPDATA%\snapr` on Windows, `~/Library/Application Support/snapr` on macOS,
 `~/.config/snapr` on Linux). Set `SNAPR_CONFIG_DIR` to use another folder, e.g.
-for a portable copy or a second, independent instance.
+for a portable copy or a second, independent instance. Files are saved by
+writing a new copy and swapping it in, so a crash mid-save leaves the old one
+intact. If `config.toml` can't be read, snapr starts with the defaults and
+keeps the unreadable file as `config.toml.broken`.
+
+To move them to another computer, use *Export settings…* on the General tab and
+*Import settings…* there on the other one. The file holds the settings and the
+capture tools' (colour, size, font and so on); upload secret keys go in only if
+*Include upload secret keys* is ticked, as plain text. Importing replaces the
+settings once you confirm. Paths that don't exist on the new computer (save
+folder, redaction image, FFmpeg) are reset, and S3 destinations with no secret
+key are turned off until one is entered.
 
 | Setting            | Default                  |
 |--------------------|--------------------------|
@@ -190,6 +206,12 @@ Extensions (installed with Windows 10/11).
 
 A region can span several monitors, like a screenshot can; anything in it
 that isn't on a monitor (a gap in an uneven layout) comes out black.
+
+On Windows, the screen capture carries on through things that interrupt it: a
+UAC prompt, Ctrl+Alt+Del, locking the PC, a resolution or HDR change, or a game
+going fullscreen. The video holds the last picture until the screen can be
+captured again. It only stops if the monitor is unplugged, or becomes too
+small for the region, for more than 10 seconds.
 
 While recording, a dashed border surrounds the region, with a bar below it
 (timer, *Stop*, *Pause*, *Restart*, *Abort*). The border is red while the

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::naming::{Naming, Template, migrate_legacy};
 use crate::pomf::PomfTarget;
+use crate::atomic;
 use crate::upload::{Body, Progress, S3Target, Target, encode_path};
 
 pub const DEFAULT_HOTKEY: &str = "Alt + Shift + KeyS";
@@ -29,6 +30,9 @@ pub struct Settings {
     pub copy_to_clipboard: bool,
     /// After uploading, copy the link to the clipboard (replacing the image).
     pub copy_link: bool,
+    /// The upload destination (by id) whose link is copied and kept; empty
+    /// for whichever finishes first.
+    pub link_from: String,
     /// S3-compatible upload destinations.
     pub uploads: Vec<Upload>,
     /// Show the annotation toolbar while capturing. Either way, releasing a
@@ -44,6 +48,7 @@ pub struct Settings {
     pub overlay_fps: u32,
     /// What's shown beside the crosshair while selecting a region.
     pub crosshair_info: CrosshairInfo,
+    pub color_picker: ColorPicker,
     /// The picture the image redaction tool covers areas with; empty draws
     /// black boxes.
     pub redact_image: String,
@@ -102,6 +107,44 @@ impl CrosshairInfo {
     pub fn any(self) -> bool {
         self.position || self.color || self.magnifier
     }
+}
+
+/// How a picked colour is copied.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ColorFormat {
+    /// `#3D9BFF`
+    #[default]
+    Hex,
+    /// `3D9BFF`
+    HexBare,
+    /// `rgb(61, 155, 255)`
+    Rgb,
+    /// `61, 155, 255`
+    RgbBare,
+    /// `hsl(211, 100%, 62%)`
+    Hsl,
+}
+
+impl ColorFormat {
+    pub const ALL: [ColorFormat; 5] = [
+        ColorFormat::Hex,
+        ColorFormat::HexBare,
+        ColorFormat::Rgb,
+        ColorFormat::RgbBare,
+        ColorFormat::Hsl,
+    ];
+}
+
+/// The colour picker tool's settings.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ColorPicker {
+    /// What's copied when a colour is picked.
+    pub copy_as: ColorFormat,
+    /// Show the colour on the Tools page after picking it with a hotkey or
+    /// from the tray. Picked from the page, it's always shown there.
+    pub show_window: bool,
 }
 
 /// What scrolling over the magnifier does.
@@ -243,6 +286,7 @@ impl Default for Settings {
             save_to_folder: true,
             copy_to_clipboard: true,
             copy_link: true,
+            link_from: String::new(),
             uploads: Vec::new(),
             annotate: true,
             play_sounds: true,
@@ -250,6 +294,7 @@ impl Default for Settings {
             show_toast: true,
             overlay_fps: 0,
             crosshair_info: CrosshairInfo::default(),
+            color_picker: ColorPicker::default(),
             redact_image: String::new(),
             redact_stretch: false,
             record_fps: 30,
@@ -308,10 +353,15 @@ impl Settings {
                     s.migrate_templates();
                     (s, Loaded::Existing)
                 }
-                Err(e) => (
-                    Self::default(),
-                    Loaded::Broken(format!("couldn't parse {}: {e}", path.display())),
-                ),
+                Err(e) => {
+                    let kept = atomic::keep_broken(&path)
+                        .map(|name| format!(" (it's kept as {name})"))
+                        .unwrap_or_default();
+                    (
+                        Self::default(),
+                        Loaded::Broken(format!("couldn't parse {}{kept}: {e}", path.display())),
+                    )
+                }
             },
         }
     }
@@ -328,12 +378,8 @@ impl Settings {
 
     pub fn save(&self) -> Result<(), String> {
         let path = Self::path().ok_or("no config folder on this system")?;
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)
-                .map_err(|e| format!("couldn't create {}: {e}", dir.display()))?;
-        }
         let text = toml::to_string_pretty(self).map_err(|e| e.to_string())?;
-        std::fs::write(&path, text).map_err(|e| format!("couldn't write {}: {e}", path.display()))
+        atomic::write(&path, text).map_err(|e| format!("couldn't write {}: {e}", path.display()))
     }
 
     /// The sound to record with the screen.

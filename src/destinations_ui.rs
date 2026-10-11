@@ -99,6 +99,37 @@ impl Form {
                     &mut self.draft.copy_link,
                     "Copy the link to the clipboard after uploading (instead of the image)",
                 );
+                let enabled: Vec<(String, String)> = self
+                    .draft
+                    .uploads
+                    .iter()
+                    .filter(|u| u.enabled)
+                    .map(|u| (u.id.clone(), u.name.clone()))
+                    .collect();
+                ui.add_enabled_ui(enabled.len() > 1, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Link from").on_hover_text(
+                            "Uploading to more than one destination, the link that's copied, \
+                             shown in the corner preview and kept in Recent",
+                        );
+                        const FIRST: &str = "Whichever finishes first";
+                        let selected = enabled
+                            .iter()
+                            .find(|(id, _)| *id == self.draft.link_from)
+                            .map_or(FIRST, |(_, name)| name.as_str());
+                        egui::ComboBox::from_id_salt("link-from")
+                            .selected_text(selected)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.draft.link_from, String::new(), FIRST);
+                                for (id, name) in &enabled {
+                                    ui.selectable_value(&mut self.draft.link_from, id.clone(), name)
+                                        .on_hover_text("Or, if it fails, the first that works");
+                                }
+                            });
+                    });
+                })
+                .response
+                .on_disabled_hover_text("Tick more than one destination to choose");
                 ui.horizontal(|ui| {
                     ui.label("Show upload speed in");
                     ui.selectable_value(&mut self.draft.speed_unit, SpeedUnit::Bytes, "MB/s")

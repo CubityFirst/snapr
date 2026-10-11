@@ -82,10 +82,7 @@ fn write(entries: &[Entry]) {
     let Some(path) = file() else { return };
     let start = entries.len().saturating_sub(MAX_ENTRIES);
     let text: String = entries[start..].iter().map(format).collect();
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Err(e) = std::fs::write(&path, text) {
+    if let Err(e) = crate::atomic::write(&path, text) {
         eprintln!("couldn't save history: {e}");
     }
 }

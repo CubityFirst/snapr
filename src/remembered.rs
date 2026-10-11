@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::annotate::{Size, Style, TEXT_SIZES};
+use crate::annotate::{HighlighterShape, Size, Style, TEXT_SIZES};
 use crate::session::{MAGNIFIER_PIXELS, MAGNIFIER_ZOOM};
 use crate::settings::Settings;
 
@@ -18,6 +18,8 @@ pub struct Remembered {
     arrow_double: bool,
     arrow_head_at_start: bool,
     clip_shadow: bool,
+    /// "freehand", "straight" or "box".
+    highlighter: String,
     /// Pixels across the magnifier; 0 when it's hidden.
     magnifier: u32,
     text: Text,
@@ -63,6 +65,12 @@ impl Remembered {
             arrow_double: style.arrow.double,
             arrow_head_at_start: style.arrow.head_at_start,
             clip_shadow: style.clip_shadow,
+            highlighter: match style.highlighter {
+                HighlighterShape::Freehand => "freehand",
+                HighlighterShape::Straight => "straight",
+                HighlighterShape::Box => "box",
+            }
+            .into(),
             magnifier,
             text: Text {
                 font: style
@@ -90,12 +98,9 @@ impl Remembered {
 
     pub fn save(&self) {
         let Some(path) = file() else { return };
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
         let result = toml::to_string(self)
             .map_err(|e| e.to_string())
-            .and_then(|text| std::fs::write(&path, text).map_err(|e| e.to_string()));
+            .and_then(|text| crate::atomic::write(&path, text).map_err(|e| e.to_string()));
         if let Err(e) = result {
             eprintln!("couldn't save the tools' settings: {e}");
         }
@@ -118,6 +123,11 @@ impl Remembered {
         style.arrow.double = self.arrow_double;
         style.arrow.head_at_start = self.arrow_head_at_start;
         style.clip_shadow = self.clip_shadow;
+        style.highlighter = match self.highlighter.as_str() {
+            "straight" => HighlighterShape::Straight,
+            "box" => HighlighterShape::Box,
+            _ => HighlighterShape::Freehand,
+        };
         style.text.size = self.text.size.clamp(*TEXT_SIZES.start(), *TEXT_SIZES.end());
         style.text.outline = self.text.outline;
         style
@@ -151,6 +161,7 @@ mod tests {
         style.pixelate.secure = true;
         style.arrow.double = true;
         style.clip_shadow = false;
+        style.highlighter = HighlighterShape::Box;
         style.text = TextOptions {
             font: None,
             size: 64,

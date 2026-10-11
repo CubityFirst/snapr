@@ -2,6 +2,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod annotate;
+mod atomic;
 #[cfg(windows)]
 mod autostart;
 mod audio;
@@ -46,6 +47,7 @@ mod thumbnail;
 mod toast;
 mod toolbar;
 mod tools;
+mod transfer;
 mod tray;
 mod update;
 mod upload;
@@ -765,11 +767,16 @@ impl App {
 
     /// Copies a picked colour's hex code and shows it on the Tools page.
     fn color_picked(&mut self, event_loop: &ActiveEventLoop, rgb: [u8; 3]) {
-        let [r, g, b] = rgb;
         self.count(|s| s.colors_picked += 1);
         self.chime_on_copy = true;
-        self.output.copy_text(format!("#{r:02X}{g:02X}{b:02X}"));
-        self.open_main_window(event_loop, Page::Tools);
+        let picker = self.settings.color_picker;
+        let text = tools::color_text(picker.copy_as, rgb);
+        self.output.copy_text(text.clone());
+        self.set_status(format!("Copied {text}"));
+        // Picked from the Tools page, the window comes back by itself.
+        if picker.show_window && !self.restore_main_window {
+            self.open_main_window(event_loop, Page::Tools);
+        }
         if let Some(w) = &mut self.main_window {
             w.tools.picked(rgb);
             w.window.request_redraw();
@@ -804,6 +811,13 @@ impl App {
                 self.pins_changed();
             }
             Action::SaveSettings(s, secrets) => self.apply_settings(event_loop, s, secrets),
+            Action::ImportTools(tools) => {
+                self.style = tools.style();
+                self.magnifier = tools.magnifier();
+                self.font_pending = tools.font().map(String::from);
+                tools.save();
+                self.remembered = tools;
+            }
             Action::TestUpload(upload, secret) => self.test_upload(upload, secret, false),
             Action::UploadIcon(upload, secret) => self.test_upload(upload, secret, true),
             Action::CheckForUpdates => self.check_for_updates(),
@@ -1211,14 +1225,18 @@ impl ApplicationHandler<UserEvent> for App {
                     w.window.request_redraw();
                 }
             }
-            UserEvent::Output(output::Event::Uploaded {
+            UserEvent::Output(output::Event::Uploaded { name, url }) => {
+                self.play(Sound::Done);
+                println!("{url}");
+                self.set_status(format!("Uploaded to {name}"));
+            }
+            UserEvent::Output(output::Event::Linked {
                 path,
                 name,
                 url,
                 remote,
+                copied,
             }) => {
-                println!("uploaded to {name}: {url}");
-                self.play(Sound::Done);
                 if let Some(path) = &path {
                     history::set_link(path, Some(&url), remote.clone());
                     self.last_upload = Some((path.clone(), url.clone()));
@@ -1226,17 +1244,13 @@ impl ApplicationHandler<UserEvent> for App {
                         t.set_link(url.clone());
                     }
                 }
-                let copied = if self.settings.copy_link {
-                    " (link copied)"
-                } else {
-                    ""
-                };
-                self.status = Some((format!("Uploaded to {name}{copied}"), false));
-                if let Some(w) = &mut self.main_window {
-                    w.form.status = self.status.clone();
-                    if let Some(path) = &path {
-                        w.gallery.set_link(path, Some(url), remote);
-                    }
+                if copied {
+                    self.set_status(format!("Uploaded to {name} (link copied)"));
+                }
+                if let Some(w) = &mut self.main_window
+                    && let Some(path) = &path
+                {
+                    w.gallery.set_link(path, Some(url), remote);
                     w.window.request_redraw();
                 }
             }
@@ -1474,6 +1488,7 @@ fn output_config(settings: &Settings) -> Result<output::Config, String> {
         save_to_folder: settings.save_to_folder,
         copy_image: settings.copy_to_clipboard,
         copy_link: settings.copy_link,
+        link_from: settings.link_from.clone(),
         uploads,
     })
 }

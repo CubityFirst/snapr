@@ -205,11 +205,13 @@ impl HdrDisplay {
 }
 
 /// Captures part of an HDR display as it changes, as half floats (scRGB).
+/// Like `dxgi::Duplicator`, it's restarted when Windows takes it away.
 pub struct Duplicator {
-    context: ID3D11DeviceContext,
-    duplication: IDXGIOutputDuplication,
-    /// Region-sized, readable copy of the screen.
-    staging: ID3D11Texture2D,
+    /// The display's top-left corner on the desktop.
+    origin: (i32, i32),
+    /// `None` while Windows has taken it away.
+    capture: Option<Capture>,
+    recovery: crate::dxgi::Recovery,
     region: Rect,
     /// The latest picture: RGBA half floats.
     latest: Vec<u16>,
@@ -217,29 +219,56 @@ pub struct Duplicator {
     pub peak_nits: f32,
 }
 
+/// A running duplication of the display.
+struct Capture {
+    context: ID3D11DeviceContext,
+    duplication: IDXGIOutputDuplication,
+    /// Region-sized, readable copy of the screen.
+    staging: ID3D11Texture2D,
+}
+
+/// Starts duplicating `display`, with a readable texture the size of
+/// `region`.
+unsafe fn open(display: &HdrDisplay, region: Rect) -> windows::core::Result<Capture> {
+    unsafe {
+        let fits = region.x as i64 + region.w as i64 <= display.rect.w as i64
+            && region.y as i64 + region.h as i64 <= display.rect.h as i64;
+        if !fits {
+            return Err(crate::dxgi::display_gone(
+                "the display's resolution is too small for the area now",
+            ));
+        }
+        let (device, context) = device(&display.adapter)?;
+        let duplication = display.output.DuplicateOutput1(&device, 0, &[DXGI_FORMAT_R16G16B16A16_FLOAT])?;
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: region.w,
+            Height: region.h,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_R16G16B16A16_FLOAT,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Usage: D3D11_USAGE_STAGING,
+            BindFlags: 0,
+            CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+            MiscFlags: 0,
+        };
+        let mut staging = None;
+        device.CreateTexture2D(&desc, None, Some(&mut staging))?;
+        Ok(Capture {
+            context,
+            duplication,
+            staging: staging.expect("created"),
+        })
+    }
+}
+
 impl Duplicator {
     unsafe fn new(display: &HdrDisplay, region: Rect) -> windows::core::Result<Self> {
         unsafe {
-            let (device, context) = device(&display.adapter)?;
-            let duplication = display.output.DuplicateOutput1(&device, 0, &[DXGI_FORMAT_R16G16B16A16_FLOAT])?;
-            let desc = D3D11_TEXTURE2D_DESC {
-                Width: region.w,
-                Height: region.h,
-                MipLevels: 1,
-                ArraySize: 1,
-                Format: DXGI_FORMAT_R16G16B16A16_FLOAT,
-                SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
-                Usage: D3D11_USAGE_STAGING,
-                BindFlags: 0,
-                CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
-                MiscFlags: 0,
-            };
-            let mut staging = None;
-            device.CreateTexture2D(&desc, None, Some(&mut staging))?;
             let mut dup = Self {
-                context,
-                duplication,
-                staging: staging.expect("created"),
+                origin: (display.rect.x, display.rect.y),
+                capture: Some(open(display, region)?),
+                recovery: crate::dxgi::Recovery::default(),
                 region,
                 latest: vec![0; region.w as usize * region.h as usize * 4],
                 sdr_white_nits: display.sdr_white_nits,
@@ -257,24 +286,59 @@ impl Duplicator {
     }
 
     /// Takes in the screen if it changed within `timeout_ms`; `true` if it
-    /// did.
+    /// did. When Windows takes the capture away, it's restarted, and the
+    /// picture stays as it was until then.
     pub fn poll(&mut self, timeout_ms: u32) -> Result<bool, String> {
-        // SAFETY: as in `duplicate`.
-        unsafe { self.take(timeout_ms) }.map_err(|e| format!("the HDR capture stopped: {}", e.message()))
+        if self.capture.is_some() {
+            // SAFETY: as in `duplicate`.
+            match unsafe { self.take(timeout_ms) } {
+                Ok(changed) => return Ok(changed),
+                Err(e) => {
+                    self.capture = None;
+                    self.recovery.lost(&e);
+                }
+            }
+        }
+        if !self.recovery.due() {
+            return Ok(false);
+        }
+        let reopened = displays()
+            .into_iter()
+            .find(|d| (d.rect.x, d.rect.y) == self.origin)
+            .ok_or_else(|| crate::dxgi::display_gone("the display isn't in HDR mode any more"))
+            // SAFETY: as in `duplicate`.
+            .and_then(|display| unsafe { open(&display, self.region) });
+        match reopened {
+            Ok(capture) => {
+                self.capture = Some(capture);
+                self.recovery.back();
+                Ok(false)
+            }
+            Err(e) => self
+                .recovery
+                .failed(&e)
+                .map(|()| false)
+                .map_err(|why| format!("the HDR capture stopped: {why}")),
+        }
     }
 
     unsafe fn take(&mut self, timeout_ms: u32) -> windows::core::Result<bool> {
         unsafe {
+            let Capture {
+                context,
+                duplication,
+                staging,
+            } = self.capture.as_ref().expect("running");
             let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
             let mut resource: Option<IDXGIResource> = None;
-            match self.duplication.AcquireNextFrame(timeout_ms, &mut info, &mut resource) {
+            match duplication.AcquireNextFrame(timeout_ms, &mut info, &mut resource) {
                 Ok(()) => {}
                 Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(false),
                 Err(e) => return Err(e),
             }
             // Only the pointer moved: the picture is unchanged.
             if info.LastPresentTime == 0 {
-                let _ = self.duplication.ReleaseFrame();
+                let _ = duplication.ReleaseFrame();
                 return Ok(false);
             }
             let copied = (|| {
@@ -288,19 +352,19 @@ impl Duplicator {
                     bottom: r.y as u32 + r.h,
                     back: 1,
                 };
-                self.context.CopySubresourceRegion(&self.staging, 0, 0, 0, 0, &texture, 0, Some(&area));
+                context.CopySubresourceRegion(staging, 0, 0, 0, 0, &texture, 0, Some(&area));
                 windows::core::Result::Ok(())
             })();
-            let _ = self.duplication.ReleaseFrame();
+            let _ = duplication.ReleaseFrame();
             copied?;
             let mut mapped = Default::default();
-            self.context.Map(&self.staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
+            context.Map(staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
             let row = self.region.w as usize * 4;
             for (y, dst) in self.latest.chunks_exact_mut(row).enumerate() {
                 let src = (mapped.pData as *const u8).add(y * mapped.RowPitch as usize) as *const u16;
                 dst.copy_from_slice(std::slice::from_raw_parts(src, row));
             }
-            self.context.Unmap(&self.staging, 0);
+            context.Unmap(staging, 0);
             Ok(true)
         }
     }

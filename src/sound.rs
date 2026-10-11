@@ -207,7 +207,7 @@ mod platform {
     pub fn play(sound: super::Sound, volume: u8, wav: &'static [u8]) {
         let path: PathBuf =
             std::env::temp_dir().join(format!("snapr-{sound:?}-{volume}.wav").to_lowercase());
-        if !path.exists() && std::fs::write(&path, wav).is_err() {
+        if !path.exists() && crate::atomic::write(&path, wav).is_err() {
             return;
         }
         std::thread::spawn(move || {

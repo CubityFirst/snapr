@@ -26,6 +26,10 @@ pub struct Config {
     pub save_to_folder: bool,
     pub copy_image: bool,
     pub copy_link: bool,
+    /// The destination whose link a file gets (copied, shown in its preview
+    /// and kept in Recent); empty, or one not uploaded to, for whichever
+    /// finishes first.
+    pub link_from: String,
     pub uploads: Vec<UploadTarget>,
 }
 
@@ -39,12 +43,19 @@ pub enum Event {
     },
     /// Copied to the clipboard without saving (or a file copied from Recent).
     Copied,
-    Uploaded {
+    /// Uploaded to one destination.
+    Uploaded { name: String, url: String },
+    /// The link a file gets, from the destination chosen for it, or the
+    /// first to finish.
+    Linked {
         path: Option<PathBuf>,
+        /// The destination's name.
         name: String,
         url: String,
         /// Missing where uploads can't be deleted.
         remote: Option<Remote>,
+        /// It was copied to the clipboard.
+        copied: bool,
     },
     /// An upload was cancelled (the destination's name).
     Cancelled(String),
@@ -81,6 +92,10 @@ enum Job {
     Uploaded {
         path: Option<PathBuf>,
         name: String,
+        /// The destination's id.
+        id: String,
+        /// Which `upload_all` it was part of.
+        batch: u64,
         remote: Option<Remote>,
         result: Result<String, String>,
     },
@@ -111,6 +126,9 @@ impl Output {
             // Uploads still running for each file.
             let mut pending: HashMap<PathBuf, usize> = HashMap::new();
             let mut waiting: Vec<Sender<()>> = Vec::new();
+            // Each file's uploads, to pick the link it gets.
+            let mut batches: HashMap<u64, Batch> = HashMap::new();
+            let mut next_batch = 0u64;
             for job in rx {
                 match job {
                     Job::Save(img, mut ctx, capture) => {
@@ -157,13 +175,15 @@ impl Output {
                             if let Some(p) = &path {
                                 *pending.entry(p.clone()).or_default() += config.uploads.len();
                             }
+                            next_batch += 1;
+                            batches.insert(next_batch, Batch::new(&config));
                             in_flight += upload_all(
                                 &config.uploads,
                                 &mut ctx,
                                 Body::Bytes(Arc::new(png)),
                                 "png",
                                 path,
-                                &uploads_tx,
+                                (next_batch, &uploads_tx),
                                 &in_progress,
                             );
                         }
@@ -191,41 +211,61 @@ impl Output {
                             .and_then(|e| e.to_str())
                             .unwrap_or("")
                             .to_ascii_lowercase();
+                        next_batch += 1;
+                        batches.insert(next_batch, Batch::new(&config));
                         in_flight += upload_all(
                             &config.uploads,
                             &mut ctx,
                             body,
                             &ext,
                             Some(file),
-                            &uploads_tx,
+                            (next_batch, &uploads_tx),
                             &in_progress,
                         );
                     }
                     Job::Uploaded {
                         path,
                         name,
+                        id,
+                        batch,
                         remote,
                         result,
                     } => {
                         in_flight -= 1;
-                        match result {
+                        let b = batches.entry(batch).or_insert_with(|| Batch::new(&config));
+                        b.left = b.left.saturating_sub(1);
+                        let link = match result {
                             Ok(url) => {
-                                if config.copy_link
-                                    && let Err(e) = copy_text(&mut clipboard, &url)
-                                {
-                                    notify(Event::Failed(e));
-                                }
                                 notify(Event::Uploaded {
-                                    path: path.clone(),
-                                    name,
-                                    url,
-                                    remote,
+                                    name: name.clone(),
+                                    url: url.clone(),
                                 });
+                                b.finished(&id, (name, url, remote))
                             }
-                            Err(e) if e == upload::CANCELLED => notify(Event::Cancelled(name)),
                             Err(e) => {
-                                notify(Event::Failed(format!("upload to {name} failed: {e}")))
+                                if e == upload::CANCELLED {
+                                    notify(Event::Cancelled(name));
+                                } else {
+                                    notify(Event::Failed(format!("upload to {name} failed: {e}")));
+                                }
+                                b.failed(&id)
                             }
+                        };
+                        if b.left == 0 {
+                            batches.remove(&batch);
+                        }
+                        if let Some((name, url, remote)) = link {
+                            let copied = config.copy_link
+                                && copy_text(&mut clipboard, &url)
+                                    .map_err(|e| notify(Event::Failed(e)))
+                                    .is_ok();
+                            notify(Event::Linked {
+                                path: path.clone(),
+                                name,
+                                url,
+                                remote,
+                                copied,
+                            });
                         }
                         if let Some(p) = path
                             && let Some(left) = pending.get_mut(&p)
@@ -324,7 +364,7 @@ fn upload_all(
     body: Body,
     ext: &str,
     path: Option<PathBuf>,
-    tx: &Sender<Job>,
+    (batch, tx): (u64, &Sender<Job>),
     transfers: &Transfers,
 ) -> usize {
     let file = match &path {
@@ -361,15 +401,73 @@ fn upload_all(
             let _ = tx.send(Job::Uploaded {
                 path,
                 remote: upload.deletable().then(|| Remote {
-                    upload_id: upload.id,
+                    upload_id: upload.id.clone(),
                     key,
                 }),
                 name: upload.name,
+                id: upload.id,
+                batch,
                 result,
             });
         });
     }
     uploads.len()
+}
+
+/// A destination's name, the link it gave, and how to delete what's there.
+type Link = (String, String, Option<Remote>);
+
+/// One file's uploads, and which of them gives it its link.
+#[derive(Debug, Default)]
+struct Batch {
+    /// The destination chosen to give the link, while it might still.
+    chosen: Option<String>,
+    /// A link that came first, kept in case the chosen one fails.
+    spare: Option<Link>,
+    /// The link's been given.
+    done: bool,
+    /// Uploads still running.
+    left: usize,
+}
+
+impl Batch {
+    fn new(config: &Config) -> Self {
+        let chosen = &config.link_from;
+        Self {
+            chosen: config
+                .uploads
+                .iter()
+                .any(|u| u.upload.id == *chosen)
+                .then(|| chosen.clone()),
+            left: config.uploads.len(),
+            ..Self::default()
+        }
+    }
+
+    /// Destination `id` uploaded; returns the file's link if this is it.
+    fn finished(&mut self, id: &str, link: Link) -> Option<Link> {
+        if self.done {
+            return None;
+        }
+        if self.chosen.as_ref().is_none_or(|c| c == id) {
+            self.done = true;
+            return Some(link);
+        }
+        self.spare.get_or_insert(link);
+        None
+    }
+
+    /// Destination `id` failed; if it was the chosen one, the link falls to
+    /// one that's finished, or the next to.
+    fn failed(&mut self, id: &str) -> Option<Link> {
+        if self.done || self.chosen.as_deref() != Some(id) {
+            return None;
+        }
+        self.chosen = None;
+        let link = self.spare.take();
+        self.done = link.is_some();
+        link
+    }
 }
 
 /// The `Content-Type` for a (lower-case) file extension, so browsers show
@@ -443,8 +541,7 @@ pub fn peek_counter() -> u64 {
 fn next_counter() -> u64 {
     let n = peek_counter() + 1;
     if let Some(path) = counter_path() {
-        let _ = std::fs::create_dir_all(path.parent().unwrap_or(&path));
-        if let Err(e) = std::fs::write(&path, n.to_string()) {
+        if let Err(e) = crate::atomic::write(&path, n.to_string()) {
             eprintln!("couldn't save counter: {e}");
         }
     }
@@ -594,5 +691,53 @@ pub fn reveal(path: &Path) {
     };
     if let Err(e) = std::process::Command::new(program).arg(path).spawn() {
         eprintln!("couldn't open {}: {e}", path.display());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn link(name: &str) -> Link {
+        (name.into(), format!("https://{name}/x.png"), None)
+    }
+
+    fn batch(chosen: Option<&str>, uploads: usize) -> Batch {
+        Batch {
+            chosen: chosen.map(String::from),
+            left: uploads,
+            ..Batch::default()
+        }
+    }
+
+    #[test]
+    fn the_first_to_finish_gives_the_link_unless_one_is_chosen() {
+        let mut b = batch(None, 2);
+        assert_eq!(b.finished("b", link("b")).unwrap().0, "b");
+        assert!(b.finished("a", link("a")).is_none());
+
+        // The chosen one's link, even when it finishes last.
+        let mut b = batch(Some("a"), 2);
+        assert!(b.finished("b", link("b")).is_none());
+        assert_eq!(b.finished("a", link("a")).unwrap().0, "a");
+    }
+
+    #[test]
+    fn a_failed_choice_falls_back_to_one_that_worked() {
+        // Another finished first: it gives the link when the chosen fails.
+        let mut b = batch(Some("a"), 3);
+        assert!(b.finished("b", link("b")).is_none());
+        assert_eq!(b.failed("a").unwrap().0, "b");
+        assert!(b.finished("c", link("c")).is_none());
+
+        // Nothing finished yet: the next to finish gives it.
+        let mut b = batch(Some("a"), 2);
+        assert!(b.failed("a").is_none());
+        assert_eq!(b.finished("b", link("b")).unwrap().0, "b");
+
+        // Another failing changes nothing.
+        let mut b = batch(Some("a"), 2);
+        assert!(b.failed("b").is_none());
+        assert_eq!(b.finished("a", link("a")).unwrap().0, "a");
     }
 }

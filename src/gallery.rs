@@ -1060,6 +1060,9 @@ mod tests {
         }
         let mut g = Gallery::new(&dir, String::new(), Box::new(|| {}));
         g.items = items;
+        // The clicks fall where the cards are with the preview showing,
+        // whatever the user's own setting is.
+        g.show_preview = true;
         g
     }
 

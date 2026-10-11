@@ -145,6 +145,21 @@ impl Size {
 
 }
 
+/// What the highlighter draws.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum HighlighterShape {
+    /// Follows the mouse.
+    #[default]
+    Freehand,
+    /// A straight stroke from where the drag starts; Shift snaps it to 45°.
+    Straight,
+    /// A filled box over the dragged area.
+    Box,
+}
+
+/// How translucent highlighting is (alpha, of 255).
+const HIGHLIGHT_ALPHA: u8 = 110;
+
 /// Block sizes the pixelate tool offers, in pixels.
 pub const PIXEL_BLOCKS: [u32; 4] = [8, 14, 24, 40];
 
@@ -232,6 +247,7 @@ pub struct Style {
     /// Clips get a soft drop shadow, lifting them off the screen under them.
     pub clip_shadow: bool,
     pub text: TextOptions,
+    pub highlighter: HighlighterShape,
 }
 
 impl Default for Style {
@@ -248,6 +264,7 @@ impl Default for Style {
                 head_at_start: false,
             },
             clip_shadow: true,
+            highlighter: HighlighterShape::Freehand,
             text: TextOptions {
                 font: None,
                 size: 28,
@@ -260,7 +277,10 @@ impl Default for Style {
 #[derive(Debug, Clone)]
 enum Shape {
     Pen(Vec<Point>),
+    /// Freehand, or (drawn straight) just its two ends.
     Highlighter(Vec<Point>),
+    /// A highlighted box.
+    Mark(Point, Point),
     /// From, to, and the node in the middle the curve passes through, once
     /// it's been moved off the straight line.
     Line(Point, Point, Option<Point>),
@@ -332,7 +352,11 @@ impl Annotation {
         let shape = match tool {
             Tool::Select => return None,
             Tool::Pen => Shape::Pen(vec![p]),
-            Tool::Highlighter => Shape::Highlighter(vec![p]),
+            Tool::Highlighter => match style.highlighter {
+                HighlighterShape::Freehand => Shape::Highlighter(vec![p]),
+                HighlighterShape::Straight => Shape::Highlighter(vec![p, p]),
+                HighlighterShape::Box => Shape::Mark(p, p),
+            },
             Tool::Line => Shape::Line(p, p, None),
             Tool::Arrow => Shape::Arrow(p, p, None),
             Tool::Rect => Shape::Rect(p, p),
@@ -369,6 +393,9 @@ impl Annotation {
     /// lines snap to 45Â° and boxes/ellipses become squares/circles.
     pub fn drag_to(&mut self, p: Point, constrain: bool) {
         match &mut self.shape {
+            Shape::Highlighter(pts) if self.style.highlighter == HighlighterShape::Straight => {
+                pts[1] = if constrain { snap_45(pts[0], p) } else { p };
+            }
             Shape::Pen(pts) | Shape::Highlighter(pts) => {
                 let last = *pts.last().expect("never empty");
                 if (p.0 - last.0).hypot(p.1 - last.1) >= 1.0 {
@@ -378,7 +405,7 @@ impl Annotation {
             Shape::Line(a, b, _) | Shape::Arrow(a, b, _) => {
                 *b = if constrain { snap_45(*a, p) } else { p }
             }
-            Shape::Rect(a, b) | Shape::Ellipse(a, b) => {
+            Shape::Rect(a, b) | Shape::Ellipse(a, b) | Shape::Mark(a, b) => {
                 *b = if constrain { square(*a, p) } else { p }
             }
             Shape::Blur(_, b)
@@ -407,6 +434,7 @@ impl Annotation {
             }
             Shape::Rect(a, b)
             | Shape::Ellipse(a, b)
+            | Shape::Mark(a, b)
             | Shape::Blur(a, b)
             | Shape::Pixelate(a, b)
             | Shape::Image(a, b, _)
@@ -425,10 +453,14 @@ impl Annotation {
     fn is_empty(&self) -> bool {
         match &self.shape {
             Shape::Pen(_) => false,
-            Shape::Highlighter(p) => p.len() < 2,
+            Shape::Highlighter(p) => match p[..] {
+                [a, b] => (b.0 - a.0).hypot(b.1 - a.1) < 2.0,
+                _ => p.len() < 2,
+            },
             Shape::Line(a, b, _) | Shape::Arrow(a, b, _) => (b.0 - a.0).hypot(b.1 - a.1) < 2.0,
             Shape::Rect(a, b)
             | Shape::Ellipse(a, b)
+            | Shape::Mark(a, b)
             | Shape::Blur(a, b)
             | Shape::Pixelate(a, b)
             | Shape::Image(a, b, _)
@@ -464,6 +496,7 @@ impl Annotation {
                 h: img.height(),
             }),
             (Shape::Blur(a, b), Tool::Blur)
+            | (Shape::Mark(a, b), Tool::Highlighter)
             | (Shape::Pixelate(a, b), Tool::Pixelate)
             | (Shape::Image(a, b, _), Tool::Image)
             | (Shape::Erase(a, b, _), Tool::Eraser) => Some(Rect::from_points(
@@ -641,6 +674,7 @@ impl Annotation {
         match self.shape {
             Shape::Clip(..) => Some(Tool::Clip),
             Shape::Blur(..) => Some(Tool::Blur),
+            Shape::Mark(..) => Some(Tool::Highlighter),
             Shape::Pixelate(..) => Some(Tool::Pixelate),
             Shape::Image(..) => Some(Tool::Image),
             Shape::Erase(..) => Some(Tool::Eraser),
@@ -692,6 +726,7 @@ impl Annotation {
         match &mut self.shape {
             Shape::Clip(_, at) => *at = (p.0 as i32, p.1 as i32),
             Shape::Blur(a, b)
+            | Shape::Mark(a, b)
             | Shape::Pixelate(a, b)
             | Shape::Image(a, b, _)
             | Shape::Erase(a, b, _) => {
@@ -780,6 +815,7 @@ impl Annotation {
             }
             Shape::Rect(a, b)
             | Shape::Ellipse(a, b)
+            | Shape::Mark(a, b)
             | Shape::Blur(a, b)
             | Shape::Pixelate(a, b)
             | Shape::Image(a, b, _)
@@ -818,8 +854,8 @@ impl Annotation {
             r,
             g,
             b,
-            if matches!(self.shape, Shape::Highlighter(_)) {
-                110
+            if matches!(self.shape, Shape::Highlighter(_) | Shape::Mark(..)) {
+                HIGHLIGHT_ALPHA
             } else {
                 255
             },
@@ -851,6 +887,14 @@ impl Annotation {
                 let c = local(&control(*a, *b, *mid));
                 if let Some(path) = curve_path(local(a), c, local(b), mid.is_some()) {
                     pm.stroke_path(&path, &paint, &stroke, id, None);
+                }
+            }
+            Shape::Mark(a, b) => {
+                let (a, b) = (local(a), local(b));
+                let (x, y) = (a.0.min(b.0), a.1.min(b.1));
+                let (w, h) = ((b.0 - a.0).abs(), (b.1 - a.1).abs());
+                if let Some(rect) = tiny_skia::Rect::from_xywh(x, y, w, h) {
+                    pm.fill_rect(rect, &paint, id, None);
                 }
             }
             Shape::Arrow(a, b, mid) => {
@@ -2181,6 +2225,48 @@ mod tests {
         c.begin(Annotation::new(tool, Style::default(), from).unwrap());
         c.drag_to(to, false);
         c.commit();
+    }
+
+    #[test]
+    fn highlighter_draws_straight_or_as_a_box() {
+        let style = |highlighter| Style {
+            highlighter,
+            ..Style::default()
+        };
+        // Straight: just its ends, however the mouse wanders on the way.
+        let mut c = canvas();
+        c.begin(Annotation::new(Tool::Highlighter, style(HighlighterShape::Straight), (1010.0, 520.0)).unwrap());
+        c.drag_to((1030.0, 540.0), false);
+        c.drag_to((1060.0, 521.0), true);
+        let Some(Shape::Highlighter(pts)) = c.active.as_ref().map(|a| &a.shape) else {
+            panic!("highlighter");
+        };
+        // Shift snapped it level.
+        assert_eq!(pts.len(), 2);
+        assert_eq!(pts[0], (1010.0, 520.0));
+        assert!((pts[1].0 - 1060.0).abs() < 0.1 && pts[1].1 == 520.0);
+        c.commit();
+        assert_eq!(c.annotations.len(), 1);
+
+        // Box: fills the area, translucent, and drags with the highlighter.
+        let mut c = canvas();
+        let before = c.image().get_pixel(30, 20).0;
+        c.begin(Annotation::new(Tool::Highlighter, style(HighlighterShape::Box), (1020.0, 510.0)).unwrap());
+        c.drag_to((1060.0, 540.0), false);
+        c.commit();
+        let inside = c.image().get_pixel(30, 20).0;
+        assert_ne!(inside, before);
+        assert_ne!(inside[..3], COLORS[0][..], "see-through, not solid");
+        assert!(c.begin_move((1040.0, 525.0), Tool::Highlighter));
+        c.drag_to((1050.0, 525.0), false);
+        c.commit();
+        assert_eq!(c.image().get_pixel(25, 20).0, before);
+
+        // A click draws nothing.
+        let mut c = canvas();
+        c.begin(Annotation::new(Tool::Highlighter, style(HighlighterShape::Straight), (1010.0, 510.0)).unwrap());
+        c.commit();
+        assert!(c.annotations.is_empty());
     }
 
     #[test]

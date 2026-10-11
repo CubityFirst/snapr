@@ -7,7 +7,7 @@ use egui::{
 };
 
 use crate::annotate::{
-    ArrowOptions, COLORS, PIXEL_BLOCKS, PixelateOptions, Size, Style, TEXT_SIZES, TextOptions, Tool,
+    ArrowOptions, COLORS, HighlighterShape, PIXEL_BLOCKS, PixelateOptions, Size, Style, TEXT_SIZES, TextOptions, Tool,
 };
 use crate::session::MAGNIFIER_PIXELS;
 
@@ -29,6 +29,7 @@ pub enum Action {
     Arrow(ArrowOptions),
     ClipShadow(bool),
     Text(TextOptions),
+    Highlighter(HighlighterShape),
     Undo,
     Redo,
 }
@@ -701,7 +702,10 @@ fn uses_size(tool: Tool) -> bool {
 
 /// Whether `tool` has settings of its own.
 fn has_options(tool: Tool) -> bool {
-    matches!(tool, Tool::Pixelate | Tool::Arrow | Tool::Clip | Tool::Text)
+    matches!(
+        tool,
+        Tool::Pixelate | Tool::Arrow | Tool::Clip | Tool::Text | Tool::Highlighter
+    )
 }
 
 /// The current tool's settings, in the options popup.
@@ -841,6 +845,27 @@ fn tool_options(ui: &mut egui::Ui, view: &View, actions: &mut Vec<Action>) {
                         .clicked()
                     {
                         actions.push(Action::Text(TextOptions { outline, ..opts }));
+                    }
+                }
+            });
+        }
+        Tool::Highlighter => {
+            option_heading(ui, "Shape");
+            ui.horizontal(|ui| {
+                for (shape, label, tip) in [
+                    (HighlighterShape::Freehand, "Freehand", "Follows the mouse"),
+                    (
+                        HighlighterShape::Straight,
+                        "Straight",
+                        "A straight stroke; Shift snaps it to 45\u{b0}",
+                    ),
+                    (HighlighterShape::Box, "Box", "Fills the dragged area; Shift makes a square"),
+                ] {
+                    if option(ui, label, 76.0, view.style.highlighter == shape, true)
+                        .on_hover_text(tip)
+                        .clicked()
+                    {
+                        actions.push(Action::Highlighter(shape));
                     }
                 }
             });
@@ -1202,7 +1227,7 @@ mod tests {
         while crate::fonts::installed().is_none() {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        for tool in [Tool::Pixelate, Tool::Arrow, Tool::Clip, Tool::Text] {
+        for tool in [Tool::Pixelate, Tool::Arrow, Tool::Clip, Tool::Text, Tool::Highlighter] {
             let mut style = Style::default();
             style.arrow.double = true;
             let view = View {

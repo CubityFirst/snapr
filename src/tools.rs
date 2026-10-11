@@ -8,7 +8,7 @@ use egui::{Color32, RichText, Sense, Stroke, TextEdit, TextureHandle, TextureOpt
 use image::RgbaImage;
 
 use crate::qr;
-use crate::settings::{ToolAction, ToolHotkey};
+use crate::settings::{ColorFormat, ColorPicker, ToolAction, ToolHotkey};
 use crate::settings_ui::ERROR;
 
 const ACCENT: Color32 = Color32::from_rgb(0x3d, 0x9b, 0xff);
@@ -110,8 +110,15 @@ impl Tools {
         });
     }
 
-    /// `hotkeys` are the saved tool hotkeys, shown on their tools' tabs.
-    pub fn ui(&mut self, ui: &mut egui::Ui, hotkeys: &[ToolHotkey], actions: &mut Vec<Action>) {
+    /// `hotkeys` are the saved tool hotkeys, shown on their tools' tabs;
+    /// `picker` the colour picker's settings, changed on its tab.
+    pub fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        hotkeys: &[ToolHotkey],
+        picker: &mut ColorPicker,
+        actions: &mut Vec<Action>,
+    ) {
         ui.horizontal(|ui| {
             ui.heading("Tools");
             ui.add_space(12.0);
@@ -124,7 +131,7 @@ impl Tools {
             .auto_shrink(false)
             .show(ui, |ui| match self.tool {
                 Tool::Qr => self.qr_ui(ui, hotkeys, actions),
-                Tool::Color => self.color_ui(ui, hotkeys, actions),
+                Tool::Color => self.color_ui(ui, hotkeys, picker, actions),
                 Tool::Pin => self.pin_ui(ui, hotkeys, actions),
             });
     }
@@ -222,7 +229,13 @@ impl Tools {
         }
     }
 
-    fn color_ui(&mut self, ui: &mut egui::Ui, hotkeys: &[ToolHotkey], actions: &mut Vec<Action>) {
+    fn color_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        hotkeys: &[ToolHotkey],
+        picker: &mut ColorPicker,
+        actions: &mut Vec<Action>,
+    ) {
         ui.label(RichText::new("Pick a colour from the screen").strong());
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -236,13 +249,29 @@ impl Tools {
                 actions.push(Action::PickColor);
             }
             ui.label(
-                RichText::new(
-                    "Click any pixel to copy its hex code. Arrow keys move one pixel, Esc cancels.",
-                )
-                .weak(),
+                RichText::new("Click any pixel to copy its colour. Arrow keys move one pixel, Esc cancels.")
+                    .weak(),
             );
         });
         hotkey_line(ui, hotkeys, ToolAction::PickColor, actions);
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.label("Copy as");
+            // Shown with the last colour picked, or snapr's blue.
+            let example = self.color.unwrap_or([0x3d, 0x9b, 0xff]);
+            for format in ColorFormat::ALL {
+                ui.selectable_value(
+                    &mut picker.copy_as,
+                    format,
+                    RichText::new(color_text(format, example)).monospace(),
+                );
+            }
+        });
+        ui.checkbox(
+            &mut picker.show_window,
+            "Open this tab after picking with a hotkey or from the tray",
+        )
+        .on_hover_text("Otherwise the colour is just copied, with a sound to say so");
         let Some(rgb) = self.color else {
             return;
         };
@@ -508,13 +537,26 @@ fn hex([r, g, b]: [u8; 3]) -> String {
 
 /// A colour written the ways it's usually pasted: hex, CSS rgb() and hsl().
 fn formats(rgb: [u8; 3]) -> [(&'static str, String); 3] {
-    let [r, g, b] = rgb;
-    let (h, s, l) = hsl(rgb);
     [
-        ("HEX", hex(rgb)),
-        ("RGB", format!("rgb({r}, {g}, {b})")),
-        ("HSL", format!("hsl({h}, {s}%, {l}%)")),
+        ("HEX", color_text(ColorFormat::Hex, rgb)),
+        ("RGB", color_text(ColorFormat::Rgb, rgb)),
+        ("HSL", color_text(ColorFormat::Hsl, rgb)),
     ]
+}
+
+/// A colour written as `format` says.
+pub fn color_text(format: ColorFormat, rgb: [u8; 3]) -> String {
+    let [r, g, b] = rgb;
+    match format {
+        ColorFormat::Hex => hex(rgb),
+        ColorFormat::HexBare => format!("{r:02X}{g:02X}{b:02X}"),
+        ColorFormat::Rgb => format!("rgb({r}, {g}, {b})"),
+        ColorFormat::RgbBare => format!("{r}, {g}, {b}"),
+        ColorFormat::Hsl => {
+            let (h, s, l) = hsl(rgb);
+            format!("hsl({h}, {s}%, {l}%)")
+        }
+    }
 }
 
 /// Hue in degrees, saturation and lightness in percent, rounded.
@@ -579,6 +621,9 @@ mod tests {
         assert_eq!(f[0].1, "#3D9BFF");
         assert_eq!(f[1].1, "rgb(61, 155, 255)");
         assert_eq!(f[2].1, "hsl(211, 100%, 62%)");
+        let blue = [0x3d, 0x9b, 0xff];
+        assert_eq!(color_text(ColorFormat::HexBare, blue), "3D9BFF");
+        assert_eq!(color_text(ColorFormat::RgbBare, blue), "61, 155, 255");
         assert_eq!(hsl([255, 0, 0]), (0, 100, 50));
         assert_eq!(hsl([255, 0, 128]), (330, 100, 50));
         assert_eq!(hsl([0, 128, 0]), (120, 100, 25));
@@ -606,7 +651,7 @@ mod tests {
                 action: ToolAction::PickColor,
                 hotkey: "Ctrl + Shift + KeyC".into(),
             }];
-            egui::CentralPanel::default().show(root, |ui| tools.ui(ui, &hotkeys, &mut Vec::new()));
+            egui::CentralPanel::default().show(root, |ui| tools.ui(ui, &hotkeys, &mut ColorPicker::default(), &mut Vec::new()));
         });
     }
 
@@ -619,7 +664,7 @@ mod tests {
         tools.tool = Tool::Pin;
         tools.pinned = 2;
         crate::preview::render("tools-pin-preview", [920, 520], 1.0, |root| {
-            egui::CentralPanel::default().show(root, |ui| tools.ui(ui, &[], &mut Vec::new()));
+            egui::CentralPanel::default().show(root, |ui| tools.ui(ui, &[], &mut ColorPicker::default(), &mut Vec::new()));
         });
     }
 
@@ -634,7 +679,7 @@ mod tests {
         tools.scanned(qr::decode(&region), preview);
         tools.text = "Hello from snapr".into();
         crate::preview::render("tools-preview", [920, 760], 1.0, |root| {
-            egui::CentralPanel::default().show(root, |ui| tools.ui(ui, &[], &mut Vec::new()));
+            egui::CentralPanel::default().show(root, |ui| tools.ui(ui, &[], &mut ColorPicker::default(), &mut Vec::new()));
         });
     }
 }

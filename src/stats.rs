@@ -109,11 +109,16 @@ fn file() -> Option<std::path::PathBuf> {
 impl Stats {
     /// The saved stats, or a fresh start counting from now.
     pub fn load() -> Self {
-        let Some(text) = file().and_then(|f| std::fs::read_to_string(f).ok()) else {
+        let Some(path) = file() else {
+            return Self::default();
+        };
+        let Ok(text) = std::fs::read_to_string(&path) else {
             return Self::default();
         };
         let mut stats: Self = toml::from_str(&text).unwrap_or_else(|e| {
-            eprintln!("couldn't read stats: {e}");
+            // Kept, as they'd be saved over with a fresh start.
+            let kept = crate::atomic::keep_broken(&path).unwrap_or_default();
+            eprintln!("couldn't read stats ({kept}): {e}");
             Self::default()
         });
         stats.captures.normalise();
@@ -122,12 +127,9 @@ impl Stats {
 
     pub fn save(&self) {
         let Some(path) = file() else { return };
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
         let result = toml::to_string(self)
             .map_err(|e| e.to_string())
-            .and_then(|text| std::fs::write(&path, text).map_err(|e| e.to_string()));
+            .and_then(|text| crate::atomic::write(&path, text).map_err(|e| e.to_string()));
         if let Err(e) = result {
             eprintln!("couldn't save stats: {e}");
         }

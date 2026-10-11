@@ -30,6 +30,8 @@ pub enum Action {
     /// Quit and start the updated program.
     RestartToUpdate,
     OpenUrl(String),
+    /// Use the capture tools' settings from an imported file.
+    ImportTools(crate::remembered::Remembered),
 }
 
 /// The hotkeys that can be set on the Hotkeys tab.
@@ -84,6 +86,10 @@ pub struct Form {
     /// The last FFmpeg check: the path and format checked, and the outcome
     /// once it's in.
     ffmpeg_check: Option<FfmpegCheck>,
+    /// Put the upload secret keys in exported settings.
+    export_secrets: bool,
+    /// How the last export or import went. `true` = error.
+    transfer_note: Option<(String, bool)>,
 }
 
 struct FfmpegCheck {
@@ -115,6 +121,8 @@ impl Form {
             seen: (settings.clone(), HashMap::new(), Instant::now()),
             submitted: None,
             ffmpeg_check: None,
+            export_secrets: false,
+            transfer_note: None,
         }
     }
 
@@ -386,10 +394,110 @@ impl Form {
                     self.update_status_ui(ui, actions);
                     ui.end_row();
                 }
+
+                ui.label(RichText::new("Move to another computer").strong());
+                ui.end_row();
+
+                ui.label("");
+                ui.horizontal(|ui| {
+                    if ui
+                        .button("Export settings\u{2026}")
+                        .on_hover_text("Saves these settings and the capture tools' to a file")
+                        .clicked()
+                    {
+                        self.export_settings();
+                    }
+                    if ui
+                        .button("Import settings\u{2026}")
+                        .on_hover_text("Replaces these settings with ones exported from snapr")
+                        .clicked()
+                    {
+                        self.import_settings(actions);
+                    }
+                });
+                ui.end_row();
+
+                ui.label("");
+                ui.checkbox(&mut self.export_secrets, "Include upload secret keys in the export")
+                    .on_hover_text(
+                        "So destinations work straight away after importing. They're written \
+                         in the file as plain text: keep it private",
+                    );
+                ui.end_row();
+
+                if let Some((note, is_err)) = &self.transfer_note {
+                    ui.label("");
+                    let text = RichText::new(note.as_str());
+                    ui.label(if *is_err { text.color(ERROR) } else { text.weak() });
+                    ui.end_row();
+                }
             });
 
             self.save_bar(ui, actions);
         });
+    }
+
+    /// Asks where to, and exports the saved settings there.
+    fn export_settings(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_file_name("snapr-settings.toml")
+            .add_filter("snapr settings", &["toml"])
+            .save_file()
+        else {
+            return;
+        };
+        self.transfer_note = Some(match crate::transfer::export(&path, &self.saved, self.export_secrets) {
+            Ok(0) => (format!("Exported to {}", path.display()), false),
+            Ok(n) => (
+                format!(
+                    "Exported to {}, with {n} secret key{}: keep the file private",
+                    path.display(),
+                    if n == 1 { "" } else { "s" }
+                ),
+                false,
+            ),
+            Err(e) => (e, true),
+        });
+    }
+
+    /// Asks for a file of exported settings, and once that's confirmed, puts
+    /// them in the form to be saved as if they'd been typed.
+    fn import_settings(&mut self, actions: &mut Vec<Action>) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("snapr settings", &["toml"])
+            .pick_file()
+        else {
+            return;
+        };
+        let imported = match crate::transfer::import(&path) {
+            Ok(i) => i,
+            Err(e) => {
+                self.transfer_note = Some((e, true));
+                return;
+            }
+        };
+        let confirmed = rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Warning)
+            .set_title("Import settings")
+            .set_description(
+                "Replace snapr's settings, hotkeys and upload destinations with the ones in this file?",
+            )
+            .set_buttons(rfd::MessageButtons::OkCancel)
+            .show();
+        if confirmed != rfd::MessageDialogResult::Ok {
+            return;
+        }
+        self.draft = imported.settings;
+        self.secrets = imported.secrets.into_iter().collect();
+        if let Some(tools) = imported.tools {
+            actions.push(Action::ImportTools(tools));
+        }
+        let mut note = format!("Imported {}", path.display());
+        if !imported.notes.is_empty() {
+            note.push_str(". For this computer: ");
+            note.push_str(&imported.notes.join("; "));
+        }
+        self.transfer_note = Some((note, false));
     }
 
     /// The Recording tab.
@@ -1069,6 +1177,12 @@ mod tests {
                 hotkey: String::new(),
             },
         ];
+        form.transfer_note = Some((
+            "Imported D:\\snapr-settings.toml. For this computer: R2 is off until its secret \
+             key is entered on Destinations"
+                .into(),
+            false,
+        ));
         type Tab = fn(&mut Form, &mut egui::Ui);
         let tabs: [(&str, Tab); 4] = [
             ("general", |f, ui| f.ui(ui, &mut Vec::new())),
@@ -1079,7 +1193,7 @@ mod tests {
         for (name, tab) in tabs {
             crate::preview::render(
                 &format!("settings-{name}-preview"),
-                [920, 620],
+                [920, 900],
                 1.0,
                 |root| {
                     egui::CentralPanel::default().show(root, |ui| tab(&mut form, ui));
