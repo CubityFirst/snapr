@@ -10,6 +10,8 @@ use crate::settings::ToolAction;
 struct Sni {
     capture_label: String,
     callback: Callback,
+    /// How far the uploads have got, while there are any.
+    progress: Option<super::Progress>,
 }
 
 impl ksni::Tray for Sni {
@@ -24,7 +26,7 @@ impl ksni::Tray for Sni {
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
         const SIZE: u32 = 32;
         // RGBA -> ARGB, as the protocol requires.
-        let data = super::icon_rgba(SIZE)
+        let data = super::icon_with_progress(SIZE, self.progress)
             .chunks_exact(4)
             .flat_map(|p| [p[3], p[0], p[1], p[2]])
             .collect();
@@ -77,6 +79,7 @@ impl Tray {
         let sni = Sni {
             capture_label: capture_label(hotkey),
             callback,
+            progress: None,
         };
         let handle = sni.spawn().map_err(|e| format!("tray unavailable: {e}"))?;
         Ok(Self { handle })
@@ -85,6 +88,12 @@ impl Tray {
     pub fn set_hotkey(&self, hotkey: Option<&str>) {
         let label = capture_label(hotkey);
         self.handle.update(|t| t.capture_label = label);
+    }
+
+    /// Shows how far the uploads have got on the icon, or the plain icon
+    /// with `None`.
+    pub fn set_progress(&self, progress: Option<super::Progress>) {
+        self.handle.update(|t| t.progress = progress);
     }
 }
 

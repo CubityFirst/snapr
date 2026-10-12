@@ -137,6 +137,11 @@ impl Form {
                     ui.selectable_value(&mut self.draft.speed_unit, SpeedUnit::Bits, "Mbps")
                         .on_hover_text("Megabits per second, like internet speeds");
                 });
+                ui.checkbox(
+                    &mut self.draft.tray_percentage,
+                    "Show the percentage uploaded on the tray icon",
+                )
+                .on_hover_text("Above the progress bar the icon shows while uploading");
 
                 self.save_bar(ui, actions);
             });

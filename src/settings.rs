@@ -82,6 +82,8 @@ pub struct Settings {
     pub tool_hotkeys: Vec<ToolHotkey>,
     /// How upload speeds are shown.
     pub speed_unit: SpeedUnit,
+    /// Show the percentage uploaded on the tray icon, above its progress bar.
+    pub tray_percentage: bool,
     /// Look for a new release now and then, and install it.
     pub check_for_updates: bool,
     /// Start snapr when you sign in (Windows).
@@ -309,6 +311,7 @@ impl Default for Settings {
             microphone: String::new(),
             tool_hotkeys: Vec::new(),
             speed_unit: SpeedUnit::default(),
+            tray_percentage: false,
             check_for_updates: true,
             start_with_windows: false,
         }

@@ -39,7 +39,10 @@ const TOOL_ID: usize = 100;
 struct State {
     hwnd: HWND,
     icon: HICON,
+    size: u32,
     tooltip: String,
+    /// How far the uploads have got, while there are any.
+    progress: Option<super::Progress>,
     capture_label: String,
     callback: Callback,
     taskbar_created: u32,
@@ -91,8 +94,10 @@ impl Tray {
         let size = unsafe { GetSystemMetrics(SM_CXSMICON) }.clamp(16, 64) as u32;
         let state = State {
             hwnd,
-            icon: make_icon(size),
+            icon: make_icon(size, None),
+            size,
             tooltip: tooltip(hotkey),
+            progress: None,
             capture_label: capture_label(hotkey),
             callback,
             taskbar_created: unsafe { RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()) },
@@ -111,6 +116,23 @@ impl Tray {
                 state.tooltip = tooltip(hotkey);
                 state.capture_label = capture_label(hotkey);
                 notify(state, NIM_MODIFY);
+            }
+        });
+    }
+
+    /// Shows how far the uploads have got on the icon, or the plain icon
+    /// with `None`.
+    pub fn set_progress(&self, progress: Option<super::Progress>) {
+        STATE.with(|s| {
+            if let Some(state) = s.borrow_mut().as_mut()
+                && state.progress != progress
+            {
+                let old = state.icon;
+                state.progress = progress;
+                state.icon = make_icon(state.size, progress);
+                notify(state, NIM_MODIFY);
+                // SAFETY: ours, and the shell has been given the new one.
+                unsafe { DestroyIcon(old) };
             }
         });
     }
@@ -156,10 +178,11 @@ fn notify(state: &State, action: u32) -> bool {
             nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
             nid.uCallbackMessage = WM_TRAY;
             nid.hIcon = state.icon;
-            for (dst, src) in nid
-                .szTip
-                .iter_mut()
-                .zip(state.tooltip.encode_utf16().take(127))
+            let tip = match state.progress {
+                Some(p) => format!("snapr \u{2014} uploading, {}% done", p.percent),
+                None => state.tooltip.clone(),
+            };
+            for (dst, src) in nid.szTip.iter_mut().zip(tip.encode_utf16().take(127))
             {
                 *dst = src;
             }
@@ -168,8 +191,8 @@ fn notify(state: &State, action: u32) -> bool {
     }
 }
 
-fn make_icon(size: u32) -> HICON {
-    let rgba = super::icon_rgba(size);
+fn make_icon(size: u32, progress: Option<super::Progress>) -> HICON {
+    let rgba = super::icon_with_progress(size, progress);
     // 32-bit icons take BGRA colour bits plus a 1-bit AND mask (unused with alpha).
     let bgra: Vec<u8> = rgba
         .chunks_exact(4)

@@ -182,6 +182,8 @@ struct App {
     /// The screen recording in progress.
     recording: Option<ActiveRecording>,
     tray: Option<Tray>,
+    /// How far the uploads have got, as last shown on the tray icon.
+    tray_progress: Option<tray::Progress>,
     output: Output,
     /// Open captures. Pressing the hotkey during a capture stacks a new one
     /// on top (so the overlay itself can be captured); the last is active.
@@ -1225,6 +1227,8 @@ impl ApplicationHandler<UserEvent> for App {
                     w.window.request_redraw();
                 }
             }
+            // The tray icon picks them up in `about_to_wait`.
+            UserEvent::Output(output::Event::UploadsStarted) => {}
             UserEvent::Output(output::Event::Uploaded { name, url }) => {
                 self.play(Sound::Done);
                 println!("{url}");
@@ -1407,6 +1411,21 @@ impl ApplicationHandler<UserEvent> for App {
             }
             ui.tick(now);
             if let Some(t) = ui.repaint_at() {
+                wake = Some(wake.map_or(t, |w| w.min(t)));
+            }
+        }
+        if let Some(tray) = &self.tray {
+            let progress = output::percent_done(&self.output.transfers().lock().unwrap())
+                .map(|percent| tray::Progress {
+                    percent,
+                    number: self.settings.tray_percentage,
+                });
+            if progress != self.tray_progress {
+                self.tray_progress = progress;
+                tray.set_progress(progress);
+            }
+            if progress.is_some() {
+                let t = now + Duration::from_millis(250);
                 wake = Some(wake.map_or(t, |w| w.min(t)));
             }
         }
@@ -1678,6 +1697,7 @@ fn main() {
         tool_hotkeys,
         recording: None,
         tray: None,
+        tray_progress: None,
         output,
         sessions: Vec::new(),
         style: remembered.style(),

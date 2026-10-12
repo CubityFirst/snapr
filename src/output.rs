@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
@@ -43,6 +44,8 @@ pub enum Event {
     },
     /// Copied to the clipboard without saving (or a file copied from Recent).
     Copied,
+    /// Uploads were started; they're in `Output::transfers` now.
+    UploadsStarted,
     /// Uploaded to one destination.
     Uploaded { name: String, url: String },
     /// The link a file gets, from the destination chosen for it, or the
@@ -76,6 +79,20 @@ pub struct Transfer {
 
 /// The uploads in progress, oldest first.
 pub type Transfers = Arc<Mutex<Vec<Arc<Transfer>>>>;
+
+/// How far the uploads in progress have got all together, from 0 to 100;
+/// `None` when there aren't any.
+pub fn percent_done(transfers: &[Arc<Transfer>]) -> Option<u8> {
+    if transfers.is_empty() {
+        return None;
+    }
+    let (sent, total) = transfers.iter().fold((0u64, 0u64), |(s, t), x| {
+        let total = x.progress.total.load(Ordering::Relaxed);
+        let sent = x.progress.sent.load(Ordering::Relaxed).min(total);
+        (s + sent, t + total)
+    });
+    Some((sent * 100).checked_div(total).unwrap_or(0) as u8)
+}
 
 enum Job {
     /// The image, naming context, and whether this is a normal capture
@@ -186,6 +203,7 @@ impl Output {
                                 (next_batch, &uploads_tx),
                                 &in_progress,
                             );
+                            notify(Event::UploadsStarted);
                         }
                     }
                     Job::UploadFile(file, mut ctx) => {
@@ -222,6 +240,7 @@ impl Output {
                             (next_batch, &uploads_tx),
                             &in_progress,
                         );
+                        notify(Event::UploadsStarted);
                     }
                     Job::Uploaded {
                         path,
@@ -708,6 +727,27 @@ mod tests {
             left: uploads,
             ..Batch::default()
         }
+    }
+
+    #[test]
+    fn adds_up_the_uploads_progress() {
+        let transfer = |sent: u64, total: u64| {
+            let t = Transfer {
+                file: "x.png".into(),
+                destination: "d".into(),
+                progress: Progress::default(),
+                started: Instant::now(),
+            };
+            t.progress.sent.store(sent, Ordering::Relaxed);
+            t.progress.total.store(total, Ordering::Relaxed);
+            Arc::new(t)
+        };
+        assert_eq!(percent_done(&[]), None);
+        // Not started yet.
+        assert_eq!(percent_done(&[transfer(0, 0)]), Some(0));
+        assert_eq!(percent_done(&[transfer(50, 200)]), Some(25));
+        assert_eq!(percent_done(&[transfer(100, 100), transfer(0, 300)]), Some(25));
+        assert_eq!(percent_done(&[transfer(500, 100)]), Some(100));
     }
 
     #[test]

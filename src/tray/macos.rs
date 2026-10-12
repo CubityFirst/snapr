@@ -121,7 +121,7 @@ impl Tray {
         let status_item =
             NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
         if let Some(button) = status_item.button(mtm) {
-            if let Some(image) = icon_image() {
+            if let Some(image) = icon_image(None) {
                 button.setImage(Some(&image));
             }
             button.setToolTip(Some(&NSString::from_str("snapr")));
@@ -140,6 +140,24 @@ impl Tray {
         self.capture_item
             .setTitle(&NSString::from_str(&capture_label(hotkey)));
     }
+
+    /// Shows how far the uploads have got on the icon, or the plain icon
+    /// with `None`.
+    pub fn set_progress(&self, progress: Option<super::Progress>) {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        if let Some(button) = self.status_item.button(mtm) {
+            if let Some(image) = icon_image(progress) {
+                button.setImage(Some(&image));
+            }
+            let tip = match progress {
+                Some(p) => format!("snapr \u{2014} uploading, {}% done", p.percent),
+                None => "snapr".into(),
+            };
+            button.setToolTip(Some(&NSString::from_str(&tip)));
+        }
+    }
 }
 
 impl Drop for Tray {
@@ -149,9 +167,9 @@ impl Drop for Tray {
 }
 
 /// The icon as a template image, so macOS tints it to match the menu bar.
-fn icon_image() -> Option<Retained<NSImage>> {
+fn icon_image(progress: Option<super::Progress>) -> Option<Retained<NSImage>> {
     const SIZE: u32 = 36;
-    let img = image::RgbaImage::from_raw(SIZE, SIZE, super::icon_rgba(SIZE))?;
+    let img = image::RgbaImage::from_raw(SIZE, SIZE, super::icon_with_progress(SIZE, progress))?;
     let mut png = Vec::new();
     img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
         .ok()?;
