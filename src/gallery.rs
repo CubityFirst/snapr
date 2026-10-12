@@ -643,7 +643,11 @@ impl Gallery {
         if resp.clicked() {
             if ui.input(|i| i.modifiers.command) {
                 // Ctrl-click: add to (or take out of) the selection, which
-                // keeps the order the images were clicked in.
+                // keeps the order the images were clicked in. The one already
+                // shown starts the selection.
+                if self.picked.is_empty() && path != shown {
+                    self.picked.push(shown.to_owned());
+                }
                 if let Some(i) = self.picked.iter().position(|p| p == path) {
                     self.picked.remove(i);
                 } else {
@@ -1102,10 +1106,10 @@ mod tests {
         let names = g.items.iter().map(|e| e.path.clone()).collect::<Vec<_>>();
         let ctx = egui::Context::default();
         let mut ui = gallery_ui(&mut g);
-        let (red, green, blue) = (pos2(96.0, 477.0), pos2(282.0, 477.0), pos2(468.0, 477.0));
-        // The newest (red) is shown, but isn't picked until it's clicked:
-        // blue, then red, then green, out of grid order.
-        for events in std::iter::once(vec![]).chain(ctrl_clicks(&[blue, red, green])) {
+        let (green, blue) = (pos2(282.0, 477.0), pos2(468.0, 477.0));
+        // The newest (red) is shown, so it's first; then blue and green in
+        // the order they're clicked, not grid order.
+        for events in std::iter::once(vec![]).chain(ctrl_clicks(&[blue, green])) {
             let input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -1119,7 +1123,7 @@ mod tests {
         drop(ui);
         assert_eq!(
             g.picked,
-            vec![names[2].clone(), names[0].clone(), names[1].clone()]
+            vec![names[0].clone(), names[2].clone(), names[1].clone()]
         );
     }
 
