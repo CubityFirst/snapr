@@ -19,7 +19,7 @@ use crate::history::{self, Entry, Remote};
 use crate::player::Player;
 use crate::thumbnail::{self, Kind};
 
-const ACCENT: Color32 = Color32::from_rgb(0x3d, 0x9b, 0xff);
+use crate::theme::{self, ACCENT};
 const CARD: Vec2 = vec2(176.0, 112.0);
 /// Largest preview size to decode, in pixels.
 const LARGE: (u32, u32) = (1920, 1200);
@@ -298,7 +298,7 @@ impl Gallery {
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .button("Delete")
+                    .add(theme::danger(ui, "Delete"))
                     .on_hover_text("Move to the Recycle Bin")
                     .clicked()
                 {
@@ -695,7 +695,7 @@ impl Gallery {
             }
             if let Some(remote) = &entry.remote
                 && ui
-                    .button("Delete remotely")
+                    .add(theme::danger(ui, "Delete remotely"))
                     .on_hover_text("Delete the uploaded copy; the file here is kept")
                     .clicked()
             {
@@ -712,7 +712,12 @@ impl Gallery {
                 if matches!(label, "Copy" | "Pin to screen") && !is_image {
                     continue;
                 }
-                if ui.button(label).clicked() {
+                let button = if label == "Delete" {
+                    theme::danger(ui, label)
+                } else {
+                    egui::Button::new(label)
+                };
+                if ui.add(button).clicked() {
                     actions.push(action);
                     ui.close();
                 }
@@ -862,7 +867,7 @@ fn empty_state(ui: &mut egui::Ui, hotkey: &str, actions: &mut Vec<Action>) {
         ui.label(RichText::new(format!("Press {hotkey} to capture a region.")).weak());
         ui.add_space(12.0);
         if ui
-            .add(egui::Button::new(RichText::new("Capture now").strong()).fill(ACCENT))
+            .add(theme::primary("Capture now"))
             .clicked()
         {
             actions.push(Action::Capture);
@@ -1093,6 +1098,7 @@ mod tests {
 
     fn gallery_ui(g: &mut Gallery) -> impl FnMut(&mut egui::Ui) + '_ {
         |root| {
+            crate::theme::apply(root.ctx());
             egui::CentralPanel::default().show(root, |ui| {
                 let mut actions = Vec::new();
                 g.ui(ui, "Ctrl+Shift+S", &mut actions);

@@ -6,6 +6,7 @@ use egui::{RichText, TextEdit};
 use crate::naming::Context;
 use crate::settings::{SpeedUnit, Upload, UploadKind};
 use crate::settings_ui::{Action, ERROR, Form, SUCCESS, Test, template_field};
+use crate::theme;
 use crate::upload::{DEFAULT_CONCURRENCY, MAX_CONCURRENCY};
 
 impl Form {
@@ -17,7 +18,8 @@ impl Form {
                 ui.add_space(10.0);
 
                 card(ui, |ui| {
-                    ui.checkbox(
+                    theme::switch(
+                        ui,
                         &mut self.draft.save_to_folder,
                         RichText::new("Save to folder").strong(),
                     );
@@ -31,7 +33,8 @@ impl Form {
                     );
                 });
                 card(ui, |ui| {
-                    ui.checkbox(
+                    theme::switch(
+                        ui,
                         &mut self.draft.copy_to_clipboard,
                         RichText::new("Copy image to clipboard").strong(),
                     );
@@ -95,7 +98,8 @@ impl Form {
                     }
                 });
                 ui.add_space(6.0);
-                ui.checkbox(
+                theme::switch(
+                    ui,
                     &mut self.draft.copy_link,
                     "Copy the link to the clipboard after uploading (instead of the image)",
                 );
@@ -129,15 +133,18 @@ impl Form {
                     });
                 })
                 .response
-                .on_disabled_hover_text("Tick more than one destination to choose");
+                .on_disabled_hover_text("Turn on more than one destination to choose");
                 ui.horizontal(|ui| {
                     ui.label("Show upload speed in");
-                    ui.selectable_value(&mut self.draft.speed_unit, SpeedUnit::Bytes, "MB/s")
-                        .on_hover_text("Megabytes per second, like file sizes");
-                    ui.selectable_value(&mut self.draft.speed_unit, SpeedUnit::Bits, "Mbps")
-                        .on_hover_text("Megabits per second, like internet speeds");
+                    theme::segmented(ui, |ui| {
+                        ui.selectable_value(&mut self.draft.speed_unit, SpeedUnit::Bytes, "MB/s")
+                            .on_hover_text("Megabytes per second, like file sizes");
+                        ui.selectable_value(&mut self.draft.speed_unit, SpeedUnit::Bits, "Mbps")
+                            .on_hover_text("Megabits per second, like internet speeds");
+                    });
                 });
-                ui.checkbox(
+                theme::switch(
+                    ui,
                     &mut self.draft.tray_percentage,
                     "Show the percentage uploaded on the tray icon",
                 )
@@ -156,7 +163,7 @@ impl Form {
         card(ui, |ui| {
             let u = &mut self.draft.uploads[i];
             ui.horizontal(|ui| {
-                ui.checkbox(&mut u.enabled, RichText::new(&u.name).strong());
+                theme::switch(ui, &mut u.enabled, RichText::new(&u.name).strong());
                 let host = u
                     .endpoint
                     .split("://")
@@ -172,7 +179,7 @@ impl Form {
                 };
                 ui.label(RichText::new(format!("{what} \u{00b7} {host}")).weak().small());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Remove").clicked() {
+                    if ui.add(theme::danger(ui, "Remove")).clicked() {
                         remove = true;
                     }
                     if ui.button(if expanded { "Done" } else { "Edit" }).clicked() {
@@ -222,7 +229,7 @@ impl Form {
                     let field = |ui: &mut egui::Ui, label: &str, value: &mut String, hint: &str| {
                         ui.label(label);
                         ui.add(
-                            TextEdit::singleline(value)
+                            TextEdit::singleline(value).margin(theme::FIELD_MARGIN)
                                 .hint_text(hint)
                                 .desired_width(360.0),
                         );
@@ -269,7 +276,7 @@ impl Form {
                             ""
                         };
                         ui.add(
-                            TextEdit::singleline(secret)
+                            TextEdit::singleline(secret).margin(theme::FIELD_MARGIN)
                                 .password(true)
                                 .hint_text(hint)
                                 .desired_width(360.0),
@@ -304,14 +311,16 @@ impl Form {
                             "https://pub-\u{2026}.r2.dev or your own domain",
                         );
                         ui.label("");
-                        ui.checkbox(
+                        theme::switch(
+                            ui,
                             &mut u.path_style,
                             "Path-style requests (endpoint/bucket/key)",
                         );
                         ui.end_row();
 
                         ui.label("");
-                        ui.checkbox(
+                        theme::switch(
+                            ui,
                             &mut u.signed_payload,
                             "Signed payload (hash the file into the signature)",
                         );
@@ -384,9 +393,12 @@ impl Form {
 }
 
 fn card(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::group(ui.style())
-        .corner_radius(8)
-        .inner_margin(10)
+    let palette = theme::palette(ui);
+    egui::Frame::new()
+        .fill(palette.surface)
+        .stroke(egui::Stroke::new(1.0, palette.stroke))
+        .corner_radius(10)
+        .inner_margin(12)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             contents(ui);
@@ -435,6 +447,7 @@ mod tests {
             ),
         );
         crate::preview::render("destinations-preview", [920, 900], 1.0, |root| {
+            crate::theme::apply(root.ctx());
             egui::CentralPanel::default()
                 .show(root, |ui| form.destinations_ui(ui, &mut Vec::new()));
         });

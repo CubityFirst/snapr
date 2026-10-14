@@ -10,8 +10,8 @@ use image::RgbaImage;
 use crate::qr;
 use crate::settings::{ColorFormat, ColorPicker, ToolAction, ToolHotkey};
 use crate::settings_ui::ERROR;
+use crate::theme;
 
-const ACCENT: Color32 = Color32::from_rgb(0x3d, 0x9b, 0xff);
 /// Largest side of the scanned region's preview, in points.
 const REGION_PREVIEW: f32 = 140.0;
 /// Side of a generated code's preview, in points.
@@ -122,9 +122,11 @@ impl Tools {
         ui.horizontal(|ui| {
             ui.heading("Tools");
             ui.add_space(12.0);
-            ui.selectable_value(&mut self.tool, Tool::Qr, "QR code");
-            ui.selectable_value(&mut self.tool, Tool::Color, "Colour picker");
-            ui.selectable_value(&mut self.tool, Tool::Pin, "Pin to screen");
+            theme::segmented(ui, |ui| {
+                ui.selectable_value(&mut self.tool, Tool::Qr, "QR code");
+                ui.selectable_value(&mut self.tool, Tool::Color, "Colour picker");
+                ui.selectable_value(&mut self.tool, Tool::Pin, "Pin to screen");
+            });
         });
         ui.add_space(4.0);
         egui::ScrollArea::vertical()
@@ -140,12 +142,7 @@ impl Tools {
         ui.label(RichText::new("Pin an image to the screen").strong());
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            let pin = egui::Button::new(
-                RichText::new("Pin region\u{2026}")
-                    .strong()
-                    .color(Color32::WHITE),
-            )
-            .fill(ACCENT);
+            let pin = theme::primary("Pin region\u{2026}");
             if ui.add(pin).clicked() {
                 self.pin_error = None;
                 actions.push(Action::PinRegion);
@@ -239,12 +236,7 @@ impl Tools {
         ui.label(RichText::new("Pick a colour from the screen").strong());
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            let pick = egui::Button::new(
-                RichText::new("Pick colour\u{2026}")
-                    .strong()
-                    .color(Color32::WHITE),
-            )
-            .fill(ACCENT);
+            let pick = theme::primary("Pick colour\u{2026}");
             if ui.add(pick).clicked() {
                 actions.push(Action::PickColor);
             }
@@ -259,15 +251,18 @@ impl Tools {
             ui.label("Copy as");
             // Shown with the last colour picked, or snapr's blue.
             let example = self.color.unwrap_or([0x3d, 0x9b, 0xff]);
-            for format in ColorFormat::ALL {
-                ui.selectable_value(
-                    &mut picker.copy_as,
-                    format,
-                    RichText::new(color_text(format, example)).monospace(),
-                );
-            }
+            theme::segmented(ui, |ui| {
+                for format in ColorFormat::ALL {
+                    ui.selectable_value(
+                        &mut picker.copy_as,
+                        format,
+                        RichText::new(color_text(format, example)).monospace(),
+                    );
+                }
+            });
         });
-        ui.checkbox(
+        theme::switch(
+            ui,
             &mut picker.show_window,
             "Open this tab after picking with a hotkey or from the tray",
         )
@@ -339,12 +334,7 @@ impl Tools {
         ui.label(RichText::new("Read a QR code").strong());
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            let scan = egui::Button::new(
-                RichText::new("Scan region\u{2026}")
-                    .strong()
-                    .color(Color32::WHITE),
-            )
-            .fill(ACCENT);
+            let scan = theme::primary("Scan region\u{2026}");
             if ui.add(scan).clicked() {
                 actions.push(Action::ScanQr);
             }
@@ -367,7 +357,7 @@ impl Tools {
         ui.label(RichText::new("Make a QR code").strong());
         ui.add_space(4.0);
         ui.add(
-            TextEdit::multiline(&mut self.text)
+            TextEdit::multiline(&mut self.text).margin(theme::FIELD_MARGIN)
                 .hint_text("Text or link to encode")
                 .desired_rows(3)
                 .desired_width(f32::INFINITY),
@@ -510,7 +500,7 @@ fn scan_ui(ui: &mut egui::Ui, scan: &mut Scan, actions: &mut Vec<Action>) {
                     // Read-only, but selectable.
                     let mut shown = text.as_str();
                     ui.add(
-                        TextEdit::multiline(&mut shown)
+                        TextEdit::multiline(&mut shown).margin(theme::FIELD_MARGIN)
                             .desired_rows(1)
                             .desired_width(f32::INFINITY),
                     );
@@ -647,6 +637,7 @@ mod tests {
             tools.picked(c);
         }
         crate::preview::render("tools-color-preview", [920, 420], 1.0, |root| {
+            crate::theme::apply(root.ctx());
             let hotkeys = [crate::settings::ToolHotkey {
                 action: ToolAction::PickColor,
                 hotkey: "Ctrl + Shift + KeyC".into(),
@@ -664,6 +655,7 @@ mod tests {
         tools.tool = Tool::Pin;
         tools.pinned = 2;
         crate::preview::render("tools-pin-preview", [920, 520], 1.0, |root| {
+            crate::theme::apply(root.ctx());
             egui::CentralPanel::default().show(root, |ui| tools.ui(ui, &[], &mut ColorPicker::default(), &mut Vec::new()));
         });
     }
@@ -679,6 +671,7 @@ mod tests {
         tools.scanned(qr::decode(&region), preview);
         tools.text = "Hello from snapr".into();
         crate::preview::render("tools-preview", [920, 760], 1.0, |root| {
+            crate::theme::apply(root.ctx());
             egui::CentralPanel::default().show(root, |ui| tools.ui(ui, &[], &mut ColorPicker::default(), &mut Vec::new()));
         });
     }

@@ -445,6 +445,7 @@ mod tests {
             ..Stats::default()
         };
         crate::preview::render("stats-preview", [900, 900], 1.0, |root| {
+            crate::theme::apply(root.ctx());
             egui::CentralPanel::default()
                 .frame(egui::Frame::central_panel(root.style()).inner_margin(egui::Margin::symmetric(20, 16)))
                 .show(root, |ui| super::ui(ui, &stats));

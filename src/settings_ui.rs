@@ -15,6 +15,7 @@ use crate::output;
 use crate::secrets;
 use crate::settings::{MagnifierScroll, Settings, ToolAction, ToolHotkey, Upload, parse_hotkey};
 use crate::sound::{self, Sound};
+use crate::theme;
 use crate::update;
 
 pub enum Action {
@@ -251,31 +252,21 @@ impl Form {
     /// The General tab.
     pub fn ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-            ui.label(
-                RichText::new("Press the hotkey and drag a region to capture it (click for a whole screen). Draw first to annotate.")
-                    .weak(),
-            );
-            ui.add_space(10.0);
-
             egui::Grid::new("settings").num_columns(2).spacing([14.0, 8.0]).show(ui, |ui| {
                 if cfg!(windows) {
                     ui.label("");
-                    ui.checkbox(&mut self.draft.start_with_windows, "Start snapr when you sign in to Windows")
+                    theme::switch(ui, &mut self.draft.start_with_windows, "Start snapr when you sign in to Windows")
                         .on_hover_text("So the hotkeys work without starting it yourself");
                     ui.end_row();
                 }
 
                 ui.label("");
-                ui.checkbox(&mut self.draft.annotate, "Show the annotation toolbar while capturing");
-                ui.end_row();
-
-                ui.label("");
-                ui.checkbox(&mut self.draft.play_sounds, "Play sounds (shutter on capture)");
+                theme::switch(ui, &mut self.draft.play_sounds, "Play sounds (shutter on capture)");
                 ui.end_row();
 
                 ui.label("Sound volume");
                 ui.add_enabled_ui(self.draft.play_sounds, |ui| {
-                    let slider = ui.add(egui::Slider::new(&mut self.draft.sound_volume, 0..=100).suffix("%"));
+                    let slider = theme::slider(ui, egui::Slider::new(&mut self.draft.sound_volume, 0..=100).suffix("%"));
                     // Let it be heard once it's set, not all the way along a drag.
                     if slider.drag_stopped() || (slider.changed() && !slider.dragged()) {
                         sound::play(Sound::Done, self.draft.sound_volume);
@@ -284,80 +275,8 @@ impl Form {
                 ui.end_row();
 
                 ui.label("");
-                ui.checkbox(&mut self.draft.show_toast, "Show a preview in the corner after each capture")
+                theme::switch(ui, &mut self.draft.show_toast, "Show a preview in the corner after each capture")
                     .on_hover_text("Click it to open the link (or the image), middle-click to copy the image, right-click to close it");
-                ui.end_row();
-
-                ui.label("Overlay frame rate");
-                ui.horizontal(|ui| {
-                    let mut custom = self.draft.overlay_fps != 0;
-                    ui.radio_value(&mut custom, false, "Match monitor");
-                    ui.radio_value(&mut custom, true, "Custom");
-                    if custom {
-                        if self.draft.overlay_fps == 0 {
-                            self.draft.overlay_fps = 144;
-                        }
-                        ui.add(egui::DragValue::new(&mut self.draft.overlay_fps).range(15..=1000).suffix(" fps"));
-                    } else {
-                        self.draft.overlay_fps = 0;
-                    }
-                });
-                ui.end_row();
-
-                ui.label("Beside the crosshair").on_hover_text(
-                    "Shown next to the cursor while selecting a region",
-                );
-                ui.horizontal(|ui| {
-                    let info = &mut self.draft.crosshair_info;
-                    ui.checkbox(&mut info.position, "Position")
-                        .on_hover_text("The pixel's X and Y on the screen");
-                    ui.checkbox(&mut info.color, "Colour")
-                        .on_hover_text("The pixel's colour, as hex and RGB");
-                    ui.checkbox(&mut info.magnifier, "Magnifier")
-                        .on_hover_text("The pixels around the cursor, enlarged");
-                });
-                ui.end_row();
-
-                ui.label("Scrolling the magnifier").on_hover_text(
-                    "What the mouse wheel does to the magnifier, here and in the colour picker",
-                );
-                ui.horizontal(|ui| {
-                    let scroll = &mut self.draft.crosshair_info.scroll;
-                    ui.radio_value(scroll, MagnifierScroll::Resize, "Resizes it")
-                        .on_hover_text("Bigger, or smaller until it's hidden");
-                    ui.radio_value(scroll, MagnifierScroll::Zoom, "Zooms it")
-                        .on_hover_text("Fewer, bigger pixels, or more, smaller ones");
-                });
-                ui.end_row();
-
-                ui.label("Redaction image").on_hover_text(
-                    "The image redaction tool (I) covers areas with this picture",
-                );
-                ui.horizontal(|ui| {
-                    ui.add(
-                        TextEdit::singleline(&mut self.draft.redact_image)
-                            .hint_text("None (black boxes)")
-                            .desired_width(300.0),
-                    );
-                    if ui.button("Browse\u{2026}").clicked()
-                        && let Some(file) = rfd::FileDialog::new()
-                            .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp", "bmp"])
-                            .pick_file()
-                    {
-                        self.draft.redact_image = file.display().to_string();
-                    }
-                    if !self.draft.redact_image.is_empty() && ui.button("Clear").clicked() {
-                        self.draft.redact_image.clear();
-                    }
-                });
-                ui.end_row();
-
-                ui.label("");
-                ui.checkbox(&mut self.draft.redact_stretch, "Stretch the image to fill each area")
-                    .on_hover_text(
-                        "Squash or stretch it to the area's shape. Off, it keeps its proportions \
-                         and is cropped to cover the area",
-                    );
                 ui.end_row();
 
                 ui.label(RichText::new("Updates").strong());
@@ -365,8 +284,7 @@ impl Form {
 
                 ui.label("");
                 let mut never = !self.draft.check_for_updates;
-                if ui
-                    .checkbox(&mut never, "Do not check for updates")
+                if theme::switch(ui, &mut never, "Do not check for updates")
                     .on_hover_text(
                         "Otherwise snapr looks for a new release on GitHub when it starts and twice a day, \
                          and installs it to run from the next start",
@@ -418,7 +336,7 @@ impl Form {
                 ui.end_row();
 
                 ui.label("");
-                ui.checkbox(&mut self.export_secrets, "Include upload secret keys in the export")
+                theme::switch(ui, &mut self.export_secrets, "Include upload secret keys in the export")
                     .on_hover_text(
                         "So destinations work straight away after importing. They're written \
                          in the file as plain text: keep it private",
@@ -431,6 +349,101 @@ impl Form {
                     ui.label(if *is_err { text.color(ERROR) } else { text.weak() });
                     ui.end_row();
                 }
+            });
+
+            self.save_bar(ui, actions);
+        });
+    }
+
+    /// The Capture tab: how the overlay behaves while picking a region.
+    pub fn capture_ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+            ui.label(
+                RichText::new("Press the hotkey and drag a region to capture it (click for a whole screen). Draw first to annotate.")
+                    .weak(),
+            );
+            ui.add_space(10.0);
+
+            egui::Grid::new("capture").num_columns(2).spacing([14.0, 8.0]).show(ui, |ui| {
+                ui.label("");
+                theme::switch(ui, &mut self.draft.annotate, "Show the annotation toolbar while capturing");
+                ui.end_row();
+
+                ui.label("Overlay frame rate");
+                ui.horizontal(|ui| {
+                    let mut custom = self.draft.overlay_fps != 0;
+                    theme::segmented(ui, |ui| {
+                        ui.selectable_value(&mut custom, false, "Match monitor");
+                        ui.selectable_value(&mut custom, true, "Custom");
+                    });
+                    if custom {
+                        if self.draft.overlay_fps == 0 {
+                            self.draft.overlay_fps = 144;
+                        }
+                        ui.add(egui::DragValue::new(&mut self.draft.overlay_fps).range(15..=1000).suffix(" fps"));
+                    } else {
+                        self.draft.overlay_fps = 0;
+                    }
+                });
+                ui.end_row();
+
+                ui.label("Beside the crosshair").on_hover_text(
+                    "Shown next to the cursor while selecting a region",
+                );
+                ui.horizontal(|ui| {
+                    let info = &mut self.draft.crosshair_info;
+                    theme::checkbox(ui, &mut info.position, "Position")
+                        .on_hover_text("The pixel's X and Y on the screen");
+                    theme::checkbox(ui, &mut info.color, "Colour")
+                        .on_hover_text("The pixel's colour, as hex and RGB");
+                    theme::checkbox(ui, &mut info.magnifier, "Magnifier")
+                        .on_hover_text("The pixels around the cursor, enlarged");
+                });
+                ui.end_row();
+
+                ui.label("Scrolling the magnifier").on_hover_text(
+                    "What the mouse wheel does to the magnifier, here and in the colour picker",
+                );
+                ui.horizontal(|ui| {
+                    let scroll = &mut self.draft.crosshair_info.scroll;
+                    theme::segmented(ui, |ui| {
+                        ui.selectable_value(scroll, MagnifierScroll::Resize, "Resizes it")
+                            .on_hover_text("Bigger, or smaller until it's hidden");
+                        ui.selectable_value(scroll, MagnifierScroll::Zoom, "Zooms it")
+                            .on_hover_text("Fewer, bigger pixels, or more, smaller ones");
+                    });
+                });
+                ui.end_row();
+
+                ui.label("Redaction image").on_hover_text(
+                    "The image redaction tool (I) covers areas with this picture",
+                );
+                ui.horizontal(|ui| {
+                    ui.add(
+                        TextEdit::singleline(&mut self.draft.redact_image).margin(theme::FIELD_MARGIN)
+                            .hint_text("None (black boxes)")
+                            .desired_width(300.0),
+                    );
+                    if ui.button("Browse\u{2026}").clicked()
+                        && let Some(file) = rfd::FileDialog::new()
+                            .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp", "bmp"])
+                            .pick_file()
+                    {
+                        self.draft.redact_image = file.display().to_string();
+                    }
+                    if !self.draft.redact_image.is_empty() && ui.button("Clear").clicked() {
+                        self.draft.redact_image.clear();
+                    }
+                });
+                ui.end_row();
+
+                ui.label("");
+                theme::switch(ui, &mut self.draft.redact_stretch, "Stretch the image to fill each area")
+                    .on_hover_text(
+                        "Squash or stretch it to the area's shape. Off, it keeps its proportions \
+                         and is cropped to cover the area",
+                    );
+                ui.end_row();
             });
 
             self.save_bar(ui, actions);
@@ -517,7 +530,7 @@ impl Form {
                 if crate::encode::webm_supported() {
                     use crate::settings::RecordFormat;
                     ui.label("Format");
-                    ui.horizontal(|ui| {
+                    theme::segmented(ui, |ui| {
                         ui.selectable_value(&mut self.draft.record_format, RecordFormat::Mp4, "MP4")
                             .on_hover_text("H.264 and AAC: plays everywhere");
                         if cfg!(windows) {
@@ -538,7 +551,7 @@ impl Form {
                 // can encode with FFmpeg instead.
                 if !cfg!(target_os = "linux") {
                     ui.label("Encoder");
-                    ui.horizontal(|ui| {
+                    theme::segmented(ui, |ui| {
                         ui.selectable_value(&mut self.draft.record_with_ffmpeg, false, "System")
                             .on_hover_text("The encoder the system provides: nothing to install, and light on the CPU");
                         ui.selectable_value(&mut self.draft.record_with_ffmpeg, true, "FFmpeg")
@@ -554,7 +567,7 @@ impl Form {
                     ui.label("FFmpeg");
                     ui.horizontal(|ui| {
                         ui.add(
-                            TextEdit::singleline(&mut self.draft.ffmpeg_path)
+                            TextEdit::singleline(&mut self.draft.ffmpeg_path).margin(theme::FIELD_MARGIN)
                                 .hint_text("ffmpeg (found on PATH)")
                                 .desired_width(300.0),
                         );
@@ -609,7 +622,7 @@ impl Form {
                     ui.end_row();
                     ui.label("Extra arguments");
                     ui.add(
-                        TextEdit::singleline(&mut ff.extra_args)
+                        TextEdit::singleline(&mut ff.extra_args).margin(theme::FIELD_MARGIN)
                             .hint_text("e.g. -tune stillimage")
                             .desired_width(300.0),
                     )
@@ -619,11 +632,11 @@ impl Form {
                     ui.end_row();
                 }
                 ui.label("");
-                ui.checkbox(&mut self.draft.record_cursor, "Show the mouse pointer");
+                theme::switch(ui, &mut self.draft.record_cursor, "Show the mouse pointer");
                 ui.end_row();
                 if cfg!(windows) {
                     ui.label("");
-                    ui.checkbox(&mut self.draft.record_hdr, "Record in HDR when the display is in HDR mode")
+                    theme::switch(ui, &mut self.draft.record_hdr, "Record in HDR when the display is in HDR mode")
                         .on_hover_text(
                             "HDR10 MP4 (10-bit HEVC) made by the graphics card. Recordings start about a second later.",
                         );
@@ -632,10 +645,10 @@ impl Form {
 
                 ui.label("Sound");
                 ui.vertical(|ui| {
-                    ui.checkbox(&mut self.draft.record_system_audio, "What's playing (system audio)")
+                    theme::checkbox(ui, &mut self.draft.record_system_audio, "What's playing (system audio)")
                         .on_hover_text("Everything the default speakers or headphones play");
                     ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.draft.record_microphone, "Microphone");
+                        theme::checkbox(ui, &mut self.draft.record_microphone, "Microphone");
                         let mics = self.microphones.get_or_insert_with(crate::audio::microphones);
                         let selected = if self.draft.microphone.is_empty() {
                             "Default".to_string()
@@ -781,7 +794,7 @@ impl Form {
                     HotkeyField::Tool(i) => &mut self.draft.tool_hotkeys[i].hotkey,
                 };
                 ui.add(
-                    TextEdit::singleline(value)
+                    TextEdit::singleline(value).margin(theme::FIELD_MARGIN)
                         .hint_text("none")
                         .desired_width(220.0),
                 );
@@ -821,7 +834,7 @@ impl Form {
             });
         let mut remove = false;
         self.hotkey_editor(ui, HotkeyField::Tool(i), |ui| {
-            remove = ui.button("Remove").clicked();
+            remove = ui.add(theme::danger(ui, "Remove")).clicked();
         });
         ui.end_row();
         error_row(ui, err.as_deref());
@@ -901,7 +914,11 @@ impl Form {
             egui::Grid::new("naming").num_columns(2).spacing([14.0, 8.0]).show(ui, |ui| {
                 ui.label("Save folder");
                 ui.horizontal(|ui| {
-                    ui.add(TextEdit::singleline(&mut self.draft.folder).desired_width(300.0));
+                    ui.add(
+                        TextEdit::singleline(&mut self.draft.folder)
+                            .margin(theme::FIELD_MARGIN)
+                            .desired_width(300.0),
+                    );
                     if ui.button("Browse\u{2026}").clicked()
                         && let Some(dir) = rfd::FileDialog::new().set_directory(&self.draft.folder).pick_folder()
                     {
@@ -1019,7 +1036,7 @@ impl Form {
 pub(crate) fn template_field(ui: &mut egui::Ui, id_salt: &str, text: &mut String, hint: &str) {
     let id = ui.make_persistent_id(id_salt);
     ui.add(
-        TextEdit::singleline(text)
+        TextEdit::singleline(text).margin(theme::FIELD_MARGIN)
             .id(id)
             .hint_text(hint)
             .desired_width(250.0),
@@ -1184,8 +1201,9 @@ mod tests {
             false,
         ));
         type Tab = fn(&mut Form, &mut egui::Ui);
-        let tabs: [(&str, Tab); 4] = [
+        let tabs: [(&str, Tab); 5] = [
             ("general", |f, ui| f.ui(ui, &mut Vec::new())),
+            ("capture", |f, ui| f.capture_ui(ui, &mut Vec::new())),
             ("hotkeys", |f, ui| f.hotkeys_ui(ui, &mut Vec::new())),
             ("naming", |f, ui| f.naming_ui(ui, &mut Vec::new())),
             ("recording", |f, ui| f.recording_ui(ui, &mut Vec::new())),
@@ -1196,9 +1214,15 @@ mod tests {
                 [920, 900],
                 1.0,
                 |root| {
+                    crate::theme::apply(root.ctx());
                     egui::CentralPanel::default().show(root, |ui| tab(&mut form, ui));
                 },
             );
         }
+        crate::preview::render("settings-general-light-preview", [920, 900], 1.0, |root| {
+            crate::theme::apply(root.ctx());
+            root.ctx().set_theme(egui::Theme::Light);
+            egui::CentralPanel::default().show(root, |ui| form.ui(ui, &mut Vec::new()));
+        });
     }
 }

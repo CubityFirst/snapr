@@ -21,9 +21,9 @@ use crate::gpu::Gpu;
 use crate::output::{Transfer, Transfers};
 use crate::settings::{Settings, SpeedUnit, Upload};
 use crate::settings_ui::{self, Form};
+use crate::theme::{self, ACCENT};
 use crate::tools::{self, Tools};
 
-const ACCENT: Color32 = Color32::from_rgb(0x3d, 0x9b, 0xff);
 const NAV_WIDTH: f32 = 60.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +33,7 @@ pub enum Page {
     Stats,
     /// The General tab of Settings.
     Settings,
+    Capture,
     Hotkeys,
     Naming,
     Destinations,
@@ -256,6 +257,7 @@ impl MainWindow {
         let window = Arc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
 
         let ctx = egui::Context::default();
+        theme::apply(&ctx);
         let config = egui_wgpu::WgpuConfiguration {
             wgpu_setup: gpu.egui_setup(),
             ..Default::default()
@@ -329,12 +331,7 @@ impl MainWindow {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        let dark = ui.visuals().dark_mode;
-        let nav_fill = if dark {
-            Color32::from_rgb(22, 23, 26)
-        } else {
-            Color32::from_rgb(232, 234, 238)
-        };
+        let nav_fill = theme::palette(ui).nav;
         egui::Panel::left("nav")
             .exact_size(NAV_WIDTH)
             .resizable(false)
@@ -452,25 +449,14 @@ impl MainWindow {
                 }
                 Page::Stats => crate::stats_ui::ui(ui, &self.stats),
                 page => {
-                    ui.horizontal(|ui| {
-                        ui.heading("Settings");
-                        ui.add_space(12.0);
-                        for (tab, label) in [
-                            (Page::Settings, "General"),
-                            (Page::Hotkeys, "Hotkeys"),
-                            (Page::Naming, "Paths & naming"),
-                            (Page::Destinations, "Destinations"),
-                            (Page::Recording, "Recording"),
-                        ] {
-                            ui.selectable_value(&mut self.page, tab, label);
-                        }
-                    });
-                    ui.add_space(4.0);
+                    settings_tabs(ui, &mut self.page);
+                    ui.add_space(8.0);
                     if self.page != Page::Hotkeys {
                         self.form.recording = false;
                     }
                     let mut form_actions = Vec::new();
                     match page {
+                        Page::Capture => self.form.capture_ui(ui, &mut form_actions),
                         Page::Hotkeys => self.form.hotkeys_ui(ui, &mut form_actions),
                         Page::Naming => self.form.naming_ui(ui, &mut form_actions),
                         Page::Destinations => self.form.destinations_ui(ui, &mut form_actions),
@@ -657,22 +643,44 @@ impl MainWindow {
     }
 }
 
+/// The Settings heading and its tabs, which wrap under it in a narrow window.
+fn settings_tabs(ui: &mut egui::Ui, page: &mut Page) {
+    ui.horizontal_wrapped(|ui| {
+        ui.heading("Settings");
+        ui.add_space(12.0);
+        theme::segmented(ui, |ui| {
+            for (tab, label) in [
+                (Page::Settings, "General"),
+                (Page::Capture, "Capture"),
+                (Page::Recording, "Recording"),
+                (Page::Hotkeys, "Hotkeys"),
+                (Page::Naming, "Paths & naming"),
+                (Page::Destinations, "Destinations"),
+            ] {
+                ui.selectable_value(page, tab, label);
+            }
+        });
+    });
+}
+
+/// A button on the icon bar: Capture filled with the accent, the page
+/// that's showing tinted with it.
 fn nav_button(ui: &mut egui::Ui, icon: NavIcon, selected: bool, tip: &str) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::click());
-    let visuals = ui.visuals();
-    let fg = if selected {
-        Color32::WHITE
+    let palette = theme::palette(ui);
+    let capture = matches!(icon, NavIcon::Capture);
+    let (fill, fg) = if capture {
+        let fill = if resp.hovered() { theme::ACCENT_HOVER } else { ACCENT };
+        (fill, theme::ON_ACCENT)
+    } else if selected {
+        (palette.selected, ACCENT)
     } else if resp.hovered() {
-        visuals.strong_text_color()
+        (palette.control_hover, palette.text_strong)
     } else {
-        visuals.text_color()
+        (Color32::TRANSPARENT, palette.text_weak)
     };
     let p = ui.painter();
-    if selected {
-        p.rect_filled(rect, 9.0, ACCENT);
-    } else if resp.hovered() {
-        p.rect_filled(rect, 9.0, visuals.widgets.hovered.weak_bg_fill);
-    }
+    p.rect_filled(rect, 9.0, fill);
     draw_icon(p, rect.shrink(10.0), icon, fg);
     resp.on_hover_text(tip)
         .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -681,15 +689,15 @@ fn nav_button(ui: &mut egui::Ui, icon: NavIcon, selected: bool, tip: &str) -> eg
 /// A small down arrow under the capture button, for its menu.
 fn chevron_button(ui: &mut egui::Ui) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(40.0, 14.0), Sense::click());
-    let visuals = ui.visuals();
+    let palette = theme::palette(ui);
     let fg = if resp.hovered() {
-        visuals.strong_text_color()
+        palette.text_strong
     } else {
-        visuals.weak_text_color()
+        palette.text_weak
     };
     let p = ui.painter();
     if resp.hovered() {
-        p.rect_filled(rect, 4.0, visuals.widgets.hovered.weak_bg_fill);
+        p.rect_filled(rect, 4.0, palette.control_hover);
     }
     let c = rect.center();
     p.add(Shape::line(
@@ -820,6 +828,23 @@ mod tests {
         assert_eq!(duration(3.0 * 3600.0 + 125.0), "3 h 2 min");
     }
 
+    /// Renders the Settings tabs at the window's usual width and its
+    /// narrowest to `target/settings-tabs-<width>-preview.png`:
+    /// `cargo test settings_tabs_preview -- --ignored`.
+    #[test]
+    #[ignore]
+    fn settings_tabs_preview() {
+        // The page's width beside the icon bar, inside its margins.
+        for (window, width) in [(980, 980 - 60 - 40), (640, 640 - 60 - 40)] {
+            let mut page = Page::Capture;
+            let name = format!("settings-tabs-{window}-preview");
+            crate::preview::render(&name, [width, 110], 1.0, |root| {
+                crate::theme::apply(root.ctx());
+                egui::CentralPanel::default().show(root, |ui| settings_tabs(ui, &mut page));
+            });
+        }
+    }
+
     /// Renders the uploads panel to `target/uploads-preview.png`:
     /// `cargo test uploads_preview -- --ignored`.
     #[test]
@@ -843,6 +868,7 @@ mod tests {
             transfer("Screenshot 2026-10-05 14.10.png", "S3 backup", 0, 900_000, 0),
         ];
         crate::preview::render("uploads-preview", [820, 520], 1.0, |root| {
+            crate::theme::apply(root.ctx());
             egui::Panel::bottom("uploads")
                 .resizable(false)
                 .frame(

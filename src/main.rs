@@ -43,6 +43,7 @@ mod settings_ui;
 mod sound;
 mod stats;
 mod stats_ui;
+mod theme;
 mod thumbnail;
 mod toast;
 mod toolbar;
