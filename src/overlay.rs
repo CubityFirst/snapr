@@ -111,8 +111,11 @@ impl Overlay {
             .with_position(pos)
             .with_inner_size(PhysicalSize::new(w, h));
         // macOS borderless fullscreen switches Spaces with an animation, so we
-        // just cover the monitor with a top-level window there instead.
-        #[cfg(not(target_os = "macos"))]
+        // just cover the monitor with a top-level window there instead. So on
+        // Windows: winit marks a fullscreen window as such to the shell, and
+        // the shell and other apps reacting to it ending made the desktop
+        // stutter as the overlay closed.
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             attrs =
                 attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(Some(monitor))));
@@ -126,6 +129,8 @@ impl Overlay {
         let window = Arc::new(event_loop.create_window(attrs)?);
         #[cfg(windows)]
         suppress_alt_menu(&window);
+        #[cfg(windows)]
+        make_tool_window(&window);
         window.set_cursor(winit::window::CursorIcon::Crosshair);
 
         let surface = gpu.instance.create_surface(window.clone())?;
@@ -150,7 +155,14 @@ impl Overlay {
                 wgpu::PresentMode::AutoNoVsync
             },
             desired_maximum_frame_latency: 1,
-            alpha_mode: caps.alpha_modes[0],
+            // Drawn opaque either way, but an opaque surface covering the
+            // monitor counts as hiding the windows underneath, which then stop
+            // drawing and lurch back to life as the overlay closes.
+            alpha_mode: if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied) {
+                wgpu::CompositeAlphaMode::PreMultiplied
+            } else {
+                caps.alpha_modes[0]
+            },
             view_formats: vec![],
             ..surface
                 .get_default_config(&gpu.adapter, size.width.max(1), size.height.max(1))
@@ -603,6 +615,30 @@ fn suppress_alt_menu(window: &Window) {
         && let RawWindowHandle::Win32(h) = handle.as_raw()
     {
         unsafe { SetWindowSubclass(h.hwnd.get() as HWND, Some(proc), 1, 0) };
+    }
+}
+
+/// Makes the overlay a tool window: browsers and Electron apps (Chromium's
+/// and Firefox's occlusion tracking) stop drawing while an ordinary window
+/// covers them, and stall catching up as the overlay closes. Tool windows
+/// don't count.
+#[cfg(windows)]
+fn make_tool_window(window: &Window) {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW, WS_EX_TOOLWINDOW,
+    };
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    if let Ok(handle) = window.window_handle()
+        && let RawWindowHandle::Win32(h) = handle.as_raw()
+    {
+        let hwnd = h.hwnd.get() as HWND;
+        // SAFETY: our own window, still hidden.
+        unsafe {
+            let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | WS_EX_TOOLWINDOW as isize);
+        }
     }
 }
 
