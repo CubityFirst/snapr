@@ -149,6 +149,19 @@ pub fn window_rects(own: &[&winit::window::Window]) -> Vec<Rect> {
                 w: w.width().ok()?,
                 h: w.height().ok()?,
             };
+            // macOS gives frames in points. `capture_all` places each monitor
+            // at its point position times its scale, so a frame scales the
+            // same way.
+            #[cfg(target_os = "macos")]
+            let rect = {
+                let s = w.current_monitor().ok()?.scale_factor().ok()?;
+                Rect {
+                    x: (rect.x as f32 * s).round() as i32,
+                    y: (rect.y as f32 * s).round() as i32,
+                    w: (rect.w as f32 * s).round() as u32,
+                    h: (rect.h as f32 * s).round() as u32,
+                }
+            };
             Some((w.id().ok()?, rect))
         });
     #[cfg(windows)]
