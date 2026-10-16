@@ -13,7 +13,9 @@ use winit::keyboard::{KeyCode, ModifiersState};
 use crate::naming::{CATEGORIES, Context};
 use crate::output;
 use crate::secrets;
-use crate::settings::{MagnifierScroll, Settings, ToolAction, ToolHotkey, Upload, parse_hotkey};
+use crate::settings::{
+    MagnifierScroll, Settings, ToolAction, ToolHotkey, TrayClick, Upload, parse_hotkey,
+};
 use crate::sound::{self, Sound};
 use crate::theme;
 use crate::update;
@@ -277,6 +279,19 @@ impl Form {
                 ui.label("");
                 theme::switch(ui, &mut self.draft.show_toast, "Show a preview in the corner after each capture")
                     .on_hover_text("Click it to open the link (or the image), middle-click to copy the image, right-click to close it");
+                ui.end_row();
+
+                let icon = if cfg!(target_os = "macos") { "menu bar icon" } else { "tray icon" };
+                ui.label(format!("Clicking the {icon}"))
+                    .on_hover_text("A right-click always shows the menu");
+                egui::ComboBox::from_id_salt("tray-click")
+                    .selected_text(self.draft.tray_click.label())
+                    .width(220.0)
+                    .show_ui(ui, |ui| {
+                        for click in TrayClick::all() {
+                            ui.selectable_value(&mut self.draft.tray_click, click, click.label());
+                        }
+                    });
                 ui.end_row();
 
                 ui.label(RichText::new("Updates").strong());

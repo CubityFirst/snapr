@@ -20,6 +20,8 @@ use crate::settings::ToolAction;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayAction {
+    /// The icon was left-clicked: whatever `Settings::tray_click` says.
+    Click,
     Capture,
     /// Start one of the tools, from the Tools submenu.
     Tool(ToolAction),

@@ -19,7 +19,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::{Callback, TrayAction, capture_label};
-use crate::settings::ToolAction;
+use crate::settings::{ToolAction, TrayClick};
 
 const CLASS_NAME: &str = "snapr.tray";
 const WM_TRAY: u32 = WM_APP + 1;
@@ -46,6 +46,8 @@ struct State {
     capture_label: String,
     callback: Callback,
     taskbar_created: u32,
+    /// What a left-click does.
+    click: TrayClick,
 }
 
 thread_local! {
@@ -101,6 +103,7 @@ impl Tray {
             capture_label: capture_label(hotkey),
             callback,
             taskbar_created: unsafe { RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()) },
+            click: TrayClick::default(),
         };
         let added = notify(&state, NIM_ADD);
         STATE.with(|s| *s.borrow_mut() = Some(state));
@@ -116,6 +119,14 @@ impl Tray {
                 state.tooltip = tooltip(hotkey);
                 state.capture_label = capture_label(hotkey);
                 notify(state, NIM_MODIFY);
+            }
+        });
+    }
+
+    pub fn set_click(&self, click: TrayClick) {
+        STATE.with(|s| {
+            if let Some(state) = s.borrow_mut().as_mut() {
+                state.click = click;
             }
         });
     }
@@ -221,10 +232,20 @@ fn dispatch(action: TrayAction) {
     }
 }
 
+fn click() -> TrayClick {
+    STATE.with(|s| s.borrow().as_ref().map_or_else(TrayClick::default, |st| st.click))
+}
+
 fn show_menu(hwnd: HWND) {
     let Some(capture) = STATE.with(|s| s.borrow().as_ref().map(|st| st.capture_label.clone()))
     else {
         return;
+    };
+    // In bold: what a left-click does, if it's on the menu.
+    let default = match click() {
+        TrayClick::Open => Some(5),
+        TrayClick::Capture => Some(1),
+        _ => None,
     };
     // SAFETY: standard popup-menu sequence on our own window.
     unsafe {
@@ -232,7 +253,7 @@ fn show_menu(hwnd: HWND) {
         for &(id, action) in MENU {
             let label = match action {
                 TrayAction::Capture => capture.clone(),
-                TrayAction::Tool(_) => unreachable!(),
+                TrayAction::Click | TrayAction::Tool(_) => unreachable!(),
                 TrayAction::Recent => "Recent screenshots\u{2026}".into(),
                 TrayAction::Settings => "Settings\u{2026}".into(),
                 TrayAction::OpenFolder => "Open screenshots folder".into(),
@@ -251,7 +272,9 @@ fn show_menu(hwnd: HWND) {
                 AppendMenuW(menu, MF_POPUP, tools as usize, wide("Tools").as_ptr());
             }
         }
-        SetMenuDefaultItem(menu, 5, 0);
+        if let Some(id) = default {
+            SetMenuDefaultItem(menu, id, 0);
+        }
         let mut pt = POINT { x: 0, y: 0 };
         GetCursorPos(&mut pt);
         // Needed so the menu closes when clicking elsewhere.
@@ -282,7 +305,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     match msg {
         WM_TRAY => {
             match lparam as u32 & 0xffff {
-                WM_LBUTTONUP => dispatch(TrayAction::Recent),
+                WM_LBUTTONUP if click() == TrayClick::Menu => show_menu(hwnd),
+                WM_LBUTTONUP => dispatch(TrayAction::Click),
                 WM_RBUTTONUP => show_menu(hwnd),
                 _ => {}
             }

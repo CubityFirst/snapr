@@ -84,6 +84,8 @@ pub struct Settings {
     pub speed_unit: SpeedUnit,
     /// Show the percentage uploaded on the tray icon, above its progress bar.
     pub tray_percentage: bool,
+    /// What left-clicking the tray (menu bar) icon does.
+    pub tray_click: TrayClick,
     /// Look for a new release now and then, and install it.
     pub check_for_updates: bool,
     /// Start snapr when you sign in (Windows).
@@ -277,6 +279,59 @@ impl ToolAction {
     }
 }
 
+/// What left-clicking the tray icon (the menu bar item on macOS) does. A
+/// right-click always shows the menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrayClick {
+    /// Open the main window on Recent.
+    Open,
+    /// Show the menu, as a right-click does (Windows and macOS).
+    Menu,
+    Capture,
+    /// Start recording a region, or stop the recording in progress.
+    Record,
+    Tool(ToolAction),
+}
+
+impl Default for TrayClick {
+    /// What a click did before it could be chosen: menu bar items normally
+    /// show their menu.
+    fn default() -> Self {
+        if cfg!(target_os = "macos") {
+            TrayClick::Menu
+        } else {
+            TrayClick::Open
+        }
+    }
+}
+
+impl TrayClick {
+    /// The choices this platform's tray can make: Linux's always shows the
+    /// menu on a right-click and never on a left one.
+    pub fn all() -> Vec<TrayClick> {
+        let mut all = vec![TrayClick::Open];
+        if !cfg!(target_os = "linux") {
+            all.push(TrayClick::Menu);
+        }
+        all.extend([TrayClick::Capture, TrayClick::Record]);
+        all.extend(ToolAction::ALL.map(TrayClick::Tool));
+        all
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TrayClick::Open => "Opens snapr",
+            TrayClick::Menu => "Shows the menu",
+            TrayClick::Capture => "Captures a region",
+            TrayClick::Record => "Records a region",
+            TrayClick::Tool(ToolAction::PickColor) => crate::locale::spelled!("Picks a colour"),
+            TrayClick::Tool(ToolAction::ScanQr) => "Reads a QR code",
+            TrayClick::Tool(ToolAction::PinRegion) => "Pins a region to the screen",
+        }
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -312,6 +367,7 @@ impl Default for Settings {
             tool_hotkeys: Vec::new(),
             speed_unit: SpeedUnit::default(),
             tray_percentage: false,
+            tray_click: TrayClick::default(),
             check_for_updates: true,
             start_with_windows: false,
         }
@@ -618,5 +674,21 @@ mod tests {
         // Older config files have none.
         let old: Settings = toml::from_str("hotkey = \"Alt + Shift + KeyS\"").unwrap();
         assert!(old.tool_hotkeys.is_empty());
+    }
+
+    #[test]
+    fn tray_click_round_trip() {
+        for click in TrayClick::all() {
+            let settings = Settings {
+                tray_click: click,
+                ..Settings::default()
+            };
+            let text = toml::to_string_pretty(&settings).unwrap();
+            assert_eq!(toml::from_str::<Settings>(&text).unwrap(), settings, "{text}");
+        }
+        let old: Settings = toml::from_str("hotkey = \"Alt + Shift + KeyS\"").unwrap();
+        assert_eq!(old.tray_click, TrayClick::default());
+        let tool: Settings = toml::from_str("tray_click = { tool = \"scan_qr\" }").unwrap();
+        assert_eq!(tool.tray_click, TrayClick::Tool(ToolAction::ScanQr));
     }
 }

@@ -74,7 +74,7 @@ use crate::main_window::{Action, MainWindow, Page};
 use crate::output::Output;
 use crate::pin::{Pin, Place};
 use crate::session::{Outcome, Purpose, Session};
-use crate::settings::{Loaded, RecordFormat, Settings, ToolAction, ToolHotkey, Upload};
+use crate::settings::{Loaded, RecordFormat, Settings, ToolAction, ToolHotkey, TrayClick, Upload};
 use crate::settings_ui::Form;
 use crate::settings_ui::Test;
 use crate::sound::Sound;
@@ -244,6 +244,15 @@ struct App {
 impl App {
     fn start_capture(&mut self, event_loop: &ActiveEventLoop) {
         self.open_session(event_loop, Purpose::Screenshot);
+    }
+
+    fn run_tool(&mut self, event_loop: &ActiveEventLoop, action: ToolAction) {
+        let purpose = match action {
+            ToolAction::PickColor => Purpose::PickColor,
+            ToolAction::ScanQr => Purpose::Scan,
+            ToolAction::PinRegion => Purpose::Pin,
+        };
+        self.open_session(event_loop, purpose);
     }
 
     /// The record hotkey: stops the recording in progress, or picks a region
@@ -705,6 +714,7 @@ impl App {
         }
         if let Some(t) = &self.tray {
             t.set_hotkey(Some(&new.hotkey));
+            t.set_click(new.tray_click);
         }
         self.settings = new;
         if let Some(w) = &mut self.main_window {
@@ -1172,7 +1182,10 @@ impl ApplicationHandler<UserEvent> for App {
             .is_some_and(Hotkeys::is_registered)
             .then(|| self.settings.hotkey.clone());
         match Tray::new(hotkey.as_deref(), callback) {
-            Ok(t) => self.tray = Some(t),
+            Ok(t) => {
+                t.set_click(self.settings.tray_click);
+                self.tray = Some(t);
+            }
             Err(e) => {
                 // Without a tray the window is the only way in.
                 self.status.get_or_insert((
@@ -1202,6 +1215,18 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::RecordingDone(id, result, ctx) => {
                 self.recording_done(event_loop, id, result, ctx)
             }
+            UserEvent::Tray(TrayAction::Click) => match self.settings.tray_click {
+                // `Menu` never gets here: the tray shows the menu itself.
+                TrayClick::Open | TrayClick::Menu => {
+                    self.open_main_window(event_loop, Page::Recent)
+                }
+                TrayClick::Record => self.toggle_recording(event_loop),
+                // Not a second capture on top of one already open (say, from
+                // a double-click).
+                _ if !self.sessions.is_empty() => {}
+                TrayClick::Capture => self.start_capture(event_loop),
+                TrayClick::Tool(action) => self.run_tool(event_loop, action),
+            },
             UserEvent::Tray(TrayAction::Recent) => self.open_main_window(event_loop, Page::Recent),
             UserEvent::Tray(TrayAction::Settings) => {
                 self.open_main_window(event_loop, Page::Settings)
@@ -1309,12 +1334,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::ToastReady(path, image) => self.show_toast(event_loop, path, image),
             UserEvent::ToolHotkey(action) | UserEvent::Tray(TrayAction::Tool(action)) => {
-                let purpose = match action {
-                    ToolAction::PickColor => Purpose::PickColor,
-                    ToolAction::ScanQr => Purpose::Scan,
-                    ToolAction::PinRegion => Purpose::Pin,
-                };
-                self.open_session(event_loop, purpose);
+                self.run_tool(event_loop, action)
             }
             UserEvent::Combined(count, Ok(image)) => {
                 // A new screenshot: saved, copied and uploaded like a capture.

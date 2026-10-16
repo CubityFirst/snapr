@@ -5,7 +5,7 @@ use ksni::blocking::{Handle, TrayMethods};
 use ksni::menu::{MenuItem, StandardItem, SubMenu};
 
 use super::{Callback, TrayAction, capture_label};
-use crate::settings::ToolAction;
+use crate::settings::{ToolAction, TrayClick};
 
 struct Sni {
     capture_label: String,
@@ -38,7 +38,7 @@ impl ksni::Tray for Sni {
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {
-        (self.callback)(TrayAction::Recent);
+        (self.callback)(TrayAction::Click);
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
@@ -89,6 +89,10 @@ impl Tray {
         let label = capture_label(hotkey);
         self.handle.update(|t| t.capture_label = label);
     }
+
+    /// A left-click always sends `TrayAction::Click` here: the menu is only
+    /// shown by a right-click.
+    pub fn set_click(&self, _click: TrayClick) {}
 
     /// Shows how far the uploads have got on the icon, or the plain icon
     /// with `None`.

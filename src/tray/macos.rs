@@ -5,20 +5,28 @@ use objc2::runtime::{AnyObject, NSObject, Sel};
 use objc2::{
     AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel,
 };
+use std::cell::OnceCell;
+
 use objc2_app_kit::{
-    NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
+    NSApplication, NSEventMask, NSEventModifierFlags, NSEventType, NSImage, NSMenu, NSMenuItem,
+    NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
 };
 use objc2_foundation::{NSData, NSSize, NSString};
 
 use super::{Callback, TrayAction, capture_label};
-use crate::settings::ToolAction;
+use crate::settings::{ToolAction, TrayClick};
 
 struct Ivars {
     callback: Callback,
+    /// For showing the menu on a right-click, when a left-click does
+    /// something else.
+    status_item: OnceCell<Retained<NSStatusItem>>,
+    menu: OnceCell<Retained<NSMenu>>,
 }
 
 define_class!(
-    // Receives menu item actions and forwards them to the callback.
+    // Receives menu item actions and clicks on the icon, and forwards them
+    // to the callback.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "SnaprTrayTarget"]
@@ -26,6 +34,21 @@ define_class!(
     struct Target;
 
     impl Target {
+        /// The icon was clicked while it has no menu of its own.
+        #[unsafe(method(clicked:))]
+        fn clicked(&self, _sender: Option<&AnyObject>) {
+            let event = NSApplication::sharedApplication(self.mtm()).currentEvent();
+            let right = event.is_some_and(|e| {
+                e.r#type() == NSEventType::RightMouseUp
+                    || e.modifierFlags().contains(NSEventModifierFlags::Control)
+            });
+            if right {
+                self.show_menu();
+            } else {
+                (self.ivars().callback)(TrayAction::Click);
+            }
+        }
+
         #[unsafe(method(capture:))]
         fn capture(&self, _sender: Option<&AnyObject>) {
             (self.ivars().callback)(TrayAction::Capture);
@@ -70,15 +93,33 @@ define_class!(
 
 impl Target {
     fn new(mtm: MainThreadMarker, callback: Callback) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(Ivars { callback });
+        let this = Self::alloc(mtm).set_ivars(Ivars {
+            callback,
+            status_item: OnceCell::new(),
+            menu: OnceCell::new(),
+        });
         unsafe { msg_send![super(this), init] }
+    }
+
+    /// Drops the menu down from the icon, as if it were the icon's own.
+    fn show_menu(&self) {
+        let (Some(item), Some(menu)) = (self.ivars().status_item.get(), self.ivars().menu.get())
+        else {
+            return;
+        };
+        item.setMenu(Some(menu));
+        if let Some(button) = item.button(self.mtm()) {
+            // Returns once the menu closes.
+            unsafe { button.performClick(None) };
+        }
+        item.setMenu(None);
     }
 }
 
 pub struct Tray {
     status_item: Retained<NSStatusItem>,
     capture_item: Retained<NSMenuItem>,
-    _menu: Retained<NSMenu>,
+    menu: Retained<NSMenu>,
     _target: Retained<Target>,
 }
 
@@ -125,15 +166,32 @@ impl Tray {
                 button.setImage(Some(&image));
             }
             button.setToolTip(Some(&NSString::from_str("snapr")));
+            // Only used while the item has no menu; with one, any click shows it.
+            unsafe {
+                button.setTarget(Some(&target));
+                button.setAction(Some(sel!(clicked:)));
+            }
+            button.sendActionOn(NSEventMask::LeftMouseUp | NSEventMask::RightMouseUp);
         }
-        status_item.setMenu(Some(&menu));
+        let _ = target.ivars().status_item.set(status_item.clone());
+        let _ = target.ivars().menu.set(menu.clone());
 
-        Ok(Self {
+        let tray = Self {
             status_item,
             capture_item,
-            _menu: menu,
+            menu,
             _target: target,
-        })
+        };
+        tray.set_click(TrayClick::default());
+        Ok(tray)
+    }
+
+    /// With `Menu`, the item keeps its menu and macOS shows it on any click;
+    /// otherwise a left-click is sent as `TrayAction::Click` and a right-click
+    /// (or Control-click) shows the menu.
+    pub fn set_click(&self, click: TrayClick) {
+        let menu = (click == TrayClick::Menu).then_some(&*self.menu);
+        self.status_item.setMenu(menu);
     }
 
     pub fn set_hotkey(&self, hotkey: Option<&str>) {

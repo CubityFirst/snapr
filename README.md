@@ -44,9 +44,12 @@ plain region capture.
 
 ## Main window
 
-Open it from the tray (left-click on Windows, or *Recent screenshots…*). The
-bar on the left has *Capture*, *Recent*, *Tools*, *Stats*, *Settings* and, at the
-bottom, *Open screenshots folder*.
+Open it from the tray (left-click on Windows and Linux, or *Recent
+screenshots…*). What a left-click on the tray icon does can be changed under
+*Settings → General → Clicking the tray icon*: open snapr, show the menu (the
+macOS default), capture or record a region, or start one of the tools. A
+right-click always shows the menu. The bar on the left has *Capture*, *Recent*,
+*Tools*, *Stats*, *Settings* and, at the bottom, *Open screenshots folder*.
 
 - **Recent** shows a large preview of the selected screenshot (the newest by
   default) with *Open*, *Copy*, *Show in folder* and *Delete* (to the Recycle
