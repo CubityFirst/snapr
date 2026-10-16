@@ -331,7 +331,7 @@ mod platform {
     impl Registrar {
         pub fn new(callback: super::Callback) -> Result<Self, String> {
             let hook = Hook::with_consume_preference(ConsumePreference::PreferConsume)
-                .map_err(|e| format!("global hotkeys unavailable: {e}"))?;
+                .map_err(|e| unavailable(&e.to_string()))?;
             let callback = std::sync::Mutex::new(callback);
             Ok(Self {
                 hook,
@@ -357,5 +357,42 @@ mod platform {
                 let _ = self.hook.unregister(old);
             }
         }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn unavailable(e: &str) -> String {
+        format!("global hotkeys unavailable: {e}")
+    }
+
+    /// Why the keyboard can't be watched. On macOS that's usually a missing
+    /// Accessibility permission, which macOS is asked (once a run) to offer.
+    #[cfg(target_os = "macos")]
+    fn unavailable(e: &str) -> String {
+        static TRUSTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *TRUSTED.get_or_init(ask_for_accessibility) {
+            format!("global hotkeys unavailable: {e}")
+        } else {
+            "global hotkeys need snapr turned on under System Settings → Privacy & \
+             Security → Accessibility, then snapr restarted"
+                .into()
+        }
+    }
+
+    /// Whether snapr has Accessibility permission. If not, macOS shows its
+    /// prompt that leads to the setting.
+    #[cfg(target_os = "macos")]
+    fn ask_for_accessibility() -> bool {
+        use objc2_foundation::{NSDictionary, NSNumber, NSString};
+
+        #[link(name = "ApplicationServices", kind = "framework")]
+        unsafe extern "C" {
+            fn AXIsProcessTrustedWithOptions(options: *const std::ffi::c_void) -> u8;
+        }
+        // kAXTrustedCheckOptionPrompt's value.
+        let key = NSString::from_str("AXTrustedCheckOptionPrompt");
+        let options = NSDictionary::from_slices(&[&*key], &[&*NSNumber::new_bool(true)]);
+        // SAFETY: an NSDictionary is a CFDictionary (toll-free bridged), and
+        // it outlives the call.
+        unsafe { AXIsProcessTrustedWithOptions(objc2::rc::Retained::as_ptr(&options).cast()) != 0 }
     }
 }
