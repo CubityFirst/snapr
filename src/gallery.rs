@@ -348,7 +348,10 @@ impl Gallery {
             ui.id().with("grid-background"),
             Sense::click(),
         );
-        background.context_menu(|ui| self.clear_menu_item(ui));
+        background.context_menu(|ui| {
+            theme::compact_menu(ui);
+            self.clear_menu_item(ui);
+        });
         let mut drop_target = None;
         egui::ScrollArea::vertical()
             .auto_shrink(false)
@@ -668,6 +671,7 @@ impl Gallery {
             Vec::new()
         };
         resp.context_menu(|ui| {
+            theme::compact_menu(ui);
             if combinable.len() > 1 {
                 for (label, dir) in [
                     ("Combine horizontally", Direction::Horizontal),

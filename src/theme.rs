@@ -323,6 +323,15 @@ fn labelled(
     response
 }
 
+/// Tightens a context menu's items: the window-wide spacing is sized for
+/// controls, which leaves a list of menu entries looking sparse.
+pub fn compact_menu(ui: &mut Ui) {
+    let spacing = ui.spacing_mut();
+    spacing.item_spacing.y = 1.0;
+    spacing.button_padding = vec2(10.0, 3.0);
+    spacing.interact_size.y = 24.0;
+}
+
 /// A row of options where one is picked, in a sunken track with the picked
 /// one raised. `add` adds them with `selectable_value`.
 pub fn segmented<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
