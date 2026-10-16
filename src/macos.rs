@@ -1,9 +1,12 @@
 //! macOS specifics: the Screen Recording permission, the capture overlay's
-//! window level, and a Dock icon while the main window is open.
+//! window level and the notch, and a Dock icon while the main window is
+//! open.
 
-use objc2::MainThreadMarker;
+use objc2::rc::Retained;
+use objc2::runtime::NSObjectProtocol;
+use objc2::{MainThreadMarker, sel};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSView, NSWindowCollectionBehavior,
+    NSApplication, NSApplicationActivationPolicy, NSView, NSWindow, NSWindowCollectionBehavior,
 };
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
@@ -41,25 +44,39 @@ pub fn ask_for_screen_recording() {
 pub fn cover_everything(window: &Window) {
     /// NSScreenSaverWindowLevel.
     const LEVEL: isize = 1000;
-    let Ok(handle) = window.window_handle() else {
-        return;
-    };
-    let RawWindowHandle::AppKit(h) = handle.as_raw() else {
-        return;
-    };
-    // SAFETY: winit's view for a window it just made on this (the main)
-    // thread, alive while `window` is.
-    unsafe {
-        let view: &NSView = h.ns_view.cast().as_ref();
-        if let Some(ns_window) = view.window() {
-            ns_window.setLevel(LEVEL);
-            ns_window.setCollectionBehavior(
-                NSWindowCollectionBehavior::CanJoinAllSpaces
-                    | NSWindowCollectionBehavior::FullScreenAuxiliary
-                    | NSWindowCollectionBehavior::Stationary,
-            );
-        }
+    if let Some(ns_window) = ns_window(window) {
+        ns_window.setLevel(LEVEL);
+        ns_window.setCollectionBehavior(
+            NSWindowCollectionBehavior::CanJoinAllSpaces
+                | NSWindowCollectionBehavior::FullScreenAuxiliary
+                | NSWindowCollectionBehavior::Stationary,
+        );
     }
+}
+
+/// How far down from the top of `window`'s screen things are clear of the
+/// camera notch, in points; 0 on screens without one.
+pub fn top_inset(window: &Window) -> f32 {
+    let Some(screen) = ns_window(window).and_then(|w| w.screen()) else {
+        return 0.0;
+    };
+    // macOS 12 brought safe areas, and the notch with them.
+    if !screen.respondsToSelector(sel!(safeAreaInsets)) {
+        return 0.0;
+    }
+    screen.safeAreaInsets().top as f32
+}
+
+/// The AppKit window behind one of winit's.
+fn ns_window(window: &Window) -> Option<Retained<NSWindow>> {
+    let handle = window.window_handle().ok()?;
+    let RawWindowHandle::AppKit(h) = handle.as_raw() else {
+        return None;
+    };
+    // SAFETY: winit's view, made on this (the main) thread, alive while
+    // `window` is.
+    let view: &NSView = unsafe { h.ns_view.cast().as_ref() };
+    view.window()
 }
 
 /// Shows snapr in the Dock and the app switcher (while the main window is

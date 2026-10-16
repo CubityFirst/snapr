@@ -49,6 +49,9 @@ pub struct View {
     pub can_undo: bool,
     pub can_redo: bool,
     pub show_toolbar: bool,
+    /// The top of the screen to keep clear (the camera notch on MacBooks),
+    /// in points.
+    pub top_inset: f32,
     /// The selection on this monitor, and its size in pixels.
     pub selection: Option<(Rect, [u32; 2])>,
     pub cursor: CursorIcon,
@@ -143,7 +146,7 @@ fn ui(ui: &mut egui::Ui, view: &View) -> (Vec<Action>, Option<Rect>) {
         let galley =
             painter.layout_no_wrap(hint.into(), FontId::proportional(15.0), Color32::WHITE);
         let size = galley.size() + vec2(24.0, 14.0);
-        let top = ctx.content_rect().center_top() + vec2(0.0, 14.0);
+        let top = ctx.content_rect().center_top() + vec2(0.0, 14.0 + view.top_inset);
         let bg = Rect::from_min_size(top - vec2(size.x / 2.0, 0.0), size);
         painter.rect_filled(bg, 8.0, Color32::from_black_alpha(190));
         painter.galley(bg.min + vec2(12.0, 7.0), galley, Color32::WHITE);
@@ -178,7 +181,7 @@ fn ui(ui: &mut egui::Ui, view: &View) -> (Vec<Action>, Option<Rect>) {
         return (actions, None);
     }
     let area = egui::Area::new(egui::Id::new("toolbar"))
-        .anchor(Align2::CENTER_TOP, vec2(0.0, 14.0))
+        .anchor(Align2::CENTER_TOP, vec2(0.0, 14.0 + view.top_inset))
         .order(egui::Order::Foreground)
         .fade_in(false)
         .show(&ctx, |ui| {
@@ -1201,6 +1204,7 @@ mod tests {
             can_undo: true,
             can_redo: false,
             show_toolbar: true,
+            top_inset: 0.0,
             selection: Some((
                 Rect::from_min_size(pos2(120.0, 90.0), vec2(500.0, 60.0)),
                 [750, 90],
@@ -1236,6 +1240,7 @@ mod tests {
                 can_undo: true,
                 can_redo: false,
                 show_toolbar: true,
+                top_inset: 0.0,
                 selection: None,
                 cursor: CursorIcon::Crosshair,
                 arrow_nodes: Vec::new(),
@@ -1263,6 +1268,7 @@ mod tests {
             can_undo: true,
             can_redo: false,
             show_toolbar: true,
+            top_inset: 0.0,
             selection: None,
             cursor: CursorIcon::Crosshair,
             arrow_nodes: Vec::new(),
@@ -1298,6 +1304,7 @@ mod tests {
             can_undo: false,
             can_redo: false,
             show_toolbar: false,
+            top_inset: 0.0,
             selection: None,
             cursor: CursorIcon::Crosshair,
             arrow_nodes: Vec::new(),
@@ -1332,6 +1339,7 @@ mod tests {
             can_undo: false,
             can_redo: false,
             show_toolbar: false,
+            top_inset: 0.0,
             selection: None,
             cursor: CursorIcon::Crosshair,
             arrow_nodes: Vec::new(),

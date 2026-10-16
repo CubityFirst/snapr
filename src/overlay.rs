@@ -72,6 +72,8 @@ pub struct Overlay {
     ui: Ui,
     /// The toolbar's area in window pixels, if shown.
     toolbar: Option<egui::Rect>,
+    /// The top of the screen to keep the toolbar off (the notch), in points.
+    top_inset: f32,
     shot: Shot,
     monitor_pos: PhysicalPosition<i32>,
     /// When the last frame was presented, for custom frame-rate pacing.
@@ -133,6 +135,10 @@ impl Overlay {
         make_tool_window(&window);
         #[cfg(target_os = "macos")]
         crate::macos::cover_everything(&window);
+        #[cfg(target_os = "macos")]
+        let top_inset = crate::macos::top_inset(&window);
+        #[cfg(not(target_os = "macos"))]
+        let top_inset = 0.0;
         window.set_cursor(winit::window::CursorIcon::Crosshair);
 
         let surface = gpu.instance.create_surface(window.clone())?;
@@ -248,6 +254,7 @@ impl Overlay {
                 ring: None,
             },
             toolbar: None,
+            top_inset,
             shot,
             monitor_pos: pos,
             last_frame: None,
@@ -407,6 +414,7 @@ impl Overlay {
             can_undo: frame.can_undo,
             can_redo: frame.can_redo,
             show_toolbar: frame.show_toolbar,
+            top_inset: self.top_inset,
             selection,
             cursor: frame.cursor,
             arrow_nodes: frame
