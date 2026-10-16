@@ -2,7 +2,9 @@
 # and publishes the builds with a SHA256SUMS file as a GitHub release. The
 # app's updater (src/update.rs) downloads its platform's file from the
 # latest release, so the file names below must stay in step with
-# `update::asset_name`: snapr-<os>-<arch>[.exe].
+# `update::asset_name`: snapr-<os>-<arch>[.exe], and on macOS
+# snapr-macos-<arch>.app.zip (scripts/macos-bundle.sh, which also makes the
+# .dmg people install from).
 #
 # Tags with a hyphen (v1.0.0-rc.1) become pre-releases, which the updater
 # doesn't offer.
@@ -82,10 +84,19 @@ jobs:
           mkdir dist
           cp "target/${{ matrix.target }}/release/snapr${{ runner.os == 'Windows' && '.exe' || '' }}" "dist/${{ matrix.asset }}"
 
+      # snapr.app as a .dmg to install from and a zip for the updater. The
+      # bare binary above stays for installs from before snapr.app, which
+      # run it bare and whose updater fetches it.
+      - name: Package snapr.app
+        if: runner.os == 'macOS'
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          bash scripts/macos-bundle.sh "target/${{ matrix.target }}/release/snapr" "$version" aarch64 dist
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}
-          path: dist/${{ matrix.asset }}
+          path: dist/*
           if-no-files-found: error
 
   release:

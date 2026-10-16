@@ -273,7 +273,9 @@ git push origin v0.2.0
 The *Release* workflow (`.github/workflows/release.yml`) builds Windows
 x86-64, macOS (Apple silicon only) and Linux x86-64, and publishes them
 as a GitHub release named after the tag, with generated notes and a
-`SHA256SUMS` file. It refuses a tag that doesn't match `Cargo.toml`'s
+`SHA256SUMS` file. The macOS build is packed as `snapr.app`
+(`scripts/macos-bundle.sh`), published as a `.dmg` to install from and a
+zip the updater swaps the whole app for. It refuses a tag that doesn't match `Cargo.toml`'s
 version (such a build would keep offering itself as an update). A tag with a
 hyphen, e.g. `v0.2.0-rc.1`, is published as a pre-release.
 
@@ -287,8 +289,11 @@ snapr --settings   # open the settings window on start
 ## Platform notes
 
 - **Windows**: works out of the box.
-- **macOS**: grant *Screen Recording* (capture) and *Accessibility* (global
-  hotkey) permissions. The tray icon lives in the menu bar.
+- **macOS**: open `snapr-macos-aarch64.dmg` and drag snapr to Applications.
+  It isn't notarised, so the first time macOS won't open it: choose *Open
+  Anyway* under System Settings → Privacy & Security. Grant *Screen
+  Recording* (capture) and *Accessibility* (global hotkey) permissions. The
+  tray icon lives in the menu bar.
 - **Linux**: the tray uses StatusNotifierItem (KDE and most desktops; GNOME
   needs the AppIndicator extension). Without a tray the settings window is
   shown instead. On Wayland, global hotkeys need the user in the `input` group,

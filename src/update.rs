@@ -2,7 +2,8 @@
 //! (`.github/workflows/release.yml`): finds the latest release, downloads
 //! this platform's build, checks it against the release's `SHA256SUMS` and
 //! puts it in place of the running program, which carries on as it is until
-//! it's restarted.
+//! it's restarted. On macOS that's the whole `snapr.app` it runs from, so
+//! the app stays sealed by its signature; a bare program is replaced alone.
 
 use std::fmt::Write as _;
 use std::io::{Read, Write};
@@ -57,7 +58,7 @@ static INSTALLED: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex:
 pub fn init() {
     let exe = EXE.get_or_init(|| std::env::current_exe().ok());
     if let Some(exe) = exe {
-        remove_old_copies(exe);
+        remove_old_copies(app(exe).unwrap_or(exe));
     }
 }
 
@@ -130,7 +131,9 @@ fn check_and_install(report: &dyn Fn(Status)) -> Result<Status, String> {
     if cfg!(debug_assertions) {
         return Ok(Status::Available(version, release.html_url));
     }
-    let name = asset_name();
+    let exe = exe()?;
+    let app = app(exe);
+    let name = asset_name(app.is_some());
     let find = |name: &str| release.assets.iter().find(|a| a.name == name);
     let asset = find(&name).ok_or_else(|| format!("{} has no build for {name}", release.tag_name))?;
     let sums = find("SHA256SUMS")
@@ -144,9 +147,11 @@ fn check_and_install(report: &dyn Fn(Status)) -> Result<Status, String> {
     let expected = checksum_for(&text, &name)
         .ok_or_else(|| format!("SHA256SUMS doesn't list {name}"))?;
 
-    let exe = exe()?;
-    let new = sibling(exe, "new");
-    let result = download(asset, &new, &expected).and_then(|()| replace(exe, &new));
+    let new = sibling(app.unwrap_or(exe), "new");
+    let result = download(asset, &new, &expected).and_then(|()| match app {
+        Some(app) => replace_app(app, &new),
+        None => replace(exe, &new),
+    });
     if result.is_err() {
         let _ = std::fs::remove_file(&new);
     }
@@ -191,10 +196,32 @@ fn latest_release() -> Result<Release, String> {
 }
 
 /// This platform's build among a release's files, e.g.
-/// `snapr-windows-x86_64.exe`, `snapr-macos-aarch64`, `snapr-linux-x86_64`.
-fn asset_name() -> String {
+/// `snapr-windows-x86_64.exe`, `snapr-macos-aarch64`, `snapr-linux-x86_64`,
+/// or for an `app`, the zipped app: `snapr-macos-aarch64.app.zip`.
+fn asset_name(app: bool) -> String {
     use std::env::consts::{ARCH, EXE_SUFFIX, OS};
-    format!("snapr-{OS}-{ARCH}{EXE_SUFFIX}")
+    let app = if app { ".app.zip" } else { "" };
+    format!("snapr-{OS}-{ARCH}{EXE_SUFFIX}{app}")
+}
+
+/// The macOS app `exe` runs from (`snapr.app/Contents/MacOS/snapr` →
+/// `snapr.app`), if it runs from one.
+fn app(exe: &Path) -> Option<&Path> {
+    if cfg!(target_os = "macos") {
+        app_of(exe)
+    } else {
+        None
+    }
+}
+
+fn app_of(exe: &Path) -> Option<&Path> {
+    let macos = exe.parent()?;
+    let contents = macos.parent()?;
+    let app = contents.parent()?;
+    (macos.file_name()? == "MacOS"
+        && contents.file_name()? == "Contents"
+        && app.extension()? == "app")
+        .then_some(app)
 }
 
 /// Whether version `a` comes after `b`: `1.10.0` > `1.9.2`, and a release
@@ -299,10 +326,47 @@ fn replace(exe: &Path, new: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Puts the downloaded zip of the app, `zip`, in place of `app`, which may
+/// be running: the running program keeps its files open while the old app
+/// is removed.
+fn replace_app(app: &Path, zip: &Path) -> Result<(), String> {
+    let unpacked = sibling(app, "unpacked");
+    let old = sibling(app, "old");
+    let fail = |e: std::io::Error| format!("couldn't replace {}: {e}", app.display());
+    let _ = std::fs::remove_dir_all(&unpacked);
+    let _ = std::fs::remove_dir_all(&old);
+    // ditto keeps the signature and attributes `unzip` can drop.
+    let status = std::process::Command::new("ditto")
+        .arg("-x")
+        .arg("-k")
+        .arg(zip)
+        .arg(&unpacked)
+        .status()
+        .map_err(|e| format!("couldn't unpack the update: {e}"))?;
+    let _ = std::fs::remove_file(zip);
+    let new = unpacked.join("snapr.app");
+    let result = if !status.success() {
+        Err(format!("couldn't unpack the update (ditto {status})"))
+    } else if !new.join("Contents/MacOS/snapr").is_file() {
+        Err("the update doesn't hold snapr.app".into())
+    } else {
+        std::fs::rename(app, &old).map_err(fail).and_then(|()| {
+            std::fs::rename(&new, app).map_err(|e| {
+                let _ = std::fs::rename(&old, app);
+                fail(e)
+            })
+        })
+    };
+    let _ = std::fs::remove_dir_all(&unpacked);
+    let _ = std::fs::remove_dir_all(&old);
+    result
+}
+
 /// Removes the copies `replace` moved aside on Windows (`snapr.exe.old…`),
-/// and any download a crash left behind.
-fn remove_old_copies(exe: &Path) {
-    let (Some(dir), Some(name)) = (exe.parent(), exe.file_name()) else {
+/// and anything an update left behind: a download, or on macOS an unpacked
+/// or old app.
+fn remove_old_copies(installed: &Path) {
+    let (Some(dir), Some(name)) = (installed.parent(), installed.file_name()) else {
         return;
     };
     let name = name.to_string_lossy();
@@ -313,9 +377,14 @@ fn remove_old_copies(exe: &Path) {
         let file = entry.file_name();
         let file = file.to_string_lossy();
         if let Some(rest) = file.strip_prefix(&*name)
-            && (rest.starts_with(".old") || rest == ".new")
+            && (rest.starts_with(".old") || rest == ".new" || rest == ".unpacked")
         {
-            let _ = std::fs::remove_file(entry.path());
+            let path = entry.path();
+            let _ = if path.is_dir() {
+                std::fs::remove_dir_all(path)
+            } else {
+                std::fs::remove_file(path)
+            };
         }
     }
 }
@@ -355,5 +424,16 @@ mod tests {
             Path::new("dir/snapr.exe.old")
         );
         assert_eq!(sibling(Path::new("dir/snapr"), "new"), Path::new("dir/snapr.new"));
+    }
+
+    #[test]
+    fn finds_the_app() {
+        assert_eq!(
+            app_of(Path::new("/Applications/snapr.app/Contents/MacOS/snapr")),
+            Some(Path::new("/Applications/snapr.app"))
+        );
+        assert_eq!(app_of(Path::new("/usr/local/bin/snapr")), None);
+        assert_eq!(app_of(Path::new("/opt/snapr/Contents/MacOS/snapr")), None);
+        assert!(asset_name(true).ends_with(".app.zip"));
     }
 }
