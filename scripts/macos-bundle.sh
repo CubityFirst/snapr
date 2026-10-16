@@ -18,9 +18,12 @@ bin=$1 version=$2 arch=$3 out=$4
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 app="$work/snapr.app"
-mkdir -p "$app/Contents/MacOS"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin" "$app/Contents/MacOS/snapr"
 chmod 755 "$app/Contents/MacOS/snapr"
+# The app icon, drawn by snapr's own icon code (`cargo test write_iconset
+# -- --ignored` writes the iconset).
+iconutil -c icns "$(dirname "$0")/../assets/snapr.iconset" -o "$app/Contents/Resources/snapr.icns"
 
 # The bundle identifier is what macOS files granted permissions under: keep
 # it. LSUIElement keeps snapr out of the Dock from launch (it lives in the
@@ -38,6 +41,8 @@ cat > "$app/Contents/Info.plist" <<EOF
 	<key>CFBundleDisplayName</key>
 	<string>snapr</string>
 	<key>CFBundleExecutable</key>
+	<string>snapr</string>
+	<key>CFBundleIconFile</key>
 	<string>snapr</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>

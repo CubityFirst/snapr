@@ -241,4 +241,24 @@ mod tests {
         assert_eq!(icon(5, true)[0], ".....######.....");
         assert_eq!(icon(100, true)[0], icon(99, true)[0]);
     }
+
+    /// Writes the app icon at the sizes macOS asks of an app to
+    /// `assets/snapr.iconset`, which scripts/macos-bundle.sh makes the
+    /// app's icon from. Rerun after changing the icon:
+    /// `cargo test write_iconset -- --ignored`.
+    #[test]
+    #[ignore]
+    fn write_iconset() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/snapr.iconset");
+        std::fs::create_dir_all(&dir).unwrap();
+        for size in [16, 32, 128, 256, 512] {
+            for (scale, suffix) in [(1, ""), (2, "@2x")] {
+                let px = size * scale;
+                image::RgbaImage::from_raw(px, px, icon_rgba(px))
+                    .unwrap()
+                    .save(dir.join(format!("icon_{size}x{size}{suffix}.png")))
+                    .unwrap();
+            }
+        }
+    }
 }
