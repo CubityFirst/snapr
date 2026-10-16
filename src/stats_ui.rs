@@ -130,7 +130,7 @@ fn tools_ui(ui: &mut egui::Ui, s: &Stats) {
         &[
             ("QR scans".into(), s.qr_scans, String::new()),
             ("QR codes read".into(), s.qr_codes, found),
-            ("Colours picked".into(), s.colors_picked, String::new()),
+            (crate::locale::spelled!("Colours picked").into(), s.colors_picked, String::new()),
             ("Images pinned".into(), s.pins, String::new()),
         ],
     );

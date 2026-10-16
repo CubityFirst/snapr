@@ -647,7 +647,7 @@ fn toolbar_contents(ui: &mut egui::Ui, view: &View, actions: &mut Vec<Action>) -
     }
     divider(ui);
     let [r, g, b] = view.style.color;
-    let color = popup_button(ui, Popup::Color, true, "Colour", |p, at, _| {
+    let color = popup_button(ui, Popup::Color, true, crate::locale::spelled!("Colour"), |p, at, _| {
         p.circle_filled(at, 8.0, Color32::from_rgb(r, g, b));
         p.circle_stroke(at, 8.0, Stroke::new(1.0, Color32::from_white_alpha(60)));
     });
@@ -730,13 +730,15 @@ fn tool_options(ui: &mut egui::Ui, view: &View, actions: &mut Vec<Action>) {
                 (
                     false,
                     "Average of what\u{2019}s behind",
-                    "Each block is the average colour of the pixels under it",
+                    crate::locale::spelled!("Each block is the average colour of the pixels under it"),
                 ),
                 (
                     true,
                     "Secure: shuffled noise",
-                    "The blocks\u{2019} colours are shuffled and noised, so nothing \
-                     under them can be recovered",
+                    crate::locale::spelled!(
+                        "The blocks\u{2019} colours are shuffled and noised, so nothing \
+                         under them can be recovered"
+                    ),
                 ),
             ] {
                 if option(ui, label, 230.0, opts.secure == secure, true)
@@ -844,7 +846,9 @@ fn tool_options(ui: &mut egui::Ui, view: &View, actions: &mut Vec<Action>) {
             ui.horizontal(|ui| {
                 for (outline, label) in [(true, "On"), (false, "Off")] {
                     if option(ui, label, 114.0, opts.outline == outline, true)
-                        .on_hover_text("A black or white edge, whichever stands out from the colour")
+                        .on_hover_text(crate::locale::spelled!(
+                            "A black or white edge, whichever stands out from the colour"
+                        ))
                         .clicked()
                     {
                         actions.push(Action::Text(TextOptions { outline, ..opts }));

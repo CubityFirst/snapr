@@ -21,6 +21,7 @@ mod gpu;
 mod hdr;
 mod history;
 mod hotkey;
+mod locale;
 #[cfg(target_os = "macos")]
 mod macos;
 mod main_window;
@@ -1273,7 +1274,7 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             UserEvent::Output(output::Event::Cancelled(name)) => {
-                self.set_status(format!("Upload to {name} cancelled"));
+                self.set_status(locale::spell(&format!("Upload to {name} cancelled")).into_owned());
             }
             UserEvent::Output(output::Event::Failed(e)) => {
                 let page = if e.starts_with("upload") {

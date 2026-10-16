@@ -61,13 +61,13 @@ impl Purpose {
             Purpose::Record => Some("Select a region to record"),
             Purpose::Scan => Some("Select a QR code to read"),
             Purpose::PickColor => Some(match scroll {
-                MagnifierScroll::Zoom => {
+                MagnifierScroll::Zoom => crate::locale::spelled!(
                     "Click to pick a colour \u{2014} arrow keys move one pixel, scroll zooms"
-                }
-                MagnifierScroll::Resize => {
+                ),
+                MagnifierScroll::Resize => crate::locale::spelled!(
                     "Click to pick a colour \u{2014} arrow keys move one pixel, \
                      scroll resizes the magnifier"
-                }
+                ),
             }),
             Purpose::Pin => Some("Select a region to pin to the screen"),
         }

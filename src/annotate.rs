@@ -72,7 +72,9 @@ impl Tool {
             Tool::Pixelate => "Pixelate",
             Tool::Image => "Image redaction: cover an area with your chosen image (set in Settings)",
             Tool::Eraser => {
-                "Smart eraser: drag a box filled with the colour under where you start (hold Ctrl to move it)"
+                crate::locale::spelled!(
+                    "Smart eraser: drag a box filled with the colour under where you start (hold Ctrl to move it)"
+                )
             }
             Tool::Clip => {
                 "Clip: drag over part of the screen to copy it, then drag the copy to move it"

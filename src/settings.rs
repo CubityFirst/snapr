@@ -270,7 +270,7 @@ impl ToolAction {
 
     pub fn label(self) -> &'static str {
         match self {
-            ToolAction::PickColor => "Pick a colour",
+            ToolAction::PickColor => crate::locale::spelled!("Pick a colour"),
             ToolAction::ScanQr => "Read a QR code",
             ToolAction::PinRegion => "Pin a region to the screen",
         }

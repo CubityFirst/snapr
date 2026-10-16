@@ -394,15 +394,17 @@ impl Form {
                     let info = &mut self.draft.crosshair_info;
                     theme::checkbox(ui, &mut info.position, "Position")
                         .on_hover_text("The pixel's X and Y on the screen");
-                    theme::checkbox(ui, &mut info.color, "Colour")
-                        .on_hover_text("The pixel's colour, as hex and RGB");
+                    theme::checkbox(ui, &mut info.color, crate::locale::spelled!("Colour"))
+                        .on_hover_text(crate::locale::spelled!("The pixel's colour, as hex and RGB"));
                     theme::checkbox(ui, &mut info.magnifier, "Magnifier")
                         .on_hover_text("The pixels around the cursor, enlarged");
                 });
                 ui.end_row();
 
                 ui.label("Scrolling the magnifier").on_hover_text(
-                    "What the mouse wheel does to the magnifier, here and in the colour picker",
+                    crate::locale::spelled!(
+                        "What the mouse wheel does to the magnifier, here and in the colour picker"
+                    ),
                 );
                 ui.horizontal(|ui| {
                     let scroll = &mut self.draft.crosshair_info.scroll;
@@ -868,7 +870,9 @@ impl Form {
                 ui.add_space(16.0);
                 ui.label(RichText::new("Tool hotkeys").strong());
                 ui.label(
-                    RichText::new("Run a tool straight away from anywhere, e.g. pick a colour without opening snapr.")
+                    RichText::new(crate::locale::spelled!(
+                        "Run a tool straight away from anywhere, e.g. pick a colour without opening snapr."
+                    ))
                         .weak(),
                 );
                 ui.add_space(6.0);

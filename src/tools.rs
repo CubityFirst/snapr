@@ -124,7 +124,7 @@ impl Tools {
             ui.add_space(12.0);
             theme::segmented(ui, |ui| {
                 ui.selectable_value(&mut self.tool, Tool::Qr, "QR code");
-                ui.selectable_value(&mut self.tool, Tool::Color, "Colour picker");
+                ui.selectable_value(&mut self.tool, Tool::Color, crate::locale::spelled!("Colour picker"));
                 ui.selectable_value(&mut self.tool, Tool::Pin, "Pin to screen");
             });
         });
@@ -233,15 +233,17 @@ impl Tools {
         picker: &mut ColorPicker,
         actions: &mut Vec<Action>,
     ) {
-        ui.label(RichText::new("Pick a colour from the screen").strong());
+        ui.label(RichText::new(crate::locale::spelled!("Pick a colour from the screen")).strong());
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            let pick = theme::primary("Pick colour\u{2026}");
+            let pick = theme::primary(crate::locale::spelled!("Pick colour\u{2026}"));
             if ui.add(pick).clicked() {
                 actions.push(Action::PickColor);
             }
             ui.label(
-                RichText::new("Click any pixel to copy its colour. Arrow keys move one pixel, Esc cancels.")
+                RichText::new(crate::locale::spelled!(
+                    "Click any pixel to copy its colour. Arrow keys move one pixel, Esc cancels."
+                ))
                     .weak(),
             );
         });
@@ -266,7 +268,9 @@ impl Tools {
             &mut picker.show_window,
             "Open this tab after picking with a hotkey or from the tray",
         )
-        .on_hover_text("Otherwise the colour is just copied, with a sound to say so");
+        .on_hover_text(crate::locale::spelled!(
+            "Otherwise the colour is just copied, with a sound to say so"
+        ));
         let Some(rgb) = self.color else {
             return;
         };
