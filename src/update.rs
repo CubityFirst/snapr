@@ -133,6 +133,11 @@ fn check_and_install(report: &dyn Fn(Status)) -> Result<Status, String> {
     }
     let exe = exe()?;
     let app = app(exe);
+    // Opened from the disk image or Downloads, macOS runs the app from a
+    // hidden read-only copy, which can't be replaced.
+    if app.is_some_and(|a| a.to_string_lossy().contains("/AppTranslocation/")) {
+        return Err("snapr can only update itself from Applications: drag it there from the disk image".into());
+    }
     let name = asset_name(app.is_some());
     let find = |name: &str| release.assets.iter().find(|a| a.name == name);
     let asset = find(&name).ok_or_else(|| format!("{} has no build for {name}", release.tag_name))?;
@@ -328,7 +333,7 @@ fn replace(exe: &Path, new: &Path) -> Result<(), String> {
 
 /// Puts the downloaded zip of the app, `zip`, in place of `app`, which may
 /// be running: the running program keeps its files open while the old app
-/// is removed.
+/// is moved away.
 fn replace_app(app: &Path, zip: &Path) -> Result<(), String> {
     let unpacked = sibling(app, "unpacked");
     let old = sibling(app, "old");
@@ -358,7 +363,12 @@ fn replace_app(app: &Path, zip: &Path) -> Result<(), String> {
         })
     };
     let _ = std::fs::remove_dir_all(&unpacked);
-    let _ = std::fs::remove_dir_all(&old);
+    // macOS can refuse to delete an app's files (App Management), but moving
+    // the app as a whole is allowed; the temporary folder is cleared by macOS.
+    let away = std::env::temp_dir().join(format!("snapr-old-{}.app", fastrand::u32(..)));
+    if std::fs::rename(&old, away).is_err() {
+        let _ = std::fs::remove_dir_all(&old);
+    }
     result
 }
 
