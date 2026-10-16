@@ -189,6 +189,10 @@ impl Session {
         // Grab every monitor first so the "frozen" frame is from the moment
         // the hotkey was pressed, before any of our windows appear.
         let time = chrono::Local::now();
+        #[cfg(target_os = "macos")]
+        if !crate::macos::screen_recording_allowed() {
+            return Err(crate::macos::SCREEN_RECORDING_OFF.into());
+        }
         let shots = match capture::capture_all() {
             Ok(s) if !s.is_empty() => s,
             Ok(_) => return Err("no monitors found".into()),

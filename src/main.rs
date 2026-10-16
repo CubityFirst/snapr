@@ -21,6 +21,8 @@ mod gpu;
 mod hdr;
 mod history;
 mod hotkey;
+#[cfg(target_os = "macos")]
+mod macos;
 mod main_window;
 #[cfg(windows)]
 mod mf;
@@ -597,6 +599,8 @@ impl App {
                 w.last_region = self.last_region;
                 w.tools.pinned = self.pins.len();
                 self.main_window = Some(w);
+                #[cfg(target_os = "macos")]
+                macos::show_in_dock(true);
             }
             Err(e) => eprintln!("{e}"),
         }
@@ -1132,6 +1136,8 @@ impl App {
             WindowEvent::CloseRequested => {
                 let save = w.flush_settings();
                 self.main_window = None;
+                #[cfg(target_os = "macos")]
+                macos::show_in_dock(false);
                 if let Some(save) = save {
                     self.main_window_action(event_loop, save);
                 }
@@ -1626,6 +1632,8 @@ fn main() {
     }
     let event_loop = builder.build().expect("failed to create event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
+    #[cfg(target_os = "macos")]
+    macos::ask_for_screen_recording();
     let proxy = event_loop.create_proxy();
     // Development builds are restarted too often to check each time.
     if !once && !cfg!(debug_assertions) {

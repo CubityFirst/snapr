@@ -384,6 +384,10 @@ pub fn displays() -> Vec<DisplayInfo> {
 /// captured (process and title).
 pub fn grab(target: &Target) -> Result<(RgbaImage, Option<String>, Option<String>), String> {
     let failed = |e: xcap::XCapError| format!("screen capture failed: {e}");
+    #[cfg(target_os = "macos")]
+    if !crate::macos::screen_recording_allowed() {
+        return Err(crate::macos::SCREEN_RECORDING_OFF.into());
+    }
     match target {
         Target::Window(id) => {
             let window = xcap::Window::all()

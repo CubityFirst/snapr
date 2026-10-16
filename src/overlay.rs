@@ -131,6 +131,8 @@ impl Overlay {
         suppress_alt_menu(&window);
         #[cfg(windows)]
         make_tool_window(&window);
+        #[cfg(target_os = "macos")]
+        crate::macos::cover_everything(&window);
         window.set_cursor(winit::window::CursorIcon::Crosshair);
 
         let surface = gpu.instance.create_surface(window.clone())?;
