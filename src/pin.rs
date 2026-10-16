@@ -189,6 +189,7 @@ impl Pin {
 
         let ctx = egui::Context::default();
         ctx.set_visuals(egui::Visuals::dark());
+        crate::theme::crisp_text(&ctx);
         let config = egui_wgpu::WgpuConfiguration {
             wgpu_setup: gpu.egui_setup(),
             ..Default::default()

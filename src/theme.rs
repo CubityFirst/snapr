@@ -120,6 +120,16 @@ pub fn apply(ctx: &egui::Context) {
         s.slider_rail_height = 4.0;
         s.menu_margin = Margin::same(4);
     });
+    crisp_text(ctx);
+}
+
+/// On macOS's 2× screens, glyphs drawn at quarter-pixel offsets
+/// (subpixel binning) come out visibly soft and gain nothing in spacing; they
+/// go on whole pixels there. Set after any `set_visuals`, which resets it.
+pub fn crisp_text(ctx: &egui::Context) {
+    if cfg!(target_os = "macos") {
+        ctx.all_styles_mut(|s| s.visuals.text_options.subpixel_binning = false);
+    }
 }
 
 fn visuals(mut v: egui::Visuals, p: &Palette) -> egui::Visuals {

@@ -218,6 +218,7 @@ impl Overlay {
 
         let ctx = egui::Context::default();
         ctx.set_visuals(egui::Visuals::dark());
+        crate::theme::crisp_text(&ctx);
         // The toolbar's tooltips name its tools and their keys: show them
         // soon after the pointer stops (egui waits half a second).
         ctx.all_styles_mut(|s| s.interaction.tooltip_delay = 0.1);
