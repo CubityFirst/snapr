@@ -2,12 +2,16 @@
 //! window level and the notch, and a Dock icon while the main window is
 //! open.
 
+use std::collections::HashSet;
+use std::ffi::c_void;
+
 use objc2::rc::Retained;
-use objc2::runtime::NSObjectProtocol;
+use objc2::runtime::{AnyObject, NSObjectProtocol};
 use objc2::{MainThreadMarker, sel};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSView, NSWindow, NSWindowCollectionBehavior,
 };
+use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSString};
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
 
@@ -15,6 +19,38 @@ use winit::window::Window;
 unsafe extern "C" {
     fn CGPreflightScreenCaptureAccess() -> bool;
     fn CGRequestScreenCaptureAccess() -> bool;
+    fn CGWindowListCopyWindowInfo(option: u32, relative_to_window: u32) -> *mut c_void;
+}
+
+/// The ids of the ordinary app windows on screen, for snapping to. macOS
+/// also lists the menu bar, the Dock and other apps' invisible full-screen
+/// windows (window managers, menu bar tools), which sit on higher layers or
+/// are fully transparent; snapping found those first, everywhere.
+pub fn normal_windows() -> HashSet<u32> {
+    const ON_SCREEN_ONLY: u32 = 1 << 0;
+    const EXCLUDE_DESKTOP_ELEMENTS: u32 = 1 << 4;
+    // SAFETY: a Copy function, so the CFArray (an NSArray of NSDictionary,
+    // toll-free bridged) is ours to release.
+    let windows = unsafe {
+        Retained::from_raw(
+            CGWindowListCopyWindowInfo(ON_SCREEN_ONLY | EXCLUDE_DESKTOP_ELEMENTS, 0)
+                .cast::<NSArray<NSDictionary<NSString, AnyObject>>>(),
+        )
+    };
+    let Some(windows) = windows else {
+        return HashSet::new();
+    };
+    let number = |window: &NSDictionary<NSString, AnyObject>, key: &str| {
+        window
+            .objectForKey(&NSString::from_str(key))
+            .and_then(|v| v.downcast::<NSNumber>().ok())
+    };
+    windows
+        .iter()
+        .filter(|w| number(w, "kCGWindowLayer").is_some_and(|l| l.intValue() == 0))
+        .filter(|w| number(w, "kCGWindowAlpha").is_none_or(|a| a.doubleValue() > 0.0))
+        .filter_map(|w| number(&w, "kCGWindowNumber").map(|n| n.unsignedIntValue()))
+        .collect()
 }
 
 /// What to do when snapr can't see the screen.

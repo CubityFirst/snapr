@@ -128,6 +128,26 @@ pub fn cursor_position() -> Option<(f64, f64)> {
     None
 }
 
+/// Which of xcap's windows are ordinary app windows. On macOS that leaves
+/// out the menu bar, the Dock and invisible full-screen windows; elsewhere
+/// xcap only lists ordinary ones.
+struct OrdinaryWindows(Option<std::collections::HashSet<u32>>);
+
+fn ordinary_windows() -> OrdinaryWindows {
+    #[cfg(target_os = "macos")]
+    return OrdinaryWindows(Some(crate::macos::normal_windows()));
+    #[cfg(not(target_os = "macos"))]
+    OrdinaryWindows(None)
+}
+
+impl OrdinaryWindows {
+    fn is_ordinary(&self, window: &xcap::Window) -> bool {
+        self.0
+            .as_ref()
+            .is_none_or(|ids| window.id().is_ok_and(|id| ids.contains(&id)))
+    }
+}
+
 /// The visible windows' frames (global physical pixels), topmost first, for
 /// snapping the region to a window. Must be called before our overlays open.
 /// `own` are snapr's windows to include (the main window, pins): on Windows
@@ -137,9 +157,11 @@ pub fn window_rects(own: &[&winit::window::Window]) -> Vec<Rect> {
     let Ok(windows) = xcap::Window::all() else {
         return Vec::new();
     };
+    let ordinary = ordinary_windows();
     let others = windows
         .into_iter()
         .filter(|w| !w.is_minimized().unwrap_or(true))
+        .filter(|w| ordinary.is_ordinary(w))
         // Untitled windows are mostly invisible helpers and overlays.
         .filter(|w| w.title().is_ok_and(|t| !t.trim().is_empty()))
         .filter_map(|w| {
@@ -340,9 +362,11 @@ pub fn windows() -> Vec<WindowInfo> {
         return Vec::new();
     };
     let me = std::process::id();
+    let ordinary = ordinary_windows();
     windows
         .into_iter()
         .filter(|w| !w.is_minimized().unwrap_or(true))
+        .filter(|w| ordinary.is_ordinary(w))
         .filter(|w| w.pid().is_ok_and(|p| p != me))
         .filter(|w| w.width().unwrap_or(0) >= 8 && w.height().unwrap_or(0) >= 8)
         .filter_map(|w| {
