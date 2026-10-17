@@ -281,10 +281,12 @@ impl ToolAction {
 
 /// What left-clicking the tray icon (the menu bar item on macOS) does. A
 /// right-click always shows the menu.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrayClick {
-    /// Open the main window on Recent.
+    /// Open the main window on Recent. On macOS too, though menu bar items
+    /// normally show their menu: people expected snapr there.
+    #[default]
     Open,
     /// Show the menu, as a right-click does (Windows and macOS).
     Menu,
@@ -292,18 +294,6 @@ pub enum TrayClick {
     /// Start recording a region, or stop the recording in progress.
     Record,
     Tool(ToolAction),
-}
-
-impl Default for TrayClick {
-    /// What a click did before it could be chosen: menu bar items normally
-    /// show their menu.
-    fn default() -> Self {
-        if cfg!(target_os = "macos") {
-            TrayClick::Menu
-        } else {
-            TrayClick::Open
-        }
-    }
 }
 
 impl TrayClick {
