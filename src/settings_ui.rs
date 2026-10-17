@@ -30,7 +30,7 @@ pub enum Action {
     /// a secret key typed but not yet saved.
     UploadIcon(Upload, Option<String>),
     CheckForUpdates,
-    /// Quit and start the updated program.
+    /// Quit and start snapr again: the updated program, if one's installed.
     RestartToUpdate,
     OpenUrl(String),
     /// Use the capture tools' settings from an imported file.
@@ -233,30 +233,25 @@ impl Form {
     pub(crate) fn save_bar(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         ui.add_space(10.0);
         ui.separator();
-        ui.horizontal(|ui| {
-            if let Some(p) = self.problem().filter(|_| self.dirty()) {
-                ui.colored_label(ERROR, format!("Not saved \u{2014} {p}"));
-            } else if let Some((msg, is_err)) = &self.status {
-                let color = if *is_err {
-                    ERROR
-                } else {
-                    ui.visuals().weak_text_color()
-                };
-                ui.colored_label(color, msg);
-            } else if let Some(path) = &self.last_capture
-                && ui.link(format!("Last: {}", path.display())).clicked()
-            {
-                actions.push(Action::Reveal(path.clone()));
+        // Messages wrap: some, like a failed upload's, are long.
+        if let Some(p) = self.problem().filter(|_| self.dirty()) {
+            ui.add(egui::Label::new(RichText::new(format!("Not saved \u{2014} {p}")).color(ERROR)).wrap());
+        } else if let Some((msg, is_err)) = &self.status {
+            #[cfg(target_os = "macos")]
+            if let Some(missing) = crate::macos::missing_permission(msg) {
+                permission_card(ui, &missing, actions);
+                return;
             }
-        });
-        // A missing permission: straight to where it's turned on. (On its
-        // own line, as the message is long.)
-        #[cfg(target_os = "macos")]
-        if let Some((msg, _)) = &self.status
-            && let Some(pane) = crate::macos::privacy_pane_for(msg)
-            && ui.link("Open System Settings").clicked()
+            let color = if *is_err {
+                ERROR
+            } else {
+                ui.visuals().weak_text_color()
+            };
+            ui.add(egui::Label::new(RichText::new(msg).color(color)).wrap());
+        } else if let Some(path) = &self.last_capture
+            && ui.link(format!("Last: {}", path.display())).clicked()
         {
-            actions.push(Action::OpenUrl(pane.into()));
+            actions.push(Action::Reveal(path.clone()));
         }
     }
 
@@ -1157,6 +1152,34 @@ fn insert_at_cursor(ctx: &egui::Context, id: egui::Id, text: &mut String, token:
         .set_char_range(Some(egui::text::CCursorRange::one(after)));
     state.store(ctx, id);
     ctx.memory_mut(|m| m.request_focus(id));
+}
+
+/// A missing permission: what's off, where to turn it on, and buttons to go
+/// there and to restart snapr afterwards (macOS only tells a program that
+/// started without the permission once it's started again).
+#[cfg(target_os = "macos")]
+fn permission_card(ui: &mut egui::Ui, missing: &crate::macos::MissingPermission, actions: &mut Vec<Action>) {
+    let p = theme::palette(ui);
+    egui::Frame::new()
+        .fill(p.surface)
+        .stroke(egui::Stroke::new(1.0, p.danger))
+        .corner_radius(10)
+        .inner_margin(12)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new(missing.title).color(p.danger).strong());
+            ui.add_space(2.0);
+            ui.add(egui::Label::new(RichText::new(missing.steps).color(p.text)).wrap());
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.add(theme::primary("Open System Settings")).clicked() {
+                    actions.push(Action::OpenUrl(missing.pane.into()));
+                }
+                if ui.button("Restart snapr").clicked() {
+                    actions.push(Action::RestartToUpdate);
+                }
+            });
+        });
 }
 
 fn error_row(ui: &mut egui::Ui, err: Option<&str>) {
