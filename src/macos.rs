@@ -9,7 +9,8 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol};
 use objc2::{MainThreadMarker, sel};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSView, NSWindow, NSWindowCollectionBehavior,
+    NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicy, NSRunningApplication,
+    NSView, NSWindow, NSWindowCollectionBehavior, NSWorkspace,
 };
 use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSString};
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -132,6 +133,20 @@ fn ns_window(window: &Window) -> Option<Retained<NSWindow>> {
     // `window` is.
     let view: &NSView = unsafe { h.ns_view.cast().as_ref() };
     view.window()
+}
+
+/// The app in front, unless it's snapr: where the focus goes back to once a
+/// capture closes. Focusing the overlay makes snapr the active app, and with
+/// one of its windows still open macOS would leave snapr in front.
+pub fn other_app_in_front() -> Option<Retained<NSRunningApplication>> {
+    let app = NSWorkspace::sharedWorkspace().frontmostApplication()?;
+    (app.processIdentifier() != std::process::id() as i32).then_some(app)
+}
+
+/// Makes `app` the active app again.
+pub fn give_focus_to(app: &NSRunningApplication) {
+    #[allow(deprecated)]
+    app.activateWithOptions(NSApplicationActivationOptions::empty());
 }
 
 /// Shows snapr in the Dock and the app switcher (while the main window is
