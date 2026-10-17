@@ -148,12 +148,13 @@ impl OrdinaryWindows {
     }
 }
 
-/// The visible windows' frames (global physical pixels), topmost first, for
-/// snapping the region to a window. Must be called before our overlays open.
+/// The visible windows' ids and frames (global physical pixels), topmost
+/// first, for snapping the region to a window. Must be called before our
+/// overlays open.
 /// `own` are snapr's windows to include (the main window, pins): on Windows
 /// xcap leaves out the calling process's windows.
 #[cfg_attr(not(windows), allow(unused_variables))]
-pub fn window_rects(own: &[&winit::window::Window]) -> Vec<Rect> {
+pub fn window_rects(own: &[&winit::window::Window]) -> Vec<(u32, Rect)> {
     let Ok(windows) = xcap::Window::all() else {
         return Vec::new();
     };
@@ -188,10 +189,17 @@ pub fn window_rects(own: &[&winit::window::Window]) -> Vec<Rect> {
         });
     #[cfg(windows)]
     let others = win32_windows::with_own(others.collect(), own);
-    others
-        .map(|(_, r)| r)
-        .filter(|r| r.w >= 8 && r.h >= 8)
-        .collect()
+    others.filter(|(_, r)| r.w >= 8 && r.h >= 8).collect()
+}
+
+/// One window's own pixels, as if nothing covered it. `None` if it's gone or
+/// can't be captured (on Windows, snapr's own).
+pub fn window_image(id: u32) -> Option<RgbaImage> {
+    let window = xcap::Window::all()
+        .ok()?
+        .into_iter()
+        .find(|w| w.id().is_ok_and(|i| i == id))?;
+    window.capture_image().ok()
 }
 
 #[cfg(windows)]
