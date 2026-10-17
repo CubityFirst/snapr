@@ -126,10 +126,38 @@ pub fn apply(ctx: &egui::Context) {
 /// On macOS's 2× screens, glyphs drawn at quarter-pixel offsets
 /// (subpixel binning) come out visibly soft and gain nothing in spacing; they
 /// go on whole pixels there. Set after any `set_visuals`, which resets it.
+/// The text there is also in the system font, see [`system_font`].
 pub fn crisp_text(ctx: &egui::Context) {
     if cfg!(target_os = "macos") {
         ctx.all_styles_mut(|s| s.visuals.text_options.subpixel_binning = false);
+        if let Some(font) = system_font() {
+            ctx.add_font(egui::epaint::text::FontInsert::new(
+                "system",
+                font,
+                vec![egui::epaint::text::InsertFontFamily {
+                    family: egui::FontFamily::Proportional,
+                    priority: egui::epaint::text::FontPriority::Highest,
+                }],
+            ));
+        }
     }
+}
+
+/// macOS's own UI font (SF Pro), at regular weight, ahead of egui's Ubuntu
+/// Light: Macs draw text without Windows' thickening, so the light weight
+/// came out spindly, and it has no arrows. Ubuntu stays as the fallback.
+/// `None` if the font isn't where it's been since macOS 10.15.
+fn system_font() -> Option<egui::FontData> {
+    static FONT: std::sync::OnceLock<Option<&'static [u8]>> = std::sync::OnceLock::new();
+    let data = (*FONT.get_or_init(|| {
+        let data = std::fs::read("/System/Library/Fonts/SFNS.ttf").ok()?;
+        Some(Vec::leak(data))
+    }))?;
+    let mut font = egui::FontData::from_static(data);
+    // A variable font: regular weight, and the optical size cut for small
+    // text (the smallest it has).
+    font.tweak.coords = egui::epaint::text::VariationCoords::new([(b"wght", 400.0), (b"opsz", 0.0)]);
+    Some(font)
 }
 
 fn visuals(mut v: egui::Visuals, p: &Palette) -> egui::Visuals {
