@@ -249,6 +249,15 @@ impl Form {
                 actions.push(Action::Reveal(path.clone()));
             }
         });
+        // A missing permission: straight to where it's turned on. (On its
+        // own line, as the message is long.)
+        #[cfg(target_os = "macos")]
+        if let Some((msg, _)) = &self.status
+            && let Some(pane) = crate::macos::privacy_pane_for(msg)
+            && ui.link("Open System Settings").clicked()
+        {
+            actions.push(Action::OpenUrl(pane.into()));
+        }
     }
 
     /// The General tab.

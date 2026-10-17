@@ -294,9 +294,10 @@ snapr --settings   # open the settings window on start
 - **Windows**: works out of the box.
 - **macOS**: open `snapr-macos-aarch64.dmg` and drag snapr to Applications.
   It isn't notarised, so the first time macOS won't open it: choose *Open
-  Anyway* under System Settings → Privacy & Security. Grant *Screen
-  Recording* (capture) and *Accessibility* (global hotkey) permissions. The
-  tray icon lives in the menu bar.
+  Anyway* under System Settings → Privacy & Security. Grant *Screen & System
+  Audio Recording* (capture) and *Device Control and Data Access* (global
+  hotkey; called *Accessibility* before macOS 27) permissions. The tray icon
+  lives in the menu bar.
 - **Linux**: the tray uses StatusNotifierItem (KDE and most desktops; GNOME
   needs the AppIndicator extension). Without a tray the settings window is
   shown instead. On Wayland, global hotkeys need the user in the `input` group,

@@ -372,9 +372,7 @@ mod platform {
         if *TRUSTED.get_or_init(ask_for_accessibility) {
             format!("global hotkeys unavailable: {e}")
         } else {
-            "global hotkeys need snapr turned on under System Settings → Privacy & \
-             Security → Accessibility, then snapr restarted"
-                .into()
+            crate::macos::ACCESSIBILITY_OFF.into()
         }
     }
 

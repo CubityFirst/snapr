@@ -170,7 +170,7 @@ fn pick_encoder(ffmpeg: &str, webm: bool) -> Result<&'static str, String> {
         .output()
         .map_err(|e| {
             format!(
-                "FFmpeg couldn't be run ({e}). Install it, or set its path under Settings \u{2192} General"
+                "FFmpeg couldn't be run ({e}). Install it, or set its path under Settings > General"
             )
         })?;
     let list = String::from_utf8_lossy(&output.stdout);

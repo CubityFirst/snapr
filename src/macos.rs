@@ -53,9 +53,28 @@ pub fn normal_windows() -> HashSet<u32> {
         .collect()
 }
 
-/// What to do when snapr can't see the screen.
+/// What to do when snapr can't see the screen. (Paths are written with `>`,
+/// as Apple does: egui's font has no arrows.)
 pub const SCREEN_RECORDING_OFF: &str = "snapr can't see the screen: turn it on under System \
-    Settings → Privacy & Security → Screen & System Audio Recording, then restart snapr";
+    Settings > Privacy & Security > Screen & System Audio Recording, then restart snapr";
+
+/// What to do when snapr can't watch the keyboard for hotkeys. macOS 27
+/// renamed Accessibility; the pane's link is unchanged.
+pub const ACCESSIBILITY_OFF: &str = "global hotkeys need snapr turned on under System Settings \
+    > Privacy & Security > Device Control and Data Access (Accessibility before macOS 27), \
+    then snapr restarted";
+
+/// The System Settings pane that fixes the problem `msg` reports, if it's
+/// a missing permission.
+pub fn privacy_pane_for(msg: &str) -> Option<&'static str> {
+    if msg.ends_with(SCREEN_RECORDING_OFF) {
+        Some("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+    } else if msg.ends_with(ACCESSIBILITY_OFF) {
+        Some("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+    } else {
+        None
+    }
+}
 
 /// Whether snapr may capture the screen. Without the permission macOS hands
 /// back blank pictures rather than an error.
