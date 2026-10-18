@@ -64,13 +64,32 @@ pub const ACCESSIBILITY_OFF: &str = "global hotkeys need snapr turned on under S
     > Privacy & Security > Device Control and Data Access (Accessibility before macOS 27), \
     then snapr restarted";
 
-/// The System Settings pane that fixes the problem `msg` reports, if it's
-/// a missing permission.
-pub fn privacy_pane_for(msg: &str) -> Option<&'static str> {
+/// A permission snapr is missing, as the settings window explains it.
+pub struct MissingPermission {
+    /// What doesn't work without it.
+    pub title: &'static str,
+    /// Where it's turned on.
+    pub steps: &'static str,
+    /// The System Settings pane it's in.
+    pub pane: &'static str,
+}
+
+/// The missing permission `msg` reports, if it's one.
+pub fn missing_permission(msg: &str) -> Option<MissingPermission> {
     if msg.ends_with(SCREEN_RECORDING_OFF) {
-        Some("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+        Some(MissingPermission {
+            title: "snapr can't see the screen",
+            steps: "Turn snapr on under System Settings > Privacy & Security > Screen & System \
+                Audio Recording, then restart snapr.",
+            pane: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+        })
     } else if msg.ends_with(ACCESSIBILITY_OFF) {
-        Some("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+        Some(MissingPermission {
+            title: "Global hotkeys are off",
+            steps: "Turn snapr on under System Settings > Privacy & Security > Device Control and \
+                Data Access (Accessibility before macOS 27), then restart snapr.",
+            pane: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+        })
     } else {
         None
     }
