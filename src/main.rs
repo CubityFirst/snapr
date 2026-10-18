@@ -224,6 +224,10 @@ struct App {
     record_at: Option<(Instant, capture::Rect, naming::Context)>,
     /// Show the main window again once the capture it started is over.
     restore_main_window: bool,
+    /// The app that was in front when the capture started, to give the
+    /// focus back to once it's over.
+    #[cfg(target_os = "macos")]
+    focus_back: Option<objc2::rc::Retained<objc2_app_kit::NSRunningApplication>>,
     /// Chime when the next copy-to-clipboard finishes (copies from the
     /// Recent page; a capture already played the shutter).
     chime_on_copy: bool,
@@ -445,6 +449,9 @@ impl App {
         let style = self.sessions.last().map_or(self.style, |s| s.style);
         let magnifier = self.sessions.last().map_or(self.magnifier, |s| s.magnifier);
         // Our own windows a click can take, like any other app's.
+        // Before the overlay takes the focus.
+        #[cfg(target_os = "macos")]
+        let in_front = self.sessions.is_empty().then(macos::other_app_in_front).flatten();
         let snap_to: Vec<&winit::window::Window> = self
             .main_window
             .iter()
@@ -463,6 +470,10 @@ impl App {
             &snap_to,
         ) {
             Ok(mut session) => {
+                #[cfg(target_os = "macos")]
+                if self.sessions.is_empty() {
+                    self.focus_back = in_front;
+                }
                 session.purpose = purpose;
                 if purpose == Purpose::Screenshot && self.settings.annotate {
                     session.redact_image = self.load_redact_image();
@@ -508,6 +519,10 @@ impl App {
         if index >= self.sessions.len() {
             return;
         }
+        // What leaves nothing of snapr's that needs the focus; the others
+        // open a window (results, a pin).
+        #[cfg(target_os = "macos")]
+        let back_to_app = matches!(outcome, Outcome::Cancel | Outcome::Done { .. } | Outcome::Record(_));
         {
             // Its windows close at the end of this block.
             let session = self.sessions.remove(index);
@@ -564,6 +579,12 @@ impl App {
             && let Some(w) = &self.main_window
         {
             w.window.set_visible(true);
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(app) = self.focus_back.take()
+            && back_to_app
+        {
+            macos::give_focus_to(&app);
         }
         if self.once {
             // Give the output thread a chance to finish before quitting.
@@ -1743,6 +1764,8 @@ fn main() {
         capture_at: None,
         record_at: None,
         restore_main_window: false,
+        #[cfg(target_os = "macos")]
+        focus_back: None,
         chime_on_copy: false,
         status,
         last_capture: None,

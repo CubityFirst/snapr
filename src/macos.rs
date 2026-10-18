@@ -9,7 +9,9 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol};
 use objc2::{MainThreadMarker, sel};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSView, NSWindow, NSWindowCollectionBehavior,
+    NSAnimatablePropertyContainer, NSAnimationContext, NSApplication, NSApplicationActivationOptions,
+    NSApplicationActivationPolicy, NSRunningApplication, NSView, NSWindow, NSWindowAnimationBehavior,
+    NSWindowCollectionBehavior, NSWorkspace,
 };
 use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSString};
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -125,6 +127,24 @@ pub fn cover_everything(window: &Window) {
                 | NSWindowCollectionBehavior::FullScreenAuxiliary
                 | NSWindowCollectionBehavior::Stationary,
         );
+        // Not macOS's zoom as it appears: scaled, the dimmed frozen screen
+        // doubles up with the real one showing through. `fade_in` fades it
+        // in where it is instead.
+        ns_window.setAnimationBehavior(NSWindowAnimationBehavior::None);
+        ns_window.setAlphaValue(0.0);
+        // Said outright, so the mouse (and the crosshair) stays with it while
+        // it's still faint, rather than going through to the window below.
+        ns_window.setIgnoresMouseEvents(false);
+    }
+}
+
+/// Fades in an overlay `cover_everything` set up, once it's shown.
+pub fn fade_in(window: &Window) {
+    if let Some(ns_window) = ns_window(window) {
+        NSAnimationContext::beginGrouping();
+        NSAnimationContext::currentContext().setDuration(0.15);
+        ns_window.animator().setAlphaValue(1.0);
+        NSAnimationContext::endGrouping();
     }
 }
 
@@ -151,6 +171,20 @@ fn ns_window(window: &Window) -> Option<Retained<NSWindow>> {
     // `window` is.
     let view: &NSView = unsafe { h.ns_view.cast().as_ref() };
     view.window()
+}
+
+/// The app in front, unless it's snapr: where the focus goes back to once a
+/// capture closes. Focusing the overlay makes snapr the active app, and with
+/// one of its windows still open macOS would leave snapr in front.
+pub fn other_app_in_front() -> Option<Retained<NSRunningApplication>> {
+    let app = NSWorkspace::sharedWorkspace().frontmostApplication()?;
+    (app.processIdentifier() != std::process::id() as i32).then_some(app)
+}
+
+/// Makes `app` the active app again.
+pub fn give_focus_to(app: &NSRunningApplication) {
+    #[allow(deprecated)]
+    app.activateWithOptions(NSApplicationActivationOptions::empty());
 }
 
 /// Shows snapr in the Dock and the app switcher (while the main window is

@@ -273,6 +273,8 @@ impl Overlay {
     pub fn show(&mut self, gpu: &Gpu, frame: &Frame) {
         self.render(gpu, frame);
         self.window.set_visible(true);
+        #[cfg(target_os = "macos")]
+        crate::macos::fade_in(&self.window);
     }
 
     fn origin(&self) -> PhysicalPosition<i32> {

@@ -150,9 +150,9 @@ pub struct Session {
     grab: Grab,
     /// Where the left button last went down, to tell clicks from drags.
     pressed_at: Option<(f64, f64)>,
-    /// Other apps' windows when the capture started, topmost first. Hovering
-    /// one highlights it, and a click takes it.
-    windows: Vec<Rect>,
+    /// Other apps' windows (ids and frames) when the capture started,
+    /// topmost first. Hovering one highlights it, and a click takes it.
+    windows: Vec<(u32, Rect)>,
     /// Annotations drawn on the frozen screen, if any.
     canvas: Option<Canvas>,
     layer: Option<Layer>,
@@ -326,7 +326,8 @@ impl Session {
         let monitor = self.monitor_at(c)?;
         self.windows
             .iter()
-            .find(|w| w.contains(c))?
+            .find(|(_, w)| w.contains(c))?
+            .1
             .intersect(&monitor)
     }
 
@@ -547,6 +548,28 @@ impl Session {
     fn crop(&self, rect: Rect) -> RgbaImage {
         let shots: Vec<_> = self.overlays.values().map(|o| o.placed_shot()).collect();
         capture::crop(&shots, rect).unwrap_or_else(|| RgbaImage::new(rect.w.max(1), rect.h.max(1)))
+    }
+
+    /// Window `i` at `rect` (its frame, clipped to a monitor) when other
+    /// windows were covering part of it: its own pixels over the frozen
+    /// screen, the frozen screen showing through its rounded corners. `None`
+    /// when nothing covered it (the frozen screen already shows it) or it
+    /// can't be captured.
+    fn uncovered_window(&self, i: usize, rect: Rect) -> Option<RgbaImage> {
+        let (id, frame) = self.windows[i];
+        // A recording films the screen as it is.
+        if self.purpose == Purpose::Record || !self.windows[..i].iter().any(|(_, w)| w.intersect(&frame).is_some()) {
+            return None;
+        }
+        let mut pixels = capture::window_image(id)?;
+        // Taken at its monitor's scale; a window across monitors with
+        // different scales may come back another size.
+        if pixels.dimensions() != (frame.w, frame.h) {
+            pixels = image::imageops::resize(&pixels, frame.w, frame.h, image::imageops::FilterType::Triangle);
+        }
+        let mut image = self.crop(rect);
+        image::imageops::overlay(&mut image, &pixels, (frame.x - rect.x).into(), (frame.y - rect.y).into());
+        Some(image)
     }
 
     /// Makes sure the annotation canvas covers the monitor at `p`.
@@ -883,14 +906,24 @@ impl Session {
 
     /// Takes the screenshot of `rect`: the frozen screen plus annotations.
     fn finish(&mut self, rect: Rect, save_file: bool) -> Outcome {
+        self.finish_on(rect, None, save_file)
+    }
+
+    /// Takes the screenshot of `rect`, from `base` if given (else the frozen
+    /// screen), plus annotations.
+    fn finish_on(&mut self, rect: Rect, base: Option<RgbaImage>, save_file: bool) -> Outcome {
         match self.purpose {
             Purpose::Record => return Outcome::Record(rect),
-            Purpose::Scan => return Outcome::Scan(self.crop(rect)),
             Purpose::PickColor => return self.pick_color(),
-            Purpose::Pin => return Outcome::Pin(self.crop(rect), rect),
-            Purpose::Screenshot => {}
+            Purpose::Scan | Purpose::Pin | Purpose::Screenshot => {}
         }
-        let mut image = self.crop(rect);
+        let base = base.unwrap_or_else(|| self.crop(rect));
+        match self.purpose {
+            Purpose::Scan => return Outcome::Scan(base),
+            Purpose::Pin => return Outcome::Pin(base, rect),
+            _ => {}
+        }
+        let mut image = base;
         if let Some(canvas) = &mut self.canvas {
             canvas.commit();
             canvas.copy_into(&mut image, rect);
@@ -986,17 +1019,19 @@ impl Session {
                 let rect = region_rect(anchor, cursor, self.modifiers.shift_key());
                 // A plain click takes the window under it, or else the
                 // whole monitor.
-                let rect = if is_click(&rect) {
-                    self.windows
-                        .iter()
-                        .find(|w| w.contains(cursor))
-                        .zip(self.monitor_at(cursor))
-                        .and_then(|(w, m)| w.intersect(&m))
-                        .or_else(|| self.monitor_at(cursor))
+                if is_click(&rect) {
+                    let window = self.windows.iter().position(|(_, w)| w.contains(cursor));
+                    let monitor = self.monitor_at(cursor);
+                    if let Some((i, m)) = window.zip(monitor)
+                        && let Some(rect) = self.windows[i].1.intersect(&m)
+                    {
+                        let base = self.uncovered_window(i, rect);
+                        return self.finish_on(rect, base, true);
+                    }
+                    if let Some(m) = monitor {
+                        return self.finish(m, true);
+                    }
                 } else {
-                    Some(rect)
-                };
-                if let Some(rect) = rect {
                     return self.finish(rect, true);
                 }
             }
