@@ -82,59 +82,37 @@ pub struct Overlay {
     pub due: Option<Instant>,
     /// A redraw was asked for and hasn't happened yet.
     pub redraw_pending: bool,
+    /// A frame has been presented (and on macOS the fade-in begun).
+    presented: bool,
+}
+
+/// The monitor nearest `pos` (global physical pixels): the one a shot taken
+/// there belongs on.
+pub fn nearest(monitors: &[MonitorHandle], pos: (i32, i32)) -> Option<&MonitorHandle> {
+    monitors.iter().min_by_key(|m| {
+        let p = m.position();
+        (p.x - pos.0).abs() + (p.y - pos.1).abs()
+    })
 }
 
 impl Overlay {
+    /// The overlay for `shot`, in `opened` if that's a window `open_window`
+    /// made for its monitor (and still its size), else in a new one.
     pub fn new(
         event_loop: &ActiveEventLoop,
         gpu: &Gpu,
         shot: Shot,
         monitors: &[MonitorHandle],
         vsync: bool,
+        opened: Option<Arc<Window>>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let monitor = monitors
-            .iter()
-            .min_by_key(|m| {
-                let p = m.position();
-                (p.x - shot.pos.0).abs() + (p.y - shot.pos.1).abs()
-            })
-            .ok_or("no monitors")?
-            .clone();
+        let monitor = nearest(monitors, shot.pos).ok_or("no monitors")?;
         let pos = monitor.position();
         let (w, h) = shot.image.dimensions();
-
-        #[allow(unused_mut)]
-        let mut attrs = Window::default_attributes()
-            .with_title("snapr")
-            .with_decorations(false)
-            .with_resizable(false)
-            .with_visible(false)
-            .with_window_level(WindowLevel::AlwaysOnTop)
-            .with_position(pos)
-            .with_inner_size(PhysicalSize::new(w, h));
-        // macOS borderless fullscreen switches Spaces with an animation, so we
-        // just cover the monitor with a top-level window there instead. So on
-        // Windows: winit marks a fullscreen window as such to the shell, and
-        // the shell and other apps reacting to it ending made the desktop
-        // stutter as the overlay closed.
-        #[cfg(not(any(target_os = "macos", windows)))]
-        {
-            attrs =
-                attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(Some(monitor))));
-        }
-        #[cfg(windows)]
-        {
-            use winit::platform::windows::WindowAttributesExtWindows;
-            attrs = attrs.with_skip_taskbar(true);
-        }
-
-        let window = Arc::new(event_loop.create_window(attrs)?);
-        #[cfg(windows)]
-        suppress_alt_menu(&window);
-        #[cfg(windows)]
-        make_tool_window(&window);
-        #[cfg(target_os = "macos")]
-        crate::macos::cover_everything(&window);
+        let window = match opened.filter(|o| o.inner_size() == PhysicalSize::new(w, h)) {
+            Some(window) => window,
+            None => Self::open_window(event_loop, monitor, PhysicalSize::new(w, h))?,
+        };
         #[cfg(target_os = "macos")]
         let top_inset = crate::macos::top_inset(&window);
         #[cfg(not(target_os = "macos"))]
@@ -260,6 +238,7 @@ impl Overlay {
             last_frame: None,
             due: None,
             redraw_pending: false,
+            presented: false,
         })
     }
 
@@ -268,13 +247,60 @@ impl Overlay {
         self.bind_group = bind_group(gpu, &self.frame_view, &self.uniforms, layer);
     }
 
+    /// A borderless window covering `monitor`, still hidden, for an overlay.
+    /// On macOS it's clear until a frame is drawn (rather than the window
+    /// background's grey), so it can be put up before the screen is captured
+    /// without showing in the capture.
+    pub fn open_window(
+        event_loop: &ActiveEventLoop,
+        monitor: &MonitorHandle,
+        size: PhysicalSize<u32>,
+    ) -> Result<Arc<Window>, Box<dyn std::error::Error>> {
+        #[allow(unused_mut)]
+        let mut attrs = Window::default_attributes()
+            .with_title("snapr")
+            .with_decorations(false)
+            .with_resizable(false)
+            .with_visible(false)
+            .with_window_level(WindowLevel::AlwaysOnTop)
+            .with_position(monitor.position())
+            .with_inner_size(size);
+        // macOS borderless fullscreen switches Spaces with an animation, so we
+        // just cover the monitor with a top-level window there instead. So on
+        // Windows: winit marks a fullscreen window as such to the shell, and
+        // the shell and other apps reacting to it ending made the desktop
+        // stutter as the overlay closed.
+        #[cfg(not(any(target_os = "macos", windows)))]
+        {
+            attrs = attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(Some(
+                monitor.clone(),
+            ))));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            attrs = attrs.with_transparent(true);
+        }
+        #[cfg(windows)]
+        {
+            use winit::platform::windows::WindowAttributesExtWindows;
+            attrs = attrs.with_skip_taskbar(true);
+        }
+
+        let window = Arc::new(event_loop.create_window(attrs)?);
+        #[cfg(windows)]
+        suppress_alt_menu(&window);
+        #[cfg(windows)]
+        make_tool_window(&window);
+        #[cfg(target_os = "macos")]
+        crate::macos::cover_everything(&window);
+        Ok(window)
+    }
+
     /// Paints the first frame before showing the window, so there's no flash.
     /// The session focuses one overlay once they're all shown.
     pub fn show(&mut self, gpu: &Gpu, frame: &Frame) {
         self.render(gpu, frame);
         self.window.set_visible(true);
-        #[cfg(target_os = "macos")]
-        crate::macos::fade_in(&self.window);
     }
 
     fn origin(&self) -> PhysicalPosition<i32> {
@@ -561,6 +587,12 @@ impl Overlay {
             .submit(ui_commands.into_iter().chain([encoder.finish()]));
         self.window.pre_present_notify();
         gpu.queue.present(surface_texture);
+        // Faded in from its first frame, so the fade isn't spent on a window
+        // with nothing in it yet.
+        if !std::mem::replace(&mut self.presented, true) {
+            #[cfg(target_os = "macos")]
+            crate::macos::fade_in(&self.window);
+        }
         self.free_textures(&freed);
         self.last_frame = Some(Instant::now());
         actions
@@ -674,7 +706,7 @@ mod close_timing {
             pos: (m.x().unwrap(), m.y().unwrap()),
         };
         let monitors: Vec<_> = event_loop.available_monitors().collect();
-        let mut overlay = Overlay::new(event_loop, gpu, shot, &monitors, true).unwrap();
+        let mut overlay = Overlay::new(event_loop, gpu, shot, &monitors, true, None).unwrap();
         let frame = Frame {
             selection: None,
             crosshair: None,

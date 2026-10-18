@@ -193,17 +193,36 @@ impl Session {
         if !crate::macos::screen_recording_allowed() {
             return Err(crate::macos::SCREEN_RECORDING_OFF.into());
         }
+        // Before any overlay is up, which would count as in front.
+        let (process, title) = capture::foreground_window();
+        let windows = capture::window_rects(snap_to);
+        let monitors: Vec<_> = event_loop.available_monitors().collect();
+        // On macOS the overlays' windows go up (clear, so they're not in the
+        // capture) while the screen is captured: macOS takes a few frames to
+        // count a new window as on screen, and none can be drawn until then.
+        #[cfg(target_os = "macos")]
+        let mut opened: Vec<_> = monitors
+            .iter()
+            .filter_map(|m| {
+                let window = Overlay::open_window(event_loop, m, m.size()).ok()?;
+                window.set_visible(true);
+                Some((m.position(), window))
+            })
+            .collect();
         let shots = match capture::capture_all() {
             Ok(s) if !s.is_empty() => s,
             Ok(_) => return Err("no monitors found".into()),
             Err(e) => return Err(format!("screen capture failed: {e}")),
         };
-        let (process, title) = capture::foreground_window();
-        let windows = capture::window_rects(snap_to);
-        let monitors: Vec<_> = event_loop.available_monitors().collect();
         let mut overlays = HashMap::new();
         for shot in shots {
-            match Overlay::new(event_loop, gpu, shot, &monitors, overlay_fps == 0) {
+            #[cfg(target_os = "macos")]
+            let window = crate::overlay::nearest(&monitors, shot.pos)
+                .and_then(|m| opened.iter().position(|(p, _)| *p == m.position()))
+                .map(|i| opened.remove(i).1);
+            #[cfg(not(target_os = "macos"))]
+            let window = None;
+            match Overlay::new(event_loop, gpu, shot, &monitors, overlay_fps == 0, window) {
                 Ok(o) => {
                     overlays.insert(o.window.id(), o);
                 }

@@ -162,9 +162,10 @@ pub fn cover_everything(window: &Window) {
         );
         // Not macOS's zoom as it appears: scaled, the dimmed frozen screen
         // doubles up with the real one showing through. `fade_in` fades it
-        // in where it is instead.
+        // in where it is instead. Not quite 0: macOS doesn't count a fully
+        // transparent window as on screen, and the first frame waits for it.
         ns_window.setAnimationBehavior(NSWindowAnimationBehavior::None);
-        ns_window.setAlphaValue(0.0);
+        ns_window.setAlphaValue(0.01);
         // Said outright, so the mouse (and the crosshair) stays with it while
         // it's still faint, rather than going through to the window below.
         ns_window.setIgnoresMouseEvents(false);
