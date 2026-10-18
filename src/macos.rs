@@ -9,8 +9,9 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol};
 use objc2::{MainThreadMarker, sel};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicy, NSRunningApplication,
-    NSView, NSWindow, NSWindowCollectionBehavior, NSWorkspace,
+    NSAnimatablePropertyContainer, NSAnimationContext, NSApplication, NSApplicationActivationOptions,
+    NSApplicationActivationPolicy, NSRunningApplication, NSView, NSWindow, NSWindowAnimationBehavior,
+    NSWindowCollectionBehavior, NSWorkspace,
 };
 use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSString};
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -107,6 +108,24 @@ pub fn cover_everything(window: &Window) {
                 | NSWindowCollectionBehavior::FullScreenAuxiliary
                 | NSWindowCollectionBehavior::Stationary,
         );
+        // Not macOS's zoom as it appears: scaled, the dimmed frozen screen
+        // doubles up with the real one showing through. `fade_in` fades it
+        // in where it is instead.
+        ns_window.setAnimationBehavior(NSWindowAnimationBehavior::None);
+        ns_window.setAlphaValue(0.0);
+        // Said outright, so the mouse (and the crosshair) stays with it while
+        // it's still faint, rather than going through to the window below.
+        ns_window.setIgnoresMouseEvents(false);
+    }
+}
+
+/// Fades in an overlay `cover_everything` set up, once it's shown.
+pub fn fade_in(window: &Window) {
+    if let Some(ns_window) = ns_window(window) {
+        NSAnimationContext::beginGrouping();
+        NSAnimationContext::currentContext().setDuration(0.15);
+        ns_window.animator().setAlphaValue(1.0);
+        NSAnimationContext::endGrouping();
     }
 }
 
