@@ -55,6 +55,58 @@ pub fn normal_windows() -> HashSet<u32> {
         .collect()
 }
 
+/// A titled, ordinary app window on screen (as `normal_windows` counts
+/// them), from `titled_windows`.
+pub struct ListedWindow {
+    pub id: u32,
+    /// Its frame in points: x, y, width, height.
+    pub frame: [f64; 4],
+}
+
+/// The titled ordinary windows on screen, topmost first, from one copy of
+/// the window list. (xcap copies the whole list again for every property
+/// asked of a window, which made listing them take tens of milliseconds.)
+pub fn titled_windows() -> Vec<ListedWindow> {
+    const ON_SCREEN_ONLY: u32 = 1 << 0;
+    const EXCLUDE_DESKTOP_ELEMENTS: u32 = 1 << 4;
+    // SAFETY: as in `normal_windows`.
+    let windows = unsafe {
+        Retained::from_raw(
+            CGWindowListCopyWindowInfo(ON_SCREEN_ONLY | EXCLUDE_DESKTOP_ELEMENTS, 0)
+                .cast::<NSArray<NSDictionary<NSString, AnyObject>>>(),
+        )
+    };
+    let Some(windows) = windows else {
+        return Vec::new();
+    };
+    let get = |dict: &NSDictionary<NSString, AnyObject>, key: &str| dict.objectForKey(&NSString::from_str(key));
+    let number = |dict: &NSDictionary<NSString, AnyObject>, key: &str| {
+        get(dict, key).and_then(|v| v.downcast::<NSNumber>().ok())
+    };
+    windows
+        .iter()
+        .filter(|w| number(w, "kCGWindowLayer").is_some_and(|l| l.intValue() == 0))
+        .filter(|w| number(w, "kCGWindowAlpha").is_none_or(|a| a.doubleValue() > 0.0))
+        .filter(|w| {
+            get(w, "kCGWindowName")
+                .and_then(|v| v.downcast::<NSString>().ok())
+                .is_some_and(|t| !t.to_string().trim().is_empty())
+        })
+        .filter_map(|w| {
+            let bounds = get(&w, "kCGWindowBounds")?
+                .downcast::<NSDictionary>()
+                .ok()?;
+            // SAFETY: kCGWindowBounds maps strings to numbers.
+            let bounds: &NSDictionary<NSString, AnyObject> = unsafe { &*(&*bounds as *const NSDictionary).cast() };
+            let frame = ["X", "Y", "Width", "Height"].map(|k| number(bounds, k).map(|n| n.doubleValue()));
+            Some(ListedWindow {
+                id: number(&w, "kCGWindowNumber")?.unsignedIntValue(),
+                frame: [frame[0]?, frame[1]?, frame[2]?, frame[3]?],
+            })
+        })
+        .collect()
+}
+
 /// What to do when snapr can't see the screen. (Paths are written with `>`,
 /// as Apple does: egui's font has no arrows.)
 pub const SCREEN_RECORDING_OFF: &str = "snapr can't see the screen: turn it on under System \

@@ -155,6 +155,15 @@ impl OrdinaryWindows {
 /// xcap leaves out the calling process's windows.
 #[cfg_attr(not(windows), allow(unused_variables))]
 pub fn window_rects(own: &[&winit::window::Window]) -> Vec<(u32, Rect)> {
+    #[cfg(target_os = "macos")]
+    return macos_window_rects();
+    #[cfg(not(target_os = "macos"))]
+    xcap_window_rects(own)
+}
+
+#[cfg(not(target_os = "macos"))]
+#[cfg_attr(not(windows), allow(unused_variables))]
+fn xcap_window_rects(own: &[&winit::window::Window]) -> Vec<(u32, Rect)> {
     let Ok(windows) = xcap::Window::all() else {
         return Vec::new();
     };
@@ -190,6 +199,46 @@ pub fn window_rects(own: &[&winit::window::Window]) -> Vec<(u32, Rect)> {
     #[cfg(windows)]
     let others = win32_windows::with_own(others.collect(), own);
     others.filter(|(_, r)| r.w >= 8 && r.h >= 8).collect()
+}
+
+/// `window_rects` from one pass over the window list. Frames are in points,
+/// scaled like `capture_all` places monitors: by the scale of the monitor
+/// under the window's centre (else one it overlaps, else the main one), as
+/// xcap picks it.
+#[cfg(target_os = "macos")]
+fn macos_window_rects() -> Vec<(u32, Rect)> {
+    let monitors: Vec<([f64; 4], f32, bool)> = xcap::Monitor::all()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|m| {
+            let frame = [m.x().ok()? as f64, m.y().ok()? as f64, m.width().ok()? as f64, m.height().ok()? as f64];
+            Some((frame, m.scale_factor().ok()?, m.is_primary().unwrap_or(false)))
+        })
+        .collect();
+    let contains = |[x, y, w, h]: [f64; 4], (px, py): (f64, f64)| px >= x && px < x + w && py >= y && py < y + h;
+    let overlaps = |[x, y, w, h]: [f64; 4], [ox, oy, ow, oh]: [f64; 4]| {
+        x < ox + ow && ox < x + w && y < oy + oh && oy < y + h
+    };
+    crate::macos::titled_windows()
+        .into_iter()
+        .filter_map(|w| {
+            let [x, y, width, height] = w.frame;
+            let centre = (x + width / 2.0, y + height / 2.0);
+            let s = monitors
+                .iter()
+                .find(|(m, ..)| contains(*m, centre) || overlaps(*m, w.frame))
+                .or_else(|| monitors.iter().find(|(.., primary)| *primary))?
+                .1;
+            let rect = Rect {
+                x: (x as i32 as f32 * s).round() as i32,
+                y: (y as i32 as f32 * s).round() as i32,
+                w: (width as u32 as f32 * s).round() as u32,
+                h: (height as u32 as f32 * s).round() as u32,
+            };
+            Some((w.id, rect))
+        })
+        .filter(|(_, r)| r.w >= 8 && r.h >= 8)
+        .collect()
 }
 
 /// One window's own pixels, as if nothing covered it. `None` if it's gone or
