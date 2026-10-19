@@ -1,0 +1,4 @@
+# Shell scripts and Git hooks run under bash, which a CR at the end of
+# each line breaks, so they keep LF endings on Windows checkouts too.
+*.sh text eol=lf
+.githooks/* text eol=lf
