@@ -75,7 +75,9 @@ of the tools. A right-click (or Control-click on macOS) always shows the menu. T
     tray, it's just copied (with a sound) unless *Open this tab after picking*
     is ticked. Arrow keys move the pointer one pixel (Shift: ten); scrolling
     resizes the magnifier, or zooms it (see *Scrolling the magnifier*). The
-    colour is shown as HEX, `rgb()` and `hsl()`, each with *Copy*, and recent
+    colour is shown with its name (the closest from
+    [Name that Color](https://chir.ag/projects/ntc/)'s list, also shown in the
+    magnifier), as HEX, `rgb()` and `hsl()`, each with *Copy*, and recent
     picks are kept as swatches while the window is open.
   - **Pin to screen**: *Pin region…* freezes the screen; drag a region (or
     click a window) and it's pinned right where it was, in a borderless
@@ -316,3 +318,10 @@ share for any noncommercial purpose. Commercial use needs separate permission.
 
 The snapr name and logo are not covered by that license and remain all rights
 reserved; see [TRADEMARKS.md](TRADEMARKS.md).
+
+snapr includes work by others under their own licenses, credited on the
+*About* tab of Settings: the colour picker's names, from
+[Name that Color](https://chir.ag/projects/ntc/) by Chirag Mehta
+([CC BY 2.5](https://creativecommons.org/licenses/by/2.5/)), with its notices
+in [assets/color-names.txt](assets/color-names.txt), and the open-source Rust
+crates it's built with, listed with their license texts by `build.rs`.

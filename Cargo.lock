@@ -3968,6 +3968,7 @@ dependencies = [
  "keyring",
  "ksni",
  "livesplit-hotkey",
+ "miniz_oxide 0.9.1",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-av-foundation",

@@ -217,7 +217,7 @@ fn ui(ui: &mut egui::Ui, view: &View) -> (Vec<Action>, Option<Rect>) {
 }
 
 /// The card beside the cursor: the pixels around it enlarged (the middle one
-/// outlined), then rows for its colour and position.
+/// outlined), then rows for its colour, the colour's name and position.
 fn draw_cursor_info(painter: &egui::Painter, at: egui::Pos2, info: &CursorInfo) {
     const GAP: f32 = 22.0;
     /// The magnifier's smallest side, whatever its zoom; it fills the card's
@@ -232,10 +232,14 @@ fn draw_cursor_info(painter: &egui::Painter, at: egui::Pos2, info: &CursorInfo) 
         let label = painter.layout_no_wrap(text, font.clone(), Color32::WHITE);
         (Color32::from_rgb(r, g, b), label)
     });
+    let name = info.color.map(|rgb| {
+        let name = crate::color_names::name(rgb).to_string();
+        painter.layout_no_wrap(name, FontId::proportional(12.0), Color32::from_white_alpha(200))
+    });
     let position = info.position.map(|[x, y]| {
         painter.layout_no_wrap(format!("X {x}   Y {y}"), font.clone(), Color32::WHITE)
     });
-    let labels = [color.as_ref().map(|c| &c.1), position.as_ref()];
+    let labels = [color.as_ref().map(|c| &c.1), name.as_ref(), position.as_ref()];
     let rows_h = labels.iter().flatten().count() as f32 * ROW;
     // Room for the widest colour (the font is monospace), so the card doesn't
     // change width as the colour does.
@@ -336,6 +340,9 @@ fn draw_cursor_info(painter: &egui::Painter, at: egui::Pos2, info: &CursorInfo) 
             Stroke::new(1.0, Color32::from_white_alpha(140)),
             StrokeKind::Inside,
         );
+    }
+    if let Some(label) = name {
+        row(label);
     }
     if let Some(label) = position {
         let icon = row(label).shrink(1.0);

@@ -1,12 +1,14 @@
 // No console window for release builds on Windows; snapr lives in the tray.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod about;
 mod annotate;
 mod atomic;
 #[cfg(windows)]
 mod autostart;
 mod audio;
 mod capture;
+mod color_names;
 mod combine;
 mod cursor;
 mod decode;

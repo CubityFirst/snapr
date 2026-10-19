@@ -38,6 +38,7 @@ pub enum Page {
     Naming,
     Destinations,
     Recording,
+    About,
 }
 
 pub enum Action {
@@ -461,6 +462,7 @@ impl MainWindow {
                         Page::Naming => self.form.naming_ui(ui, &mut form_actions),
                         Page::Destinations => self.form.destinations_ui(ui, &mut form_actions),
                         Page::Recording => self.form.recording_ui(ui, &mut form_actions),
+                        Page::About => self.form.about.ui(ui, &mut form_actions),
                         _ => self.form.ui(ui, &mut form_actions),
                     }
                     actions.extend(form_actions.into_iter().map(Action::from));
@@ -656,6 +658,7 @@ fn settings_tabs(ui: &mut egui::Ui, page: &mut Page) {
                 (Page::Hotkeys, "Hotkeys"),
                 (Page::Naming, "Paths & naming"),
                 (Page::Destinations, "Destinations"),
+                (Page::About, "About"),
             ] {
                 ui.selectable_value(page, tab, label);
             }

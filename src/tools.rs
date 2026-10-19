@@ -291,6 +291,16 @@ impl Tools {
                 .num_columns(3)
                 .spacing([12.0, 6.0])
                 .show(ui, |ui| {
+                    ui.label(RichText::new("Name").weak())
+                        .on_hover_text(crate::locale::spelled!(
+                            "The closest named colour, from Name that Color (credited on Settings \u{2192} About)"
+                        ));
+                    let name = crate::color_names::name(rgb);
+                    ui.label(name);
+                    if ui.button("Copy").clicked() {
+                        actions.push(Action::CopyText(name.into()));
+                    }
+                    ui.end_row();
                     for (name, text) in formats(rgb) {
                         ui.label(RichText::new(name).weak());
                         ui.label(RichText::new(&text).monospace());
@@ -324,7 +334,7 @@ impl Tools {
                     egui::StrokeKind::Outside,
                 );
                 if resp
-                    .on_hover_text(hex(*c))
+                    .on_hover_text(format!("{}  {}", hex(*c), crate::color_names::name(*c)))
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
                     .clicked()
                 {

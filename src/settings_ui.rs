@@ -93,6 +93,7 @@ pub struct Form {
     export_secrets: bool,
     /// How the last export or import went. `true` = error.
     transfer_note: Option<(String, bool)>,
+    pub about: crate::about::About,
 }
 
 struct FfmpegCheck {
@@ -126,6 +127,7 @@ impl Form {
             ffmpeg_check: None,
             export_secrets: false,
             transfer_note: None,
+            about: Default::default(),
         }
     }
 
