@@ -39,6 +39,8 @@ pub enum Page {
     Destinations,
     Recording,
     About,
+    /// First-time setup, in place of the icon bar and pages.
+    Setup,
 }
 
 pub enum Action {
@@ -223,6 +225,7 @@ pub struct MainWindow {
     pub gallery: Gallery,
     pub tools: Tools,
     pub stats: crate::stats::Stats,
+    setup: crate::setup::Setup,
     /// The capture hotkey, for hints.
     pub hotkey: String,
     /// Where screenshots are saved, for the folder button.
@@ -286,6 +289,7 @@ impl MainWindow {
             gallery,
             tools: Tools::new(),
             stats,
+            setup: Default::default(),
             hotkey: settings.hotkey.clone(),
             folder: PathBuf::from(&settings.folder),
             repaint_at: None,
@@ -297,7 +301,11 @@ impl MainWindow {
     }
 
     pub fn show_page(&mut self, page: Page) {
-        self.page = page;
+        // Setup stays until it's finished or skipped; errors (e.g. a hotkey
+        // taken by another program) show on its last page.
+        if self.page != Page::Setup {
+            self.page = page;
+        }
         self.window.set_visible(true);
         self.window.set_minimized(false);
         self.window.focus_window();
@@ -332,6 +340,9 @@ impl MainWindow {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        if self.page == Page::Setup {
+            return self.setup_ui(ui, actions);
+        }
         let nav_fill = theme::palette(ui).nav;
         egui::Panel::left("nav")
             .exact_size(NAV_WIDTH)
@@ -472,6 +483,23 @@ impl MainWindow {
         self.form.autosave(ui.ctx(), &mut form_actions);
         actions.extend(form_actions.into_iter().map(Action::from));
         self.drop_ui(ui, actions);
+    }
+
+    /// First-time setup, filling the window.
+    fn setup_ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::central_panel(ui.style())
+                    .inner_margin(egui::Margin::symmetric(32, 24)),
+            )
+            .show(ui, |ui| match self.setup.ui(ui, &mut self.form) {
+                Some(crate::setup::Finish::Done) => self.page = Page::Recent,
+                Some(crate::setup::Finish::OpenSettings) => self.page = Page::Settings,
+                None => {}
+            });
+        let mut form_actions = Vec::new();
+        self.form.autosave(ui.ctx(), &mut form_actions);
+        actions.extend(form_actions.into_iter().map(Action::from));
     }
 
     /// Saves settings edited too recently to have been saved yet.

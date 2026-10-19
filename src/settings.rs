@@ -90,6 +90,9 @@ pub struct Settings {
     pub check_for_updates: bool,
     /// Start snapr when you sign in (Windows).
     pub start_with_windows: bool,
+    /// First-time setup was finished or skipped. Config files from before
+    /// it existed don't have it, which counts as done.
+    pub setup_done: bool,
 }
 
 /// Details shown beside the crosshair while selecting a region. The colour
@@ -360,6 +363,7 @@ impl Default for Settings {
             tray_click: TrayClick::default(),
             check_for_updates: true,
             start_with_windows: false,
+            setup_done: true,
         }
     }
 }
@@ -386,13 +390,18 @@ impl Settings {
     }
 
     pub fn load() -> (Self, Loaded) {
+        let first_run = || {
+            let s = Self {
+                setup_done: false,
+                ..Self::default()
+            };
+            (s, Loaded::FirstRun)
+        };
         let Some(path) = Self::path() else {
-            return (Self::default(), Loaded::FirstRun);
+            return first_run();
         };
         match std::fs::read_to_string(&path) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                (Self::default(), Loaded::FirstRun)
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => first_run(),
             Err(e) => (
                 Self::default(),
                 Loaded::Broken(format!("couldn't read {}: {e}", path.display())),
@@ -683,5 +692,13 @@ mod tests {
         assert_eq!(old.tray_click, TrayClick::default());
         let tool: Settings = toml::from_str("tray_click = { tool = \"scan_qr\" }").unwrap();
         assert_eq!(tool.tray_click, TrayClick::Tool(ToolAction::ScanQr));
+    }
+
+    #[test]
+    fn setup_done_for_older_configs() {
+        let old: Settings = toml::from_str("hotkey = \"Alt + Shift + KeyS\"").unwrap();
+        assert!(old.setup_done);
+        let unfinished: Settings = toml::from_str("setup_done = false").unwrap();
+        assert!(!unfinished.setup_done);
     }
 }

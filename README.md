@@ -102,8 +102,11 @@ of the tools. A right-click (or Control-click on macOS) always shows the menu. T
 - **Stats** counts captures: screenshots vs recordings, charted by time of
   day and day of the week, plus *Tool Use* (QR scans, codes read, colours
   picked, images pinned). It's kept in `stats.toml` next to the settings.
-- **Settings** opens by itself on first run, or whenever something needs
-  attention (e.g. the hotkey couldn't be registered).
+- **First-time setup** greets you on first run: where screenshots are saved,
+  whether snapr starts with Windows, and whether it plays sounds. *Skip
+  setup* keeps the defaults; everything can be changed later in Settings.
+- **Settings** opens by itself whenever something needs attention (e.g. the
+  hotkey couldn't be registered).
 
 Launching snapr again while it's running opens the running instance's window
 (Windows).

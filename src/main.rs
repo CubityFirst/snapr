@@ -46,6 +46,7 @@ mod secrets;
 mod session;
 mod settings;
 mod settings_ui;
+mod setup;
 mod sound;
 mod stats;
 mod stats_ui;
@@ -1223,7 +1224,12 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         if self.open_settings_on_start {
-            self.open_main_window(event_loop, Page::Settings);
+            let page = if self.settings.setup_done {
+                Page::Settings
+            } else {
+                Page::Setup
+            };
+            self.open_main_window(event_loop, page);
         }
     }
 
