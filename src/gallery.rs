@@ -189,18 +189,6 @@ impl Gallery {
         self.dragging = None;
     }
 
-    /// The "Clear recent" item shared by the context menus.
-    fn clear_menu_item(&mut self, ui: &mut egui::Ui) {
-        if ui
-            .button("Clear recent")
-            .on_hover_text("Empty this list. The screenshot files are kept.")
-            .clicked()
-        {
-            self.clear_requested = true;
-            ui.close();
-        }
-    }
-
     fn thumb(&mut self, path: &Path, large: bool) -> &Thumb {
         let key = (path.to_owned(), large);
         if !self.thumbs.contains_key(&key) {
@@ -350,7 +338,14 @@ impl Gallery {
         );
         background.context_menu(|ui| {
             theme::compact_menu(ui);
-            self.clear_menu_item(ui);
+            if ui
+                .button("Clear recent")
+                .on_hover_text("Empty this list. The screenshot files are kept.")
+                .clicked()
+            {
+                self.clear_requested = true;
+                ui.close();
+            }
         });
         let mut drop_target = None;
         egui::ScrollArea::vertical()
@@ -697,15 +692,6 @@ impl Gallery {
                 actions.push(Action::CopyLink(link.clone()));
                 ui.close();
             }
-            if let Some(remote) = &entry.remote
-                && ui
-                    .add(theme::danger(ui, "Delete remotely"))
-                    .on_hover_text("Delete the uploaded copy; the file here is kept")
-                    .clicked()
-            {
-                actions.push(Action::DeleteRemote(path.to_owned(), remote.clone()));
-                ui.close();
-            }
             for (label, action) in [
                 ("Open", Action::Open(path.to_owned())),
                 ("Copy", Action::Copy(path.to_owned())),
@@ -726,8 +712,15 @@ impl Gallery {
                     ui.close();
                 }
             }
-            ui.separator();
-            self.clear_menu_item(ui);
+            if let Some(remote) = &entry.remote
+                && ui
+                    .add(theme::danger(ui, "Delete remotely"))
+                    .on_hover_text("Delete the uploaded copy; the file here is kept")
+                    .clicked()
+            {
+                actions.push(Action::DeleteRemote(path.to_owned(), remote.clone()));
+                ui.close();
+            }
         });
         target
     }
