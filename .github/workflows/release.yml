@@ -7,8 +7,8 @@
 # .dmg people install from).
 #
 # The release notes are the commits since the previous version tag
-# (scripts/release-notes.sh), so commit subjects should read as changelog
-# lines, with credits in the message.
+# (scripts/release-notes.sh), grouped by their Conventional Commits types
+# (CONTRIBUTING.md).
 #
 # Tags with a hyphen (v1.0.0-rc.1) become pre-releases, which the updater
 # doesn't offer.

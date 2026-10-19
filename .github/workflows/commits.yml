@@ -1,0 +1,31 @@
+# Checks new commits' messages follow Conventional Commits, which the
+# release notes are built from (see CONTRIBUTING.md).
+
+name: Commits
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  conventional:
+    name: Conventional Commits
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check the commit messages
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          # A new branch's push has no "before".
+          if [ -z "$BASE" ] || [ "$BASE" = 0000000000000000000000000000000000000000 ]; then
+            range="$HEAD^!"
+          else
+            range="$BASE..$HEAD"
+          fi
+          bash scripts/check-commit-msg.sh --range "$range"
