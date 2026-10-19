@@ -33,6 +33,7 @@ mod naming;
 mod output;
 mod overlay;
 mod pin;
+mod policy;
 mod player;
 mod pomf;
 #[cfg(test)]
@@ -407,7 +408,7 @@ impl App {
         self.play(Sound::Done);
         self.count(|s| s.count(stats::Kind::Recording, chrono::Local::now()));
         self.last_capture = Some(path.clone());
-        let uploading = self.settings.uploads.iter().any(|u| u.enabled);
+        let uploading = !policy::uploads_disabled() && self.settings.uploads.iter().any(|u| u.enabled);
         if uploading {
             self.output.upload_file(path.clone(), ctx);
         }
@@ -914,6 +915,9 @@ impl App {
     /// Uploads files dropped on the main window to the enabled destinations.
     /// PNGs are added to Recent so their links show up there.
     fn upload_files(&mut self, event_loop: &ActiveEventLoop, paths: Vec<PathBuf>) {
+        if policy::uploads_disabled() {
+            return self.report_on(event_loop, policy::UPLOADS_OFF.into(), true, Page::Destinations);
+        }
         for path in paths {
             if !path.is_file() {
                 self.report_on(
@@ -1529,10 +1533,12 @@ impl ApplicationHandler<UserEvent> for App {
 }
 
 /// Where screenshots go, from the settings. Enabled uploads with a problem
-/// (or no stored secret key) are left out and reported.
+/// (or no stored secret key) are left out and reported; all of them are
+/// while uploading is turned off by policy.
 fn output_config(settings: &Settings) -> Result<output::Config, String> {
     let mut uploads = Vec::new();
-    for u in settings.uploads.iter().filter(|u| u.enabled) {
+    let enabled = settings.uploads.iter().filter(|u| u.enabled && !policy::uploads_disabled());
+    for u in enabled {
         let key = match u.validate() {
             Ok(k) => k,
             Err(e) => {

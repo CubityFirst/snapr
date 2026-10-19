@@ -142,6 +142,23 @@ examples. To try a real bucket from the command line, set
 `_SECRET_ACCESS_KEY` (and `_PATH_STYLE=1` for R2/MinIO) and run
 `cargo test live_bucket -- --ignored`.
 
+### Turning uploads off
+
+An administrator can turn uploading off for everyone, as with ShareX's
+`DisableUpload`. Screenshots are still saved and copied, uploads (including
+*Test* and dropped files) are refused, and the Destinations page says why and
+greys its upload settings out. Any one of these does it, read when snapr starts:
+
+- a `DisableUpload` value under `HKEY_LOCAL_MACHINE\SOFTWARE\Policies\snapr` or
+  `HKEY_LOCAL_MACHINE\SOFTWARE\snapr` (or the same keys in `HKEY_CURRENT_USER`),
+  a `REG_DWORD` of `1` (or a `REG_SZ` such as `true`), e.g. by Group Policy
+  Preferences or
+  `reg add HKLM\SOFTWARE\Policies\snapr /v DisableUpload /t REG_DWORD /d 1 /f`;
+- the environment variable `SNAPR_DISABLE_UPLOAD=1` (on any platform).
+
+None of them can turn uploading back on once another has turned it off, so a
+user can't override the machine-wide key with their own.
+
 Changes on the Settings pages save as you make them (once a change is valid).
 Settings are stored in `<config dir>/snapr/config.toml`
 (`%APPDATA%\snapr` on Windows, `~/Library/Application Support/snapr` on macOS,

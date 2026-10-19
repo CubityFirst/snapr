@@ -594,6 +594,9 @@ impl Upload {
         content_type: &str,
         progress: &Progress,
     ) -> Result<String, String> {
+        if crate::policy::uploads_disabled() {
+            return Err(crate::policy::UPLOADS_OFF.into());
+        }
         match target {
             Target::S3(t) => {
                 t.put_object(key, body, content_type, progress)?;

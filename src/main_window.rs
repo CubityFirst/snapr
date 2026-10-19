@@ -571,6 +571,9 @@ impl MainWindow {
         if !dropped.is_empty() {
             actions.push(Action::UploadFiles(dropped));
         }
+        if crate::policy::uploads_disabled() {
+            return; // dropping only reports why not
+        }
         if !hovering {
             return;
         }

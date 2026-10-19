@@ -43,112 +43,117 @@ impl Form {
                 ui.add_space(8.0);
                 ui.label(RichText::new("Uploads").heading().size(16.0));
                 ui.add_space(2.0);
-                if self.draft.uploads.is_empty() {
-                    ui.label(RichText::new("No upload destinations yet.").weak());
+                if crate::policy::uploads_disabled() {
+                    ui.label(RichText::new(crate::policy::UPLOADS_OFF).color(ui.visuals().warn_fg_color));
                 }
-                let mut remove = None;
-                for i in 0..self.draft.uploads.len() {
-                    if self.upload_card(ui, i, actions) {
-                        remove = Some(i);
+                ui.add_enabled_ui(!crate::policy::uploads_disabled(), |ui| {
+                    if self.draft.uploads.is_empty() {
+                        ui.label(RichText::new("No upload destinations yet.").weak());
                     }
-                }
-                if let Some(i) = remove {
-                    let u = self.draft.uploads.remove(i);
-                    self.secrets.remove(&u.id);
-                    self.tests.remove(&u.id);
-                }
-                ui.horizontal(|ui| {
-                    for (label, hover, new) in [
-                        (
-                            "+ Add S3 upload",
-                            "A bucket on Cloudflare R2, Amazon S3, MinIO, Backblaze B2, ...",
-                            Upload::default as fn() -> Upload,
-                        ),
-                        (
-                            "+ Add Pomf upload",
-                            "A Pomf-compatible file host, e.g. pomf.lain.la or uguu.se",
-                            Upload::pomf,
-                        ),
-                    ] {
-                        if ui.button(label).on_hover_text(hover).clicked() {
-                            let u = new();
-                            self.expanded = Some(u.id.clone());
-                            self.draft.uploads.push(u);
+                    let mut remove = None;
+                    for i in 0..self.draft.uploads.len() {
+                        if self.upload_card(ui, i, actions) {
+                            remove = Some(i);
                         }
                     }
-                    let ticked: Vec<Upload> =
-                        self.draft.uploads.iter().filter(|u| u.enabled).cloned().collect();
-                    let running = ticked
-                        .iter()
-                        .any(|u| matches!(self.tests.get(&u.id), Some(Test::Running)));
-                    if ui
-                        .add_enabled(!ticked.is_empty() && !running, egui::Button::new("Test upload"))
-                        .on_hover_text(
-                            "Upload snapr's icon to each ticked destination, named as a screenshot \
-                             would be, and show its link. The icon stays there.",
-                        )
-                        .on_disabled_hover_text("Tick a destination to test it")
-                        .clicked()
-                    {
-                        for u in ticked {
-                            let secret = self.secrets.get(&u.id).filter(|s| !s.is_empty()).cloned();
-                            self.tests.insert(u.id.clone(), Test::Running);
-                            actions.push(Action::UploadIcon(u, secret));
-                        }
+                    if let Some(i) = remove {
+                        let u = self.draft.uploads.remove(i);
+                        self.secrets.remove(&u.id);
+                        self.tests.remove(&u.id);
                     }
-                });
-                ui.add_space(6.0);
-                theme::switch(
-                    ui,
-                    &mut self.draft.copy_link,
-                    "Copy the link to the clipboard after uploading (instead of the image)",
-                );
-                let enabled: Vec<(String, String)> = self
-                    .draft
-                    .uploads
-                    .iter()
-                    .filter(|u| u.enabled)
-                    .map(|u| (u.id.clone(), u.name.clone()))
-                    .collect();
-                ui.add_enabled_ui(enabled.len() > 1, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label("Link from").on_hover_text(
-                            "Uploading to more than one destination, the link that's copied, \
-                             shown in the corner preview and kept in Recent",
-                        );
-                        const FIRST: &str = "Whichever finishes first";
-                        let selected = enabled
+                        for (label, hover, new) in [
+                            (
+                                "+ Add S3 upload",
+                                "A bucket on Cloudflare R2, Amazon S3, MinIO, Backblaze B2, ...",
+                                Upload::default as fn() -> Upload,
+                            ),
+                            (
+                                "+ Add Pomf upload",
+                                "A Pomf-compatible file host, e.g. pomf.lain.la or uguu.se",
+                                Upload::pomf,
+                            ),
+                        ] {
+                            if ui.button(label).on_hover_text(hover).clicked() {
+                                let u = new();
+                                self.expanded = Some(u.id.clone());
+                                self.draft.uploads.push(u);
+                            }
+                        }
+                        let ticked: Vec<Upload> =
+                            self.draft.uploads.iter().filter(|u| u.enabled).cloned().collect();
+                        let running = ticked
                             .iter()
-                            .find(|(id, _)| *id == self.draft.link_from)
-                            .map_or(FIRST, |(_, name)| name.as_str());
-                        egui::ComboBox::from_id_salt("link-from")
-                            .selected_text(selected)
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut self.draft.link_from, String::new(), FIRST);
-                                for (id, name) in &enabled {
-                                    ui.selectable_value(&mut self.draft.link_from, id.clone(), name)
-                                        .on_hover_text("Or, if it fails, the first that works");
-                                }
-                            });
+                            .any(|u| matches!(self.tests.get(&u.id), Some(Test::Running)));
+                        if ui
+                            .add_enabled(!ticked.is_empty() && !running, egui::Button::new("Test upload"))
+                            .on_hover_text(
+                                "Upload snapr's icon to each ticked destination, named as a screenshot \
+                                 would be, and show its link. The icon stays there.",
+                            )
+                            .on_disabled_hover_text("Tick a destination to test it")
+                            .clicked()
+                        {
+                            for u in ticked {
+                                let secret = self.secrets.get(&u.id).filter(|s| !s.is_empty()).cloned();
+                                self.tests.insert(u.id.clone(), Test::Running);
+                                actions.push(Action::UploadIcon(u, secret));
+                            }
+                        }
                     });
-                })
-                .response
-                .on_disabled_hover_text("Turn on more than one destination to choose");
-                ui.horizontal(|ui| {
-                    ui.label("Show upload speed in");
-                    theme::segmented(ui, |ui| {
-                        ui.selectable_value(&mut self.draft.speed_unit, SpeedUnit::Bytes, "MB/s")
-                            .on_hover_text("Megabytes per second, like file sizes");
-                        ui.selectable_value(&mut self.draft.speed_unit, SpeedUnit::Bits, "Mbps")
-                            .on_hover_text("Megabits per second, like internet speeds");
+                    ui.add_space(6.0);
+                    theme::switch(
+                        ui,
+                        &mut self.draft.copy_link,
+                        "Copy the link to the clipboard after uploading (instead of the image)",
+                    );
+                    let enabled: Vec<(String, String)> = self
+                        .draft
+                        .uploads
+                        .iter()
+                        .filter(|u| u.enabled)
+                        .map(|u| (u.id.clone(), u.name.clone()))
+                        .collect();
+                    ui.add_enabled_ui(enabled.len() > 1, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Link from").on_hover_text(
+                                "Uploading to more than one destination, the link that's copied, \
+                                 shown in the corner preview and kept in Recent",
+                            );
+                            const FIRST: &str = "Whichever finishes first";
+                            let selected = enabled
+                                .iter()
+                                .find(|(id, _)| *id == self.draft.link_from)
+                                .map_or(FIRST, |(_, name)| name.as_str());
+                            egui::ComboBox::from_id_salt("link-from")
+                                .selected_text(selected)
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut self.draft.link_from, String::new(), FIRST);
+                                    for (id, name) in &enabled {
+                                        ui.selectable_value(&mut self.draft.link_from, id.clone(), name)
+                                            .on_hover_text("Or, if it fails, the first that works");
+                                    }
+                                });
+                        });
+                    })
+                    .response
+                    .on_disabled_hover_text("Turn on more than one destination to choose");
+                    ui.horizontal(|ui| {
+                        ui.label("Show upload speed in");
+                        theme::segmented(ui, |ui| {
+                            ui.selectable_value(&mut self.draft.speed_unit, SpeedUnit::Bytes, "MB/s")
+                                .on_hover_text("Megabytes per second, like file sizes");
+                            ui.selectable_value(&mut self.draft.speed_unit, SpeedUnit::Bits, "Mbps")
+                                .on_hover_text("Megabits per second, like internet speeds");
+                        });
                     });
+                    theme::switch(
+                        ui,
+                        &mut self.draft.tray_percentage,
+                        "Show the percentage uploaded on the tray icon",
+                    )
+                    .on_hover_text("Above the progress bar the icon shows while uploading");
                 });
-                theme::switch(
-                    ui,
-                    &mut self.draft.tray_percentage,
-                    "Show the percentage uploaded on the tray icon",
-                )
-                .on_hover_text("Above the progress bar the icon shows while uploading");
 
                 self.save_bar(ui, actions);
             });
