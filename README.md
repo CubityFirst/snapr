@@ -265,17 +265,20 @@ somewhere only an administrator can write to (e.g. `/usr/bin`) reports
 
 ### Releasing
 
-Bump `version` in `Cargo.toml`, commit, then tag and push:
+Bump `version` in `Cargo.toml` (and `Cargo.lock`), commit it as
+`chore(release): snapr 0.2.0`, then tag and push:
 
 ```
-git tag v0.2.0
-git push origin v0.2.0
+git tag -a v0.2.0 -m "snapr 0.2.0"
+git push origin main v0.2.0
 ```
 
 The *Release* workflow (`.github/workflows/release.yml`) builds Windows
 x86-64, macOS (Apple silicon only) and Linux x86-64, and publishes them
-as a GitHub release named after the tag, with generated notes and a
-`SHA256SUMS` file. The macOS build is packed as `snapr.app`
+as a GitHub release named after the tag, with a `SHA256SUMS` file and
+notes made from the commits since the last release
+(`scripts/release-notes.sh`; commits follow Conventional Commits, see
+[CONTRIBUTING.md](CONTRIBUTING.md)). The macOS build is packed as `snapr.app`
 (`scripts/macos-bundle.sh`), published as a `.dmg` to install from and a
 zip the updater swaps the whole app for. It refuses a tag that doesn't match `Cargo.toml`'s
 version (such a build would keep offering itself as an update). A tag with a
