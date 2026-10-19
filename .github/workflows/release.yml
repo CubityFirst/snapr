@@ -6,6 +6,10 @@
 # snapr-macos-<arch>.app.zip (scripts/macos-bundle.sh, which also makes the
 # .dmg people install from).
 #
+# The release notes are the commits since the previous version tag
+# (scripts/release-notes.sh), so commit subjects should read as changelog
+# lines, with credits in the message.
+#
 # Tags with a hyphen (v1.0.0-rc.1) become pre-releases, which the updater
 # doesn't offer.
 #
@@ -104,6 +108,14 @@ jobs:
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
+      # The whole history and its tags, for the notes.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Release notes from the commits since the last version
+        run: bash scripts/release-notes.sh "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY" | tee notes.md
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -122,6 +134,6 @@ jobs:
           gh release create "$GITHUB_REF_NAME" dist/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "snapr ${GITHUB_REF_NAME#v}" \
-            --generate-notes \
+            --notes-file notes.md \
             --verify-tag \
             "${flags[@]}"
