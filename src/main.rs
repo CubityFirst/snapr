@@ -1429,6 +1429,8 @@ impl ApplicationHandler<UserEvent> for App {
         if self.record_at.as_ref().is_some_and(|(at, ..)| *at <= now)
             && let Some((_, rect, context)) = self.record_at.take()
         {
+            #[cfg(windows)]
+            overlay::wait_until_off_screen();
             self.start_recording(event_loop, rect, context);
         }
         let mut wake = self.sessions.iter_mut().filter_map(|s| s.poll(now)).min();

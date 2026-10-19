@@ -291,6 +291,8 @@ impl Overlay {
         suppress_alt_menu(&window);
         #[cfg(windows)]
         make_tool_window(&window);
+        #[cfg(windows)]
+        no_close_animation(&window);
         #[cfg(target_os = "macos")]
         crate::macos::cover_everything(&window);
         Ok(window)
@@ -687,6 +689,43 @@ fn make_tool_window(window: &Window) {
     }
 }
 
+/// Stops Windows animating the overlay as it closes: on Windows 10 it fades
+/// out, and a recording started right after it would begin with it.
+#[cfg(windows)]
+fn no_close_animation(window: &Window) {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::Graphics::Dwm::{DWMWA_TRANSITIONS_FORCEDISABLED, DwmSetWindowAttribute};
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    if let Ok(handle) = window.window_handle()
+        && let RawWindowHandle::Win32(h) = handle.as_raw()
+    {
+        let disabled: i32 = 1;
+        // SAFETY: our own window; the attribute is a BOOL.
+        unsafe {
+            DwmSetWindowAttribute(
+                h.hwnd.get() as HWND,
+                DWMWA_TRANSITIONS_FORCEDISABLED as u32,
+                (&raw const disabled).cast(),
+                size_of::<i32>() as u32,
+            );
+        }
+    }
+}
+
+/// Waits for the screen to be drawn without the windows just closed, so a
+/// recording started next doesn't begin with them. Some graphics drivers
+/// show a fullscreen window directly rather than through Windows' drawing
+/// of the desktop, and take a frame or two to switch back once it closes.
+#[cfg(windows)]
+pub fn wait_until_off_screen() {
+    for _ in 0..2 {
+        // SAFETY: no arguments; fails only with desktop composition off,
+        // when there's nothing to wait for.
+        unsafe { windows_sys::Win32::Graphics::Dwm::DwmFlush() };
+    }
+}
+
 /// Checks that a recording started the way snapr does it, right after the
 /// capture overlay closes, doesn't begin with the overlay's frozen screen.
 /// Shows a red overlay on the primary monitor and records its middle:
@@ -809,6 +848,7 @@ mod close_timing {
             }
             if self.start_at.is_some_and(|t| t <= Instant::now()) {
                 self.start_at = None;
+                wait_until_off_screen();
                 self.start();
             }
             if let Some((rec, at)) = &mut self.recording
