@@ -78,4 +78,20 @@ git config core.hooksPath .githooks
 
 Maintainers cut releases: bump `version` in `Cargo.toml` and `Cargo.lock`
 in a `chore(release): snapr X.Y.Z` commit, which the release notes leave
-out, then tag and push it (see *Releasing* in the README).
+out, then tag and push it:
+
+```
+git tag -a v0.2.0 -m "snapr 0.2.0"
+git push origin main v0.2.0
+```
+
+The *Release* workflow (`.github/workflows/release.yml`) builds Windows
+x86-64, macOS (Apple silicon only) and Linux x86-64, and publishes them
+as a GitHub release named after the tag, with a `SHA256SUMS` file and
+notes made from the commits since the last release
+(`scripts/release-notes.sh`). The macOS build is packed as `snapr.app`
+(`scripts/macos-bundle.sh`), published as a `.dmg` to install from and a
+zip the updater swaps the whole app for. It refuses a tag that doesn't
+match `Cargo.toml`'s version (such a build would keep offering itself as an
+update). A tag with a hyphen, e.g. `v0.2.0-rc.1`, is published as a
+pre-release.

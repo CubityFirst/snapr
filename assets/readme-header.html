@@ -1,0 +1,37 @@
+<!doctype html>
+<!--
+  Source for readme-header.png, the banner at the top of README.md.
+  Regenerate with scripts/readme-header.sh after changing it.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; background: transparent; }
+  body { width: 1280px; height: 320px; font-family: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; }
+
+  .banner {
+    width: 1280px; height: 320px; border-radius: 24px; overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+    background: #16171a;
+    background-image:
+      radial-gradient(ellipse 560px 260px at 640px 160px, rgba(61,155,255,.14), transparent 70%),
+      linear-gradient(rgba(255,255,255,.028) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,.028) 1px, transparent 1px);
+    background-size: auto, 32px 32px, 32px 32px;
+    background-position: 0 0, 0 0, 0 0;
+  }
+  .lockup { display: flex; align-items: center; gap: 30px; }
+  .lockup svg { width: 104px; height: 104px; }
+  .word { font-size: 128px; font-weight: 700; letter-spacing: -4px; color: #fff; line-height: 1; margin-top: -12px; }
+</style>
+</head>
+<body>
+<div class="banner">
+  <div class="lockup">
+    <svg viewBox="0 0 32 32"><path fill="#3d9bff" d="M2 2h11v4H6v7H2zM30 2H19v4h7v7h4zM2 30h11v-4H6v-7H2zM30 30H19v-4h7v-7h4zM12 12h8v8h-8z"/></svg>
+    <div class="word">snapr</div>
+  </div>
+</div>
+</body>
+</html>
