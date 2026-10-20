@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Writes a release's notes from the commits that went into it: each commit
 # since the previous version tag, oldest first, grouped by its Conventional
-# Commits type (see CONTRIBUTING.md), its description as a bullet and its
-# message (credits included) under it. Merge commits and the version bump
-# are left out, and a link to the full comparison goes at the end.
+# Commits type (see CONTRIBUTING.md), its description as a bullet. The
+# message body isn't included. Merge commits and the version bump are left
+# out, and a link to the full comparison goes at the end.
 #
 #   scripts/release-notes.sh <tag> [<repo, e.g. owner/snapr>]
 #
@@ -27,7 +27,6 @@ sections=("" "" "" "")
 
 while IFS= read -r hash; do
   subject=$(git log -1 --format=%s "$hash")
-  body=$(git log -1 --format=%b "$hash")
   # The version bump: chore(release), or a bare "snapr X.Y.Z" before
   # Conventional Commits.
   if [[ $subject =~ ^chore\(release\) ]] || [[ $subject =~ ^snapr\ [0-9]+\.[0-9]+\.[0-9]+ ]]; then
@@ -54,11 +53,7 @@ while IFS= read -r hash; do
     [ -n "$scope" ] && line="**$scope:** $line"
     [ -n "$breaking" ] && line="**Breaking:** $line"
   fi
-  entry="- $line (${hash:0:7})"$'\n'
-  if [ -n "$body" ]; then
-    entry+=$'\n'$(sed 's/^\(.\)/  \1/' <<<"$body")$'\n\n'
-  fi
-  sections[group]+=$entry
+  sections[group]+="- $line (${hash:0:7})"$'\n'
 done < <(git rev-list --reverse --no-merges "$range")
 
 any=

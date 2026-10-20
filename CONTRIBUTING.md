@@ -45,8 +45,8 @@ Each release's notes are built from the commits that went into it
   tense, starting lowercase with no full stop. The release notes capitalise
   it.
 - **body** (optional): why, and anything a user or a reviewer should know.
-  It goes into the release notes under the description, wrapped at 72
-  columns.
+  Wrapped at 72 columns. It stays in the history; the release notes show
+  only the description.
 - **footers** (optional): credits and references, as Git trailers.
   Credit whoever reported or suggested the change, with a link:
   `Reported-by: Name (https://github.com/name)`.
