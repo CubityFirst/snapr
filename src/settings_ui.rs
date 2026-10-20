@@ -93,6 +93,8 @@ pub struct Form {
     export_secrets: bool,
     /// How the last export or import went. `true` = error.
     transfer_note: Option<(String, bool)>,
+    /// "Run setup again" was clicked; the window takes it from there.
+    pub run_setup: bool,
     pub about: crate::about::About,
 }
 
@@ -127,6 +129,7 @@ impl Form {
             ffmpeg_check: None,
             export_secrets: false,
             transfer_note: None,
+            run_setup: false,
             about: Default::default(),
         }
     }
@@ -370,6 +373,19 @@ impl Form {
                     ui.label(if *is_err { text.color(ERROR) } else { text.weak() });
                     ui.end_row();
                 }
+
+                ui.label(RichText::new("First-time setup").strong());
+                ui.end_row();
+
+                ui.label("");
+                if ui
+                    .button("Run setup again")
+                    .on_hover_text("The questions from snapr's first start, with your current answers picked")
+                    .clicked()
+                {
+                    self.run_setup = true;
+                }
+                ui.end_row();
             });
 
             self.save_bar(ui, actions);

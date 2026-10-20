@@ -477,6 +477,10 @@ impl MainWindow {
                         _ => self.form.ui(ui, &mut form_actions),
                     }
                     actions.extend(form_actions.into_iter().map(Action::from));
+                    if std::mem::take(&mut self.form.run_setup) {
+                        self.setup = Default::default();
+                        self.page = Page::Setup;
+                    }
                 }
             });
         let mut form_actions = Vec::new();

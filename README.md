@@ -104,7 +104,8 @@ of the tools. A right-click (or Control-click on macOS) always shows the menu. T
   picked, images pinned). It's kept in `stats.toml` next to the settings.
 - **First-time setup** greets you on first run: where screenshots are saved,
   whether snapr starts with Windows, and whether it plays sounds. *Skip
-  setup* keeps the defaults; everything can be changed later in Settings.
+  setup* keeps the defaults; everything can be changed later in Settings,
+  and *Run setup again* in Settings › General goes back through it.
 - **Settings** opens by itself whenever something needs attention (e.g. the
   hotkey couldn't be registered).
 
