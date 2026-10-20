@@ -15,7 +15,7 @@ use crate::output;
 use crate::secrets;
 use crate::settings_search::found;
 use crate::settings::{
-    MagnifierScroll, Settings, ToolAction, ToolHotkey, TrayClick, Upload, parse_hotkey,
+    MagnifierScroll, Settings, ToolAction, ToolHotkey, TrayClick, TrayIconStyle, Upload, parse_hotkey,
 };
 use crate::sound::{self, Sound};
 use crate::theme;
@@ -308,6 +308,19 @@ impl Form {
                     });
                 found(ui, "tray-click", label.rect.union(r.response.rect));
                 ui.end_row();
+
+                // macOS tints menu bar icons to suit the menu bar itself.
+                if !cfg!(target_os = "macos") {
+                    let label = ui.label(crate::locale::spelled!("Tray icon colour"))
+                        .on_hover_text("Each shown on a dark taskbar and a light one");
+                    let r = ui.horizontal_wrapped(|ui| {
+                        for style in TrayIconStyle::all() {
+                            tray_icon_choice(ui, &mut self.draft.tray_icon, style);
+                        }
+                    });
+                    found(ui, "tray-icon", label.rect.union(r.response.rect));
+                    ui.end_row();
+                }
 
                 ui.label(RichText::new("Updates").strong());
                 ui.end_row();
@@ -1240,6 +1253,80 @@ fn error_row(ui: &mut egui::Ui, err: Option<&str>) {
         ui.label("");
         ui.colored_label(Color32::from_rgb(0xe5, 0x48, 0x4d), e);
         ui.end_row();
+    }
+}
+
+/// A tile for picking `style`: the tray icon in that style on a dark
+/// taskbar and a light one, side by side, with its name below.
+fn tray_icon_choice(ui: &mut egui::Ui, picked: &mut TrayIconStyle, style: TrayIconStyle) {
+    use egui::{Align2, CornerRadius, FontId, Rect, Sense, Stroke, StrokeKind, vec2};
+    // Roughly Windows 11's own taskbars.
+    const DARK_TASKBAR: Color32 = Color32::from_rgb(0x20, 0x20, 0x20);
+    const LIGHT_TASKBAR: Color32 = Color32::from_rgb(0xee, 0xee, 0xee);
+    let p = theme::palette(ui);
+    let (rect, mut response) = ui.allocate_exact_size(vec2(88.0, 66.0), Sense::click());
+    if response.clicked() && *picked != style {
+        *picked = style;
+        response.mark_changed();
+    }
+    let on = *picked == style;
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::RadioButton, ui.is_enabled(), on, style.label())
+    });
+    if style == TrayIconStyle::Taskbar {
+        response = response.on_hover_text("White on a dark taskbar, black on a light one, changing when the taskbar does");
+    }
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let painter = ui.painter();
+    let (fill, stroke) = if on {
+        (p.selected, theme::ACCENT)
+    } else if response.hovered() {
+        (p.control_hover, p.stroke_hover)
+    } else {
+        (p.control, p.stroke)
+    };
+    painter.rect(rect, CornerRadius::same(8), fill, Stroke::new(1.0, stroke), StrokeKind::Inside);
+    let swatch = Rect::from_min_size(rect.min + vec2(8.0, 8.0), vec2(rect.width() - 16.0, 30.0));
+    let (dark, light) = swatch.split_left_right_at_fraction(0.5);
+    painter.rect_filled(dark, CornerRadius { nw: 5, sw: 5, ..Default::default() }, DARK_TASKBAR);
+    painter.rect_filled(light, CornerRadius { ne: 5, se: 5, ..Default::default() }, LIGHT_TASKBAR);
+    for (half, is_light) in [(dark, false), (light, true)] {
+        let [r, g, b, _] = crate::tray::color_on(style, is_light);
+        paint_logo(painter, Rect::from_center_size(half.center(), vec2(18.0, 18.0)), Color32::from_rgb(r, g, b));
+    }
+    let text = if on { p.selected_text } else { p.text };
+    painter.text(
+        egui::pos2(rect.center().x, swatch.bottom() + 6.0),
+        Align2::CENTER_TOP,
+        style.label(),
+        FontId::proportional(12.0),
+        text,
+    );
+}
+
+/// The viewfinder logo filling `rect`, as in assets/icon.svg: its 32-unit
+/// grid scaled to fit.
+fn paint_logo(painter: &egui::Painter, rect: egui::Rect, color: Color32) {
+    const PARTS: [[f32; 4]; 9] = [
+        [2.0, 2.0, 13.0, 6.0],
+        [2.0, 6.0, 6.0, 13.0],
+        [19.0, 2.0, 30.0, 6.0],
+        [26.0, 6.0, 30.0, 13.0],
+        [2.0, 26.0, 13.0, 30.0],
+        [2.0, 19.0, 6.0, 26.0],
+        [19.0, 26.0, 30.0, 30.0],
+        [26.0, 19.0, 30.0, 26.0],
+        [12.0, 12.0, 20.0, 20.0],
+    ];
+    let unit = rect.width() / 32.0;
+    for [x0, y0, x1, y1] in PARTS {
+        let part = egui::Rect::from_min_max(
+            rect.min + egui::vec2(x0, y0) * unit,
+            rect.min + egui::vec2(x1, y1) * unit,
+        );
+        painter.rect_filled(part, 0.0, color);
     }
 }
 

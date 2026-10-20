@@ -14,7 +14,7 @@ use objc2_app_kit::{
 use objc2_foundation::{NSData, NSSize, NSString};
 
 use super::{Callback, TrayAction, capture_label};
-use crate::settings::{ToolAction, TrayClick};
+use crate::settings::{ToolAction, TrayClick, TrayIconStyle};
 
 struct Ivars {
     callback: Callback,
@@ -199,6 +199,9 @@ impl Tray {
             .setTitle(&NSString::from_str(&capture_label(hotkey)));
     }
 
+    /// macOS tints the icon to suit the menu bar, whatever the style.
+    pub fn set_style(&self, _style: TrayIconStyle) {}
+
     /// Shows how far the uploads have got on the icon, or the plain icon
     /// with `None`.
     pub fn set_progress(&self, progress: Option<super::Progress>) {
@@ -227,7 +230,7 @@ impl Drop for Tray {
 /// The icon as a template image, so macOS tints it to match the menu bar.
 fn icon_image(progress: Option<super::Progress>) -> Option<Retained<NSImage>> {
     const SIZE: u32 = 36;
-    let img = image::RgbaImage::from_raw(SIZE, SIZE, super::icon_with_progress(SIZE, progress))?;
+    let img = image::RgbaImage::from_raw(SIZE, SIZE, super::icon_with_progress(SIZE, progress, super::BLUE))?;
     let mut png = Vec::new();
     img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
         .ok()?;

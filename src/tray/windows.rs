@@ -4,8 +4,9 @@
 use std::cell::RefCell;
 use std::ptr::null;
 
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows_sys::Win32::Foundation::{ERROR_SUCCESS, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
 use windows_sys::Win32::UI::Shell::{
     NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
     Shell_NotifyIconW,
@@ -15,11 +16,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     DestroyMenu, DestroyWindow, FindWindowW, GetCursorPos, GetSystemMetrics, HICON, MF_POPUP,
     MF_SEPARATOR, MF_STRING, PostMessageW, RegisterClassW, RegisterWindowMessageW, SM_CXSMICON,
     SetForegroundWindow, SetMenuDefaultItem, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
-    WM_APP, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WNDCLASSW,
+    WM_APP, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WM_SETTINGCHANGE, WNDCLASSW,
 };
 
 use super::{Callback, TrayAction, capture_label};
-use crate::settings::{ToolAction, TrayClick};
+use crate::settings::{ToolAction, TrayClick, TrayIconStyle};
 
 const CLASS_NAME: &str = "snapr.tray";
 const WM_TRAY: u32 = WM_APP + 1;
@@ -43,6 +44,9 @@ struct State {
     tooltip: String,
     /// How far the uploads have got, while there are any.
     progress: Option<super::Progress>,
+    style: TrayIconStyle,
+    /// What `style` came to when the icon was last drawn.
+    color: [u8; 4],
     capture_label: String,
     callback: Callback,
     taskbar_created: u32,
@@ -94,12 +98,16 @@ impl Tray {
             return Err("couldn't create tray window".into());
         }
         let size = unsafe { GetSystemMetrics(SM_CXSMICON) }.clamp(16, 64) as u32;
+        let style = TrayIconStyle::default();
+        let color = super::color(style);
         let state = State {
             hwnd,
-            icon: make_icon(size, None),
+            icon: make_icon(size, None, color),
             size,
             tooltip: tooltip(hotkey),
             progress: None,
+            style,
+            color,
             capture_label: capture_label(hotkey),
             callback,
             taskbar_created: unsafe { RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()) },
@@ -138,15 +146,62 @@ impl Tray {
             if let Some(state) = s.borrow_mut().as_mut()
                 && state.progress != progress
             {
-                let old = state.icon;
                 state.progress = progress;
-                state.icon = make_icon(state.size, progress);
-                notify(state, NIM_MODIFY);
-                // SAFETY: ours, and the shell has been given the new one.
-                unsafe { DestroyIcon(old) };
+                redraw(state);
             }
         });
     }
+
+    pub fn set_style(&self, style: TrayIconStyle) {
+        STATE.with(|s| {
+            if let Some(state) = s.borrow_mut().as_mut() {
+                state.style = style;
+                recolor(state);
+            }
+        });
+    }
+}
+
+/// Redraws the icon if its style now comes to another colour: the taskbar's
+/// turned light or dark.
+fn recolor(state: &mut State) {
+    let color = super::color(state.style);
+    if color != state.color {
+        state.color = color;
+        redraw(state);
+    }
+}
+
+fn redraw(state: &mut State) {
+    let old = state.icon;
+    state.icon = make_icon(state.size, state.progress, state.color);
+    notify(state, NIM_MODIFY);
+    // SAFETY: ours, and the shell has been given the new one.
+    unsafe { DestroyIcon(old) };
+}
+
+/// Whether the taskbar is light, from the "Choose your default Windows mode"
+/// setting. Dark if it can't be read, as it is on Windows 10 before that
+/// setting existed.
+pub(super) fn light_taskbar() -> bool {
+    let key = wide(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+    let value = wide("SystemUsesLightTheme");
+    let mut dword = 0u32;
+    let mut len = 4u32;
+    // SAFETY: the strings are NUL-terminated and outlive the call; `len` is
+    // the size of `dword` in bytes.
+    let err = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            key.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_DWORD,
+            std::ptr::null_mut(),
+            (&raw mut dword).cast(),
+            &mut len,
+        )
+    };
+    err == ERROR_SUCCESS && dword != 0
 }
 
 impl Drop for Tray {
@@ -202,8 +257,8 @@ fn notify(state: &State, action: u32) -> bool {
     }
 }
 
-fn make_icon(size: u32, progress: Option<super::Progress>) -> HICON {
-    let rgba = super::icon_with_progress(size, progress);
+fn make_icon(size: u32, progress: Option<super::Progress>, color: [u8; 4]) -> HICON {
+    let rgba = super::icon_with_progress(size, progress, color);
     // 32-bit icons take BGRA colour bits plus a 1-bit AND mask (unused with alpha).
     let bgra: Vec<u8> = rgba
         .chunks_exact(4)
@@ -315,6 +370,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_SHOW_SETTINGS => {
             dispatch(TrayAction::Recent);
             0
+        }
+        // Among other things, the light or dark mode was changed.
+        WM_SETTINGCHANGE => {
+            STATE.with(|s| s.borrow_mut().as_mut().map(recolor));
+            // SAFETY: as below.
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         _ => {
             let readd = STATE.with(|s| {

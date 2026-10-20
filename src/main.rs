@@ -741,6 +741,7 @@ impl App {
         if let Some(t) = &self.tray {
             t.set_hotkey(Some(&new.hotkey));
             t.set_click(new.tray_click);
+            t.set_style(new.tray_icon);
         }
         self.settings = new;
         if let Some(w) = &mut self.main_window {
@@ -1213,6 +1214,7 @@ impl ApplicationHandler<UserEvent> for App {
         match Tray::new(hotkey.as_deref(), callback) {
             Ok(t) => {
                 t.set_click(self.settings.tray_click);
+                t.set_style(self.settings.tray_icon);
                 self.tray = Some(t);
             }
             Err(e) => {

@@ -16,7 +16,7 @@ pub use windows::{Tray, signal_running_instance};
 
 use std::sync::Arc;
 
-use crate::settings::ToolAction;
+use crate::settings::{ToolAction, TrayIconStyle};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayAction {
@@ -51,6 +51,8 @@ pub struct Progress {
 }
 
 const BLUE: [u8; 4] = [0x3d, 0x9b, 0xff, 0xff];
+const WHITE: [u8; 4] = [0xff, 0xff, 0xff, 0xff];
+const BLACK: [u8; 4] = [0, 0, 0, 0xff];
 const CLEAR: [u8; 4] = [0, 0, 0, 0];
 
 /// Digits 3 pixels wide and 5 high, a row of 3 bits at a time, top first.
@@ -69,16 +71,40 @@ const DIGITS: [u16; 10] = [
 
 /// The app icon as RGBA: blue viewfinder corners around a small dot.
 pub fn icon_rgba(size: u32) -> Vec<u8> {
-    icon_with_progress(size, None)
+    icon_with_progress(size, None, BLUE)
+}
+
+/// The colour `style` draws the tray icon in, as things are now.
+// macOS draws it as a template image, tinted to suit the menu bar.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn color(style: TrayIconStyle) -> [u8; 4] {
+    // Taskbars are dark unless the system says otherwise.
+    #[cfg(windows)]
+    let light = style == TrayIconStyle::Taskbar && windows::light_taskbar();
+    #[cfg(not(windows))]
+    let light = false;
+    color_on(style, light)
+}
+
+/// The colour `style` draws the tray icon in on a light or dark taskbar.
+pub fn color_on(style: TrayIconStyle, light: bool) -> [u8; 4] {
+    match style {
+        TrayIconStyle::Blue => BLUE,
+        TrayIconStyle::White => WHITE,
+        TrayIconStyle::Black => BLACK,
+        TrayIconStyle::Taskbar if light => BLACK,
+        TrayIconStyle::Taskbar => WHITE,
+    }
 }
 
 /// The app icon, or with `progress` a bar across its bottom showing how far
 /// the uploads have got: an outline filled from the left with nothing behind
 /// it, so it reads on light and dark taskbars and as a macOS template image.
-/// Above it is the top of the viewfinder, or the percentage.
-pub fn icon_with_progress(size: u32, progress: Option<Progress>) -> Vec<u8> {
+/// Above it is the top of the viewfinder, or the percentage. All of it is
+/// drawn in `color`.
+pub fn icon_with_progress(size: u32, progress: Option<Progress>, color: [u8; 4]) -> Vec<u8> {
     let Some(progress) = progress else {
-        return pixels(size, |x, y| viewfinder(size, x, y));
+        return pixels(size, color, |x, y| viewfinder(size, x, y));
     };
     // The bar's edges, in whole pixels so it stays crisp at 16px.
     let line = (size / 16).max(1);
@@ -118,19 +144,19 @@ pub fn icon_with_progress(size: u32, progress: Option<Progress>) -> Vec<u8> {
                     (false, false) => (fill - x as f32).clamp(0.0, 1.0),
                 }
             };
-            let [r, g, b, a] = BLUE;
+            let [r, g, b, a] = color;
             rgba.extend_from_slice(&[r, g, b, (f32::from(a) * alpha).round() as u8]);
         }
     }
     rgba
 }
 
-/// Builds an icon of `BLUE` where `on`.
-fn pixels(size: u32, on: impl Fn(u32, u32) -> bool) -> Vec<u8> {
+/// Builds an icon of `color` where `on`.
+fn pixels(size: u32, color: [u8; 4], on: impl Fn(u32, u32) -> bool) -> Vec<u8> {
     let mut rgba = Vec::with_capacity((size * size * 4) as usize);
     for y in 0..size {
         for x in 0..size {
-            rgba.extend_from_slice(if on(x, y) { &BLUE } else { &CLEAR });
+            rgba.extend_from_slice(if on(x, y) { &color } else { &CLEAR });
         }
     }
     rgba
@@ -209,12 +235,12 @@ mod tests {
     }
 
     fn icon(percent: u8, number: bool) -> Vec<String> {
-        rows(&icon_with_progress(16, Some(Progress { percent, number })))
+        rows(&icon_with_progress(16, Some(Progress { percent, number }), BLUE))
     }
 
     #[test]
     fn draws_the_upload_progress_as_a_bar_across_the_bottom() {
-        assert_eq!(icon_rgba(16), icon_with_progress(16, None));
+        assert_eq!(icon_rgba(16), icon_with_progress(16, None, BLUE));
         let half = icon(50, false);
         assert_eq!(half[9], "................");
         assert_eq!(half[10], "..############..");
@@ -223,9 +249,24 @@ mod tests {
         assert_eq!(icon(0, false)[12], ".#............#.");
         assert_eq!(icon(100, false)[12], ".##############.");
         // Between whole pixels, the last one is partly filled.
-        let rgba = icon_with_progress(16, Some(Progress { percent: 54, number: false }));
+        let rgba = icon_with_progress(16, Some(Progress { percent: 54, number: false }), BLUE);
         let alpha = |x: usize| rgba[(12 * 16 + x) * 4 + 3];
         assert_eq!((alpha(7), alpha(8), alpha(9)), (255, 122, 0));
+    }
+
+    #[test]
+    fn draws_in_the_colour_asked_for() {
+        let progress = Some(Progress { percent: 30, number: true });
+        for style in [TrayIconStyle::Blue, TrayIconStyle::White, TrayIconStyle::Black] {
+            let c = color(style);
+            for p in [None, progress] {
+                let rgba = icon_with_progress(16, p, c);
+                // Every drawn pixel is that colour, and only its alpha varies.
+                assert!(rgba.chunks_exact(4).all(|px| px[3] == 0 || px[..3] == c[..3]));
+                // The same shape whatever the colour.
+                assert_eq!(rows(&rgba), rows(&icon_with_progress(16, p, BLUE)));
+            }
+        }
     }
 
     #[test]

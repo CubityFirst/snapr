@@ -49,6 +49,9 @@ static INDEX: LazyLock<Vec<Entry>> = LazyLock::new(|| {
     add(Settings, "sound-volume", "Sound volume", "loudness audio shutter");
     add(Settings, "show-toast", "Show a preview in the corner after each capture", "toast notification popup thumbnail");
     add(Settings, "tray-click", if cfg!(target_os = "macos") { "Clicking the menu bar icon" } else { "Clicking the tray icon" }, "left click system tray menu bar action");
+    if !cfg!(target_os = "macos") {
+        add(Settings, "tray-icon", "Tray icon colour", "color colour white black blue taskbar theme system tray");
+    }
     add(Settings, "check-for-updates", "Do not check for updates", "automatic updates auto-update release github");
     add(Settings, "version", "Check for updates now", "version update upgrade release");
     add(Settings, "transfer", "Export settings", "backup move another computer transfer save file");

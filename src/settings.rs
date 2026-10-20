@@ -86,6 +86,9 @@ pub struct Settings {
     pub tray_percentage: bool,
     /// What left-clicking the tray (menu bar) icon does.
     pub tray_click: TrayClick,
+    /// The tray icon's colour (Windows and Linux; macOS tints its menu bar
+    /// icons itself).
+    pub tray_icon: TrayIconStyle,
     /// Look for a new release now and then, and install it.
     pub check_for_updates: bool,
     /// Start snapr when you sign in (Windows).
@@ -325,6 +328,42 @@ impl TrayClick {
     }
 }
 
+/// The tray icon's colour: the app's blue, or plain white or black like the
+/// system's own icons.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrayIconStyle {
+    #[default]
+    Blue,
+    /// White on a dark taskbar, black on a light one, following the system
+    /// theme as it changes (Windows).
+    Taskbar,
+    White,
+    Black,
+}
+
+impl TrayIconStyle {
+    /// The styles this platform's tray can show: only Windows says what
+    /// colour its taskbar is.
+    pub fn all() -> Vec<TrayIconStyle> {
+        let mut all = vec![TrayIconStyle::Blue];
+        if cfg!(windows) {
+            all.push(TrayIconStyle::Taskbar);
+        }
+        all.extend([TrayIconStyle::White, TrayIconStyle::Black]);
+        all
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TrayIconStyle::Blue => "Blue",
+            TrayIconStyle::Taskbar => "Match taskbar",
+            TrayIconStyle::White => "White",
+            TrayIconStyle::Black => "Black",
+        }
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -361,6 +400,7 @@ impl Default for Settings {
             speed_unit: SpeedUnit::default(),
             tray_percentage: false,
             tray_click: TrayClick::default(),
+            tray_icon: TrayIconStyle::default(),
             check_for_updates: true,
             start_with_windows: false,
             setup_done: true,
@@ -692,6 +732,16 @@ mod tests {
         assert_eq!(old.tray_click, TrayClick::default());
         let tool: Settings = toml::from_str("tray_click = { tool = \"scan_qr\" }").unwrap();
         assert_eq!(tool.tray_click, TrayClick::Tool(ToolAction::ScanQr));
+    }
+
+    #[test]
+    fn tray_icon_style_round_trip() {
+        let old: Settings = toml::from_str("hotkey = \"Alt + Shift + KeyS\"").unwrap();
+        assert_eq!(old.tray_icon, TrayIconStyle::Blue);
+        let taskbar: Settings = toml::from_str("tray_icon = \"taskbar\"").unwrap();
+        assert_eq!(taskbar.tray_icon, TrayIconStyle::Taskbar);
+        let text = toml::to_string_pretty(&taskbar).unwrap();
+        assert_eq!(toml::from_str::<Settings>(&text).unwrap(), taskbar, "{text}");
     }
 
     #[test]
