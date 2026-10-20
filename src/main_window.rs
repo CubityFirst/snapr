@@ -524,6 +524,7 @@ impl MainWindow {
             .align(egui::RectAlign::RIGHT_START)
             .gap(4.0)
             .show(|ui| {
+                theme::compact_menu(ui);
                 let region = egui::Button::new("Region").shortcut_text(self.hotkey.as_str());
                 if ui.add(region).clicked() {
                     actions.push(Action::Capture);
@@ -540,6 +541,7 @@ impl MainWindow {
                 }
                 ui.separator();
                 ui.menu_button("Window", |ui| {
+                    theme::compact_menu(ui);
                     if windows.is_empty() {
                         ui.weak("No windows");
                     }
@@ -558,6 +560,7 @@ impl MainWindow {
                         });
                 });
                 ui.menu_button("Display", |ui| {
+                    theme::compact_menu(ui);
                     if displays.is_empty() {
                         ui.weak("No displays");
                     }
