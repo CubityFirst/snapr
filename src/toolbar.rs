@@ -7,7 +7,7 @@ use egui::{
 };
 
 use crate::annotate::{
-    ArrowOptions, COLORS, HighlighterShape, PIXEL_BLOCKS, PixelateOptions, Size, Style, TEXT_SIZES, TextOptions, Tool,
+    ArrowOptions, COLORS, HighlighterInk, HighlighterShape, PIXEL_BLOCKS, PixelateOptions, Size, Style, TEXT_SIZES, TextOptions, Tool,
 };
 use crate::session::MAGNIFIER_PIXELS;
 
@@ -30,6 +30,7 @@ pub enum Action {
     ClipShadow(bool),
     Text(TextOptions),
     Highlighter(HighlighterShape),
+    HighlighterInk(HighlighterInk),
     Undo,
     Redo,
 }
@@ -880,6 +881,24 @@ fn tool_options(ui: &mut egui::Ui, view: &View, actions: &mut Vec<Action>) {
                         .clicked()
                     {
                         actions.push(Action::Highlighter(shape));
+                    }
+                }
+            });
+            option_heading(ui, "Ink");
+            ui.horizontal(|ui| {
+                for (ink, label, tip) in [
+                    (
+                        HighlighterInk::Realistic,
+                        "Realistic",
+                        "Like a real marker: light areas take the colour, dark ones stay dark",
+                    ),
+                    (HighlighterInk::Tint, "Tint", "A see-through wash of the colour"),
+                ] {
+                    if option(ui, label, 114.0, view.style.highlighter_ink == ink, true)
+                        .on_hover_text(tip)
+                        .clicked()
+                    {
+                        actions.push(Action::HighlighterInk(ink));
                     }
                 }
             });

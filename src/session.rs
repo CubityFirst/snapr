@@ -828,6 +828,7 @@ impl Session {
             Action::ClipShadow(on) => self.style.clip_shadow = on,
             Action::Text(t) => self.style.text = t,
             Action::Highlighter(shape) => self.style.highlighter = shape,
+            Action::HighlighterInk(ink) => self.style.highlighter_ink = ink,
             Action::Undo => {
                 self.finish_typing();
                 self.canvas.iter_mut().for_each(Canvas::undo);

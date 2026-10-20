@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::annotate::{HighlighterShape, Size, Style, TEXT_SIZES};
+use crate::annotate::{HighlighterInk, HighlighterShape, Size, Style, TEXT_SIZES};
 use crate::session::{MAGNIFIER_PIXELS, MAGNIFIER_ZOOM};
 use crate::settings::Settings;
 
@@ -20,6 +20,8 @@ pub struct Remembered {
     clip_shadow: bool,
     /// "freehand", "straight" or "box".
     highlighter: String,
+    /// "realistic" or "tint".
+    highlighter_ink: String,
     /// Pixels across the magnifier; 0 when it's hidden.
     magnifier: u32,
     text: Text,
@@ -69,6 +71,11 @@ impl Remembered {
                 HighlighterShape::Freehand => "freehand",
                 HighlighterShape::Straight => "straight",
                 HighlighterShape::Box => "box",
+            }
+            .into(),
+            highlighter_ink: match style.highlighter_ink {
+                HighlighterInk::Realistic => "realistic",
+                HighlighterInk::Tint => "tint",
             }
             .into(),
             magnifier,
@@ -128,6 +135,10 @@ impl Remembered {
             "box" => HighlighterShape::Box,
             _ => HighlighterShape::Freehand,
         };
+        style.highlighter_ink = match self.highlighter_ink.as_str() {
+            "tint" => HighlighterInk::Tint,
+            _ => HighlighterInk::Realistic,
+        };
         style.text.size = self.text.size.clamp(*TEXT_SIZES.start(), *TEXT_SIZES.end());
         style.text.outline = self.text.outline;
         style
@@ -162,6 +173,7 @@ mod tests {
         style.arrow.double = true;
         style.clip_shadow = false;
         style.highlighter = HighlighterShape::Box;
+        style.highlighter_ink = HighlighterInk::Tint;
         style.text = TextOptions {
             font: None,
             size: 64,

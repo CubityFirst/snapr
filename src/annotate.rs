@@ -159,8 +159,20 @@ pub enum HighlighterShape {
     Box,
 }
 
-/// How translucent highlighting is (alpha, of 255).
-const HIGHLIGHT_ALPHA: u8 = 110;
+/// How the highlighter's colour goes on.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum HighlighterInk {
+    /// Like a real marker: each channel keeps the darker of the picture and
+    /// the colour, so light areas take the colour, dark ones stay dark, and
+    /// strokes that overlap don't build up.
+    #[default]
+    Realistic,
+    /// A see-through wash of the colour over everything.
+    Tint,
+}
+
+/// How see-through a tint is (alpha, of 255).
+const TINT_ALPHA: u8 = 110;
 
 /// Block sizes the pixelate tool offers, in pixels.
 pub const PIXEL_BLOCKS: [u32; 4] = [8, 14, 24, 40];
@@ -250,6 +262,7 @@ pub struct Style {
     pub clip_shadow: bool,
     pub text: TextOptions,
     pub highlighter: HighlighterShape,
+    pub highlighter_ink: HighlighterInk,
 }
 
 impl Default for Style {
@@ -267,6 +280,7 @@ impl Default for Style {
             },
             clip_shadow: true,
             highlighter: HighlighterShape::Freehand,
+            highlighter_ink: HighlighterInk::Realistic,
             text: TextOptions {
                 font: None,
                 size: 28,
@@ -852,16 +866,13 @@ impl Annotation {
             anti_alias: true,
             ..Paint::default()
         };
-        paint.set_color_rgba8(
-            r,
-            g,
-            b,
-            if matches!(self.shape, Shape::Highlighter(_) | Shape::Mark(..)) {
-                HIGHLIGHT_ALPHA
-            } else {
-                255
-            },
-        );
+        paint.set_color_rgba8(r, g, b, 255);
+        if matches!(self.shape, Shape::Highlighter(_) | Shape::Mark(..)) {
+            match self.style.highlighter_ink {
+                HighlighterInk::Realistic => paint.blend_mode = BlendMode::Darken,
+                HighlighterInk::Tint => paint.set_color_rgba8(r, g, b, TINT_ALPHA),
+            }
+        }
         let stroke = Stroke {
             width: self.stroke_width(),
             line_cap: LineCap::Round,
@@ -2250,15 +2261,29 @@ mod tests {
         c.commit();
         assert_eq!(c.annotations.len(), 1);
 
-        // Box: fills the area, translucent, and drags with the highlighter.
+        // Box: fills the area, darkening like a marker, and drags with the
+        // highlighter.
         let mut c = canvas();
         let before = c.image().get_pixel(30, 20).0;
         c.begin(Annotation::new(Tool::Highlighter, style(HighlighterShape::Box), (1020.0, 510.0)).unwrap());
         c.drag_to((1060.0, 540.0), false);
         c.commit();
         let inside = c.image().get_pixel(30, 20).0;
-        assert_ne!(inside, before);
+        let darker: Vec<u8> = (0..3).map(|i| before[i].min(COLORS[0][i])).collect();
+        assert_eq!(inside[..3], darker[..], "the darker of each channel");
         assert_ne!(inside[..3], COLORS[0][..], "see-through, not solid");
+        // A tint washes the colour over it instead.
+        let mut t = canvas();
+        let tint = Style {
+            highlighter_ink: HighlighterInk::Tint,
+            ..style(HighlighterShape::Box)
+        };
+        t.begin(Annotation::new(Tool::Highlighter, tint, (1020.0, 510.0)).unwrap());
+        t.drag_to((1060.0, 540.0), false);
+        t.commit();
+        let tinted = t.image().get_pixel(30, 20).0;
+        assert_ne!(tinted[..3], darker[..]);
+        assert!(tinted[1] > darker[1], "the picture shows through");
         assert!(c.begin_move((1040.0, 525.0), Tool::Highlighter));
         c.drag_to((1050.0, 525.0), false);
         c.commit();
