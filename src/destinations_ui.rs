@@ -5,6 +5,7 @@ use egui::{RichText, TextEdit};
 
 use crate::naming::Context;
 use crate::settings::{SpeedUnit, Upload, UploadKind};
+use crate::settings_search::found;
 use crate::settings_ui::{Action, ERROR, Form, SUCCESS, Test, template_field};
 use crate::theme;
 use crate::upload::{DEFAULT_CONCURRENCY, MAX_CONCURRENCY};
@@ -17,7 +18,7 @@ impl Form {
                 ui.label(RichText::new("Where each screenshot goes after you capture it.").weak());
                 ui.add_space(10.0);
 
-                card(ui, |ui| {
+                let r = card(ui, |ui| {
                     theme::switch(
                         ui,
                         &mut self.draft.save_to_folder,
@@ -32,16 +33,19 @@ impl Form {
                         .small(),
                     );
                 });
-                card(ui, |ui| {
+                found(ui, "save-to-folder", r);
+                let r = card(ui, |ui| {
                     theme::switch(
                         ui,
                         &mut self.draft.copy_to_clipboard,
                         RichText::new("Copy image to clipboard").strong(),
                     );
                 });
+                found(ui, "copy-to-clipboard", r);
 
                 ui.add_space(8.0);
-                ui.label(RichText::new("Uploads").heading().size(16.0));
+                let r = ui.label(RichText::new("Uploads").heading().size(16.0));
+                found(ui, "uploads", r.rect);
                 ui.add_space(2.0);
                 if crate::policy::uploads_disabled() {
                     ui.label(RichText::new(crate::policy::UPLOADS_OFF).color(ui.visuals().warn_fg_color));
@@ -102,11 +106,12 @@ impl Form {
                         }
                     });
                     ui.add_space(6.0);
-                    theme::switch(
+                    let r = theme::switch(
                         ui,
                         &mut self.draft.copy_link,
                         "Copy the link to the clipboard after uploading (instead of the image)",
                     );
+                    found(ui, "copy-link", r.rect);
                     let enabled: Vec<(String, String)> = self
                         .draft
                         .uploads
@@ -114,7 +119,7 @@ impl Form {
                         .filter(|u| u.enabled)
                         .map(|u| (u.id.clone(), u.name.clone()))
                         .collect();
-                    ui.add_enabled_ui(enabled.len() > 1, |ui| {
+                    let r = ui.add_enabled_ui(enabled.len() > 1, |ui| {
                         ui.horizontal(|ui| {
                             ui.label("Link from").on_hover_text(
                                 "Uploading to more than one destination, the link that's copied, \
@@ -138,7 +143,8 @@ impl Form {
                     })
                     .response
                     .on_disabled_hover_text("Turn on more than one destination to choose");
-                    ui.horizontal(|ui| {
+                    found(ui, "link-from", r.rect);
+                    let r = ui.horizontal(|ui| {
                         ui.label("Show upload speed in");
                         theme::segmented(ui, |ui| {
                             ui.selectable_value(&mut self.draft.speed_unit, SpeedUnit::Bytes, "MB/s")
@@ -147,12 +153,14 @@ impl Form {
                                 .on_hover_text("Megabits per second, like internet speeds");
                         });
                     });
-                    theme::switch(
+                    found(ui, "speed-unit", r.response.rect);
+                    let r = theme::switch(
                         ui,
                         &mut self.draft.tray_percentage,
                         "Show the percentage uploaded on the tray icon",
                     )
                     .on_hover_text("Above the progress bar the icon shows while uploading");
+                    found(ui, "tray-percentage", r.rect);
                 });
 
                 self.save_bar(ui, actions);
@@ -397,9 +405,10 @@ impl Form {
     }
 }
 
-fn card(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
+/// Returns where the card is.
+fn card(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) -> egui::Rect {
     let palette = theme::palette(ui);
-    egui::Frame::new()
+    let rect = egui::Frame::new()
         .fill(palette.surface)
         .stroke(egui::Stroke::new(1.0, palette.stroke))
         .corner_radius(10)
@@ -407,8 +416,11 @@ fn card(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             contents(ui);
-        });
+        })
+        .response
+        .rect;
     ui.add_space(6.0);
+    rect
 }
 
 #[cfg(test)]

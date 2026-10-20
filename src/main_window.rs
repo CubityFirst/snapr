@@ -25,6 +25,9 @@ use crate::theme::{self, ACCENT};
 use crate::tools::{self, Tools};
 
 const NAV_WIDTH: f32 = 60.0;
+/// The Settings page's list of sections and search box, with the gap
+/// after it.
+const SETTINGS_SIDEBAR_WIDTH: f32 = 200.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
@@ -226,6 +229,8 @@ pub struct MainWindow {
     pub tools: Tools,
     pub stats: crate::stats::Stats,
     setup: crate::setup::Setup,
+    /// The search in the Settings sidebar.
+    search: crate::settings_search::Search,
     /// The capture hotkey, for hints.
     pub hotkey: String,
     /// Where screenshots are saved, for the folder button.
@@ -256,7 +261,7 @@ impl MainWindow {
         let attrs = Window::default_attributes()
             .with_title("snapr")
             .with_inner_size(LogicalSize::new(980.0, 660.0))
-            .with_min_inner_size(LogicalSize::new(640.0, 440.0))
+            .with_min_inner_size(LogicalSize::new(800.0, 440.0))
             .with_window_icon(icon);
         let window = Arc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
 
@@ -290,6 +295,7 @@ impl MainWindow {
             tools: Tools::new(),
             stats,
             setup: Default::default(),
+            search: Default::default(),
             hotkey: settings.hotkey.clone(),
             folder: PathBuf::from(&settings.folder),
             repaint_at: None,
@@ -460,22 +466,9 @@ impl MainWindow {
                     }
                 }
                 Page::Stats => crate::stats_ui::ui(ui, &self.stats),
-                page => {
-                    settings_tabs(ui, &mut self.page);
-                    ui.add_space(8.0);
-                    if self.page != Page::Hotkeys {
-                        self.form.recording = false;
-                    }
+                _ => {
                     let mut form_actions = Vec::new();
-                    match page {
-                        Page::Capture => self.form.capture_ui(ui, &mut form_actions),
-                        Page::Hotkeys => self.form.hotkeys_ui(ui, &mut form_actions),
-                        Page::Naming => self.form.naming_ui(ui, &mut form_actions),
-                        Page::Destinations => self.form.destinations_ui(ui, &mut form_actions),
-                        Page::Recording => self.form.recording_ui(ui, &mut form_actions),
-                        Page::About => self.form.about.ui(ui, &mut form_actions),
-                        _ => self.form.ui(ui, &mut form_actions),
-                    }
+                    settings_page(ui, &mut self.page, &mut self.search, &mut self.form, &mut form_actions);
                     actions.extend(form_actions.into_iter().map(Action::from));
                     if std::mem::take(&mut self.form.run_setup) {
                         self.setup = Default::default();
@@ -683,25 +676,40 @@ impl MainWindow {
     }
 }
 
-/// The Settings heading and its tabs, which wrap under it in a narrow window.
-fn settings_tabs(ui: &mut egui::Ui, page: &mut Page) {
-    ui.horizontal_wrapped(|ui| {
-        ui.heading("Settings");
-        ui.add_space(12.0);
-        theme::segmented(ui, |ui| {
-            for (tab, label) in [
-                (Page::Settings, "General"),
-                (Page::Capture, "Capture"),
-                (Page::Recording, "Recording"),
-                (Page::Hotkeys, "Hotkeys"),
-                (Page::Naming, "Paths & naming"),
-                (Page::Destinations, "Destinations"),
-                (Page::About, "About"),
-            ] {
-                ui.selectable_value(page, tab, label);
+/// The Settings page: the sidebar of sections and search, and the section
+/// that's showing beside it.
+fn settings_page(
+    ui: &mut egui::Ui,
+    page: &mut Page,
+    search: &mut crate::settings_search::Search,
+    form: &mut Form,
+    actions: &mut Vec<settings_ui::Action>,
+) {
+    // What was showing as the frame began, should the sidebar change it.
+    let showing = *page;
+    egui::Panel::left("settings-sidebar")
+        .exact_size(SETTINGS_SIDEBAR_WIDTH)
+        .resizable(false)
+        .frame(egui::Frame::new().inner_margin(egui::Margin { right: 16, ..Default::default() }))
+        .show(ui, |ui| search.sidebar(ui, page, &form.draft));
+    if *page != Page::Hotkeys {
+        form.recording = false;
+    }
+    egui::Frame::new()
+        .inner_margin(egui::Margin { left: 20, ..Default::default() })
+        .show(ui, |ui| {
+            ui.heading(crate::settings_search::section_name(showing));
+            ui.add_space(10.0);
+            match showing {
+                Page::Capture => form.capture_ui(ui, actions),
+                Page::Hotkeys => form.hotkeys_ui(ui, actions),
+                Page::Naming => form.naming_ui(ui, actions),
+                Page::Destinations => form.destinations_ui(ui, actions),
+                Page::Recording => form.recording_ui(ui, actions),
+                Page::About => form.about.ui(ui, actions),
+                _ => form.ui(ui, actions),
             }
         });
-    });
 }
 
 /// A button on the icon bar: Capture filled with the accent, the page
@@ -869,19 +877,24 @@ mod tests {
         assert_eq!(duration(3.0 * 3600.0 + 125.0), "3 h 2 min");
     }
 
-    /// Renders the Settings tabs at the window's usual width and its
-    /// narrowest to `target/settings-tabs-<width>-preview.png`:
-    /// `cargo test settings_tabs_preview -- --ignored`.
+    /// Renders the Settings page at the window's usual width and its
+    /// narrowest, with a search typed in the second, to
+    /// `target/settings-page-<width>-preview.png`:
+    /// `cargo test settings_page_preview -- --ignored`.
     #[test]
     #[ignore]
-    fn settings_tabs_preview() {
+    fn settings_page_preview() {
         // The page's width beside the icon bar, inside its margins.
-        for (window, width) in [(980, 980 - 60 - 40), (640, 640 - 60 - 40)] {
-            let mut page = Page::Capture;
-            let name = format!("settings-tabs-{window}-preview");
-            crate::preview::render(&name, [width, 110], 1.0, |root| {
+        for (window, query) in [(980, ""), (800, "sound")] {
+            let mut page = Page::Recording;
+            let mut search = crate::settings_search::Search::with_query(query);
+            let mut form = Form::new(&Settings::default());
+            let name = format!("settings-page-{window}-preview");
+            crate::preview::render(&name, [window - 60, 640], 1.0, |root| {
                 crate::theme::apply(root.ctx());
-                egui::CentralPanel::default().show(root, |ui| settings_tabs(ui, &mut page));
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::central_panel(root.style()).inner_margin(egui::Margin::symmetric(20, 16)))
+                    .show(root, |ui| settings_page(ui, &mut page, &mut search, &mut form, &mut Vec::new()));
             });
         }
     }

@@ -8,6 +8,7 @@ use egui::{RichText, TextEdit};
 use serde::Deserialize;
 
 use crate::settings::Settings;
+use crate::settings_search::found;
 use crate::settings_ui::Action;
 use crate::theme;
 use crate::update;
@@ -55,14 +56,16 @@ impl About {
             ui.label(RichText::new(format!("snapr {}", update::VERSION)).strong().size(16.0));
             ui.add_space(8.0);
             egui::Grid::new("about").num_columns(2).spacing([14.0, 8.0]).show(ui, |ui| {
-                ui.label("Source code");
-                if ui.link(REPOSITORY).clicked() {
+                let label = ui.label("Source code");
+                let r = ui.link(REPOSITORY);
+                if r.clicked() {
                     actions.push(Action::OpenUrl(REPOSITORY.into()));
                 }
+                found(ui, "source-code", label.rect.union(r.rect));
                 ui.end_row();
 
-                ui.label("Licence");
-                ui.vertical(|ui| {
+                let label = ui.label("Licence");
+                let r = ui.vertical(|ui| {
                     if ui.link("PolyForm Noncommercial 1.0.0").clicked() {
                         actions.push(Action::OpenUrl(format!("{REPOSITORY}/blob/main/LICENSE")));
                     }
@@ -74,11 +77,12 @@ impl About {
                         .weak(),
                     );
                 });
+                found(ui, "licence", label.rect.union(r.response.rect));
                 ui.end_row();
 
                 if let Some(config) = Settings::config_dir() {
-                    ui.label("Settings folder");
-                    ui.horizontal(|ui| {
+                    let label = ui.label("Settings folder");
+                    let r = ui.horizontal(|ui| {
                         ui.label(RichText::new(config.display().to_string()).monospace());
                         if ui.button("Show").clicked() {
                             actions.push(Action::Reveal(config));
@@ -86,6 +90,7 @@ impl About {
                     })
                     .response
                     .on_hover_text("Where snapr keeps its settings, capture history and stats");
+                    found(ui, "settings-folder", label.rect.union(r.rect));
                     ui.end_row();
                 }
             });
@@ -113,7 +118,8 @@ impl About {
                 .show(ui, |ui| licence_text(ui, &crate::color_names::notice()));
 
             ui.add_space(16.0);
-            ui.label(RichText::new("Open-source libraries").strong());
+            let r = ui.label(RichText::new("Open-source libraries").strong());
+            found(ui, "libraries", r.rect);
             ui.add_space(4.0);
             let credits = &*CREDITS;
             if credits.crates.is_empty() {

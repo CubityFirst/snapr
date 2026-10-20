@@ -45,6 +45,7 @@ mod remembered;
 mod secrets;
 mod session;
 mod settings;
+mod settings_search;
 mod settings_ui;
 mod setup;
 mod sound;
