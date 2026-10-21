@@ -4,7 +4,7 @@ use image::{Rgba, RgbaImage};
 use qrcode::{Color, QrCode};
 
 /// Pixels per module of a generated code.
-const MODULE: u32 = 10;
+pub const MODULE: u32 = 10;
 /// White border around a generated code, in modules (the spec asks for 4).
 const QUIET_ZONE: u32 = 4;
 /// Largest side a region is upscaled to when looking for small codes.

@@ -4,18 +4,20 @@
 
 use std::path::PathBuf;
 
-use egui::{Color32, RichText, Sense, Stroke, TextEdit, TextureHandle, TextureOptions, vec2};
+use egui::{
+    Align, Color32, Layout, RichText, Sense, Stroke, TextEdit, TextureHandle, TextureOptions, vec2,
+};
 use image::RgbaImage;
 
 use crate::qr;
 use crate::settings::{ColorFormat, ColorPicker, ToolAction, ToolHotkey};
-use crate::settings_ui::ERROR;
+use crate::settings_ui::{ERROR, block, card, heading};
 use crate::theme;
 
-/// Largest side of the scanned region's preview, in points.
-const REGION_PREVIEW: f32 = 140.0;
-/// Side of a generated code's preview, in points.
-const CODE_PREVIEW: f32 = 220.0;
+/// Side of the square the scanned region is shown in, in points.
+const REGION_PREVIEW: f32 = 112.0;
+/// Side of the square a generated code is shown in, in points.
+const CODE_PREVIEW: f32 = 196.0;
 /// How many picked colours are remembered.
 const RECENT_COLORS: usize = 24;
 
@@ -345,81 +347,110 @@ impl Tools {
     }
 
     fn qr_ui(&mut self, ui: &mut egui::Ui, hotkeys: &[ToolHotkey], actions: &mut Vec<Action>) {
-        ui.label(RichText::new("Read a QR code").strong());
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            let scan = theme::primary("Scan region\u{2026}");
-            if ui.add(scan).clicked() {
-                actions.push(Action::ScanQr);
-            }
-            ui.label(
-                RichText::new(
-                    "Drag a region around a code on screen, or click to search a whole window.",
-                )
-                .weak(),
-            );
-        });
-        hotkey_line(ui, hotkeys, ToolAction::ScanQr, actions);
-        if let Some(scan) = &mut self.scan {
-            ui.add_space(10.0);
-            scan_ui(ui, scan, actions);
-        }
-
-        ui.add_space(16.0);
-        ui.separator();
-        ui.add_space(8.0);
-        ui.label(RichText::new("Make a QR code").strong());
-        ui.add_space(4.0);
-        ui.add(
-            TextEdit::multiline(&mut self.text).margin(theme::FIELD_MARGIN)
-                .hint_text("Text or link to encode")
-                .desired_rows(3)
-                .desired_width(f32::INFINITY),
-        );
-        self.regenerate(ui.ctx());
-        let Some(generated) = &self.generated else {
-            return;
-        };
-        ui.add_space(8.0);
-        match &generated.code {
-            Err(e) => {
-                ui.colored_label(ERROR, format!("Can't make a QR code: {e}"));
-            }
-            Ok((image, texture)) => {
-                ui.horizontal_top(|ui| {
+        heading(ui, "Read a QR code", None);
+        card(ui, |ui| {
+            block(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.add(theme::primary("Scan region\u{2026}")).clicked() {
+                        actions.push(Action::ScanQr);
+                    }
                     ui.add(
-                        egui::Image::new(texture)
-                            .fit_to_exact_size(vec2(CODE_PREVIEW, CODE_PREVIEW))
-                            .corner_radius(4.0),
+                        egui::Label::new(
+                            RichText::new(
+                                "Drag a region around a code on screen, or click to search a whole window.",
+                            )
+                            .weak(),
+                        )
+                        .wrap(),
                     );
-                    ui.vertical(|ui| {
-                        if ui.button("Copy image").clicked() {
-                            actions.push(Action::CopyImage(image.clone()));
-                        }
-                        if ui.button("Save as\u{2026}").clicked() {
-                            self.notice = save(image);
-                        }
+                });
+                hotkey_line(ui, hotkeys, ToolAction::ScanQr, actions);
+            });
+            if let Some(scan) = &mut self.scan {
+                block(ui, |ui| scan_ui(ui, scan, actions));
+            }
+        });
+
+        heading(ui, "Make a QR code", None);
+        card(ui, |ui| {
+            block(ui, |ui| self.make_ui(ui, actions));
+        });
+    }
+
+    /// The text to encode, with what to do with its code, beside the code.
+    fn make_ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        const GAP: f32 = 16.0;
+        let p = theme::palette(ui);
+        ui.horizontal_top(|ui| {
+            let width = (ui.available_width() - CODE_PREVIEW - GAP).max(160.0);
+            ui.allocate_ui_with_layout(vec2(width, 0.0), Layout::top_down(Align::Min), |ui| {
+                ui.add(
+                    TextEdit::multiline(&mut self.text)
+                        .margin(theme::FIELD_MARGIN)
+                        .hint_text("Text or link to encode")
+                        .desired_rows(6)
+                        .desired_width(f32::INFINITY),
+                );
+                // Before the code beside it is drawn, so it's never a frame behind.
+                self.regenerate(ui.ctx());
+                ui.add_space(4.0);
+                let image = match self.generated.as_ref().map(|g| &g.code) {
+                    None => {
+                        ui.label(RichText::new("The code updates as you type.").weak());
+                        None
+                    }
+                    Some(Err(e)) => {
+                        ui.colored_label(ERROR, format!("Can't make a QR code: {e}"));
+                        None
+                    }
+                    Some(Ok((image, _))) => {
+                        let chars = self.text.chars().count();
                         ui.label(
                             RichText::new(format!(
-                                "{} \u{00d7} {} px",
+                                "{chars} character{}  \u{00b7}  {} \u{00d7} {} px PNG",
+                                if chars == 1 { "" } else { "s" },
                                 image.width(),
                                 image.height()
                             ))
-                            .weak()
-                            .small(),
+                            .weak(),
                         );
-                        if let Some((msg, is_error)) = &self.notice {
-                            let color = if *is_error {
-                                ERROR
-                            } else {
-                                ui.visuals().weak_text_color()
-                            };
-                            ui.colored_label(color, msg);
+                        Some(image)
+                    }
+                };
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let copy = ui.add_enabled(image.is_some(), theme::primary("Copy image"));
+                    let save_as = ui.add_enabled(image.is_some(), egui::Button::new("Save as\u{2026}"));
+                    if let Some(image) = image {
+                        if copy.clicked() {
+                            actions.push(Action::CopyImage(image.clone()));
                         }
-                    });
+                        if save_as.clicked() {
+                            self.notice = save(image);
+                        }
+                    }
                 });
+                if let Some((msg, is_error)) = &self.notice {
+                    let color = if *is_error { ERROR } else { p.text_weak };
+                    ui.add(egui::Label::new(RichText::new(msg).color(color)).wrap());
+                }
+            });
+            ui.add_space(GAP);
+            let (rect, _) = ui.allocate_exact_size(vec2(CODE_PREVIEW, CODE_PREVIEW), Sense::hover());
+            match self.generated.as_ref().map(|g| &g.code) {
+                Some(Ok((image, texture))) => paint_code(ui, rect, image, texture),
+                _ => {
+                    ui.painter().rect(rect, 8.0, p.field, Stroke::new(1.0, p.divider), egui::StrokeKind::Inside);
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "Your code shows here",
+                        egui::FontId::proportional(12.0),
+                        p.text_weak,
+                    );
+                }
             }
-        }
+        });
     }
 
     /// Makes the code again after the text changed.
@@ -483,55 +514,93 @@ fn scan_ui(ui: &mut egui::Ui, scan: &mut Scan, actions: &mut Vec<Action>) {
                 .load_texture("qr-region", region, TextureOptions::LINEAR),
         );
     }
+    let p = theme::palette(ui);
     ui.horizontal_top(|ui| {
+        // The region, fitted into a square so a wide one doesn't push the
+        // results about.
+        let (rect, _) = ui.allocate_exact_size(vec2(REGION_PREVIEW, REGION_PREVIEW), Sense::hover());
+        ui.painter().rect_filled(rect, 8.0, p.field);
         if let Some(texture) = &scan.texture {
             let size = texture.size_vec2();
-            let scale = (REGION_PREVIEW / size.x.max(size.y)).min(1.0);
-            ui.add(
-                egui::Image::new(texture)
-                    .fit_to_exact_size(size * scale)
-                    .corner_radius(4.0),
-            );
+            let fit = rect.shrink(6.0);
+            let scale = (fit.width() / size.x).min(fit.height() / size.y).min(1.0);
+            let image = egui::Rect::from_center_size(rect.center(), size * scale);
+            egui::Image::new(texture).corner_radius(4.0).paint_at(ui, image);
         }
+        ui.painter().rect_stroke(rect, 8.0, Stroke::new(1.0, p.divider), egui::StrokeKind::Inside);
+        ui.add_space(12.0);
         ui.vertical(|ui| {
-            match scan.texts.len() {
+            let found = match scan.texts.len() {
                 0 => {
-                    ui.colored_label(
-                        ERROR,
-                        "No QR code found there. Try selecting just the code, with a little margin.",
+                    ui.label(RichText::new("No QR code found there").color(p.danger).strong());
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(
+                                "Try selecting just the code, with a little margin around it.",
+                            )
+                            .weak(),
+                        )
+                        .wrap(),
                     );
+                    return;
                 }
-                1 => {
-                    ui.label("Found a QR code:");
-                }
-                n => {
-                    ui.label(format!("Found {n} QR codes:"));
-                }
-            }
+                1 => "Found a QR code".to_string(),
+                n => format!("Found {n} QR codes"),
+            };
+            ui.label(RichText::new(found).strong());
             for (i, text) in scan.texts.iter().enumerate() {
                 ui.push_id(i, |ui| {
                     ui.add_space(4.0);
-                    // Read-only, but selectable.
-                    let mut shown = text.as_str();
-                    ui.add(
-                        TextEdit::multiline(&mut shown).margin(theme::FIELD_MARGIN)
-                            .desired_rows(1)
-                            .desired_width(f32::INFINITY),
-                    );
-                    ui.horizontal(|ui| {
-                        if ui.button("Copy").clicked() {
-                            actions.push(Action::CopyText(text.clone()));
-                        }
-                        if qr::is_link(text)
-                            && ui.button("Open link").on_hover_text(text.trim()).clicked()
+                    ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                        let link = qr::is_link(text);
+                        if link
+                            && ui
+                                .add(theme::primary("Open link"))
+                                .on_hover_text(text.trim())
+                                .clicked()
                         {
                             actions.push(Action::OpenUrl(text.trim().to_string()));
                         }
+                        let copy = if link {
+                            ui.button("Copy")
+                        } else {
+                            ui.add(theme::primary("Copy"))
+                        };
+                        if copy.clicked() {
+                            actions.push(Action::CopyText(text.clone()));
+                        }
+                        ui.add_space(4.0);
+                        // What the code says, selectable, on a field.
+                        ui.with_layout(Layout::top_down(Align::Min), |ui| {
+                            egui::Frame::new()
+                                .fill(p.field)
+                                .stroke(Stroke::new(1.0, p.divider))
+                                .corner_radius(8)
+                                .inner_margin(theme::FIELD_MARGIN)
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.add(egui::Label::new(RichText::new(text).color(p.text)).selectable(true).wrap());
+                                });
+                        });
                     });
                 });
             }
         });
     });
+}
+
+/// A generated code in `rect`, as big as it fits with every module the same
+/// whole number of pixels, so it stays sharp.
+fn paint_code(ui: &egui::Ui, rect: egui::Rect, image: &RgbaImage, texture: &TextureHandle) {
+    let ppp = ui.ctx().pixels_per_point();
+    let modules = (image.width() / qr::MODULE) as f32;
+    let per_module = (rect.width() * ppp / modules).floor();
+    let side = if per_module >= 1.0 { per_module * modules / ppp } else { rect.width() };
+    let min = ((rect.center() - vec2(side, side) / 2.0) * ppp).round() / ppp;
+    let code = egui::Rect::from_min_size(min, vec2(side, side));
+    // The code's white quiet zone, out to the edge of the square.
+    ui.painter().rect_filled(rect, 8.0, Color32::WHITE);
+    egui::Image::new(texture).paint_at(ui, code);
 }
 
 /// A colour as `#RRGGBB`.
@@ -675,16 +744,29 @@ mod tests {
     }
 
     /// Renders the QR code tool, after a scan and with text to encode, to
-    /// `target/tools-preview.png`: `cargo test tools_preview -- --ignored`.
+    /// `target/tools-preview.png`, and after a scan that found nothing with
+    /// no text yet to `target/tools-qr-empty-preview.png`:
+    /// `cargo test tools_preview -- --ignored`.
     #[test]
     #[ignore]
     fn tools_preview() {
         let mut tools = Tools::new();
         let region = qr::encode("https://example.com/snapr").unwrap();
         let (preview, _) = crate::thumbnail::to_egui(region.clone().into(), (320, 320));
-        tools.scanned(qr::decode(&region), preview);
+        let mut texts = qr::decode(&region);
+        texts.push("WIFI:S:snapr office;T:WPA;P:a long passphrase that wraps onto a second line of the field;;".into());
+        tools.scanned(texts, preview);
         tools.text = "Hello from snapr".into();
-        crate::preview::render("tools-preview", [920, 760], 1.0, |root| {
+        crate::preview::render("tools-preview", [920, 640], 1.0, |root| {
+            crate::theme::apply(root.ctx());
+            egui::CentralPanel::default().show(root, |ui| tools.ui(ui, &[], &mut ColorPicker::default(), &mut Vec::new()));
+        });
+
+        let mut tools = Tools::new();
+        let wide = RgbaImage::from_pixel(400, 120, image::Rgba([90, 120, 160, 255]));
+        let (preview, _) = crate::thumbnail::to_egui(wide.into(), (320, 320));
+        tools.scanned(Vec::new(), preview);
+        crate::preview::render("tools-qr-empty-preview", [640, 560], 1.0, |root| {
             crate::theme::apply(root.ctx());
             egui::CentralPanel::default().show(root, |ui| tools.ui(ui, &[], &mut ColorPicker::default(), &mut Vec::new()));
         });
