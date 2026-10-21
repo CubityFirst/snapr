@@ -279,7 +279,7 @@ impl Form {
                 });
                 ui.add_enabled_ui(self.draft.play_sounds, |ui| {
                     row(ui, "sound-volume", "Volume", None, true, |ui| {
-                        let slider = theme::slider(ui, egui::Slider::new(&mut self.draft.sound_volume, 0..=100).suffix("%"));
+                        let slider = theme::slider(ui, egui::Slider::new(&mut self.draft.sound_volume, 0..=100).suffix("%"), "100%");
                         // Let it be heard once it's set, not all the way along a drag.
                         if slider.drag_stopped() || (slider.changed() && !slider.dragged()) {
                             sound::play(Sound::Done, self.draft.sound_volume);
@@ -1194,6 +1194,19 @@ pub(crate) fn row(
     let painter = ui.painter();
     let y = if stacked { inner.top() } else { inner.center().y - text_height / 2.0 };
     let below = y + title.size().y + 2.0;
+    if indent {
+        // An elbow from the row above into the title, to show it belongs to it.
+        const R: f32 = 4.0;
+        let x = full.left() + PAD.x + 4.5;
+        let mid = (y + title.size().y / 2.0).round() + 0.5;
+        let mut points = vec![pos2(x, inner.top() - 1.0)];
+        points.extend((0..=6).map(|i| {
+            let a = std::f32::consts::FRAC_PI_2 * i as f32 / 6.0;
+            pos2(x + R - R * a.cos(), mid - R + R * a.sin())
+        }));
+        points.push(pos2(left - 6.0, mid));
+        painter.line(points, egui::Stroke::new(1.5, p.text_weak));
+    }
     painter.galley(pos2(left, y), title, text_color);
     if let Some(note) = note {
         painter.galley(pos2(left, below), note, p.text_weak);

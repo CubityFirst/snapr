@@ -61,7 +61,21 @@ impl About {
     ) {
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             group(ui, "Version", |ui| {
-                let version = RichText::new(format!("snapr {}", update::VERSION)).strong().size(15.0);
+                // A check that found nothing to do is said beside the version,
+                // smaller, rather than on a row of its own.
+                let quiet = match update {
+                    update::Status::Checking => Some("Checking for updates\u{2026}".to_string()),
+                    update::Status::UpToDate(at) => Some(format!("Up to date (checked {})", at.format("%H:%M"))),
+                    _ => None,
+                };
+                let style = ui.style().clone();
+                let mut version = egui::text::LayoutJob::default();
+                RichText::new(format!("snapr {}", update::VERSION)).strong().size(15.0)
+                    .append_to(&mut version, &style, egui::FontSelection::Default, egui::Align::BOTTOM);
+                if let Some(quiet) = quiet {
+                    RichText::new(format!("   {quiet}")).color(theme::palette(ui).text_weak.gamma_multiply(0.7)).size(12.0)
+                        .append_to(&mut version, &style, egui::FontSelection::Default, egui::Align::BOTTOM);
+                }
                 row(ui, "version", version, None, false, |ui| {
                     if ui.add_enabled(!update.busy(), egui::Button::new("Check for updates")).clicked() {
                         actions.push(Action::CheckForUpdates);
@@ -164,9 +178,8 @@ impl About {
 fn update_status(ui: &mut egui::Ui, update: &update::Status, actions: &mut Vec<Action>) {
     use update::Status;
     let title = match update {
-        Status::Idle => return,
-        Status::Checking => RichText::new("Checking for updates\u{2026}").weak(),
-        Status::UpToDate(at) => RichText::new(format!("Up to date (checked {})", at.format("%H:%M"))).weak(),
+        // Said beside the version.
+        Status::Idle | Status::Checking | Status::UpToDate(_) => return,
         Status::Downloading(version) => RichText::new(format!("Downloading snapr {version}\u{2026}")),
         Status::Available(version, _) => {
             RichText::new(format!("snapr {version} is available (development builds don't install it)"))
@@ -175,7 +188,7 @@ fn update_status(ui: &mut egui::Ui, update: &update::Status, actions: &mut Vec<A
         Status::Failed(e) => RichText::new(format!("Couldn't update: {e}")).color(ERROR),
     };
     row(ui, "update-status", title, None, true, |ui| match update {
-        Status::Checking | Status::Downloading(_) => {
+        Status::Downloading(_) => {
             ui.spinner();
         }
         Status::Available(_, page) => {
@@ -191,7 +204,7 @@ fn update_status(ui: &mut egui::Ui, update: &update::Status, actions: &mut Vec<A
                 actions.push(Action::RestartToUpdate);
             }
         }
-        Status::Idle | Status::UpToDate(_) | Status::Failed(_) => {}
+        Status::Idle | Status::Checking | Status::UpToDate(_) | Status::Failed(_) => {}
     });
 }
 

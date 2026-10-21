@@ -207,6 +207,7 @@ fn sounds(ui: &mut egui::Ui, form: &mut Form) -> bool {
             let slider = theme::slider(
                 ui,
                 egui::Slider::new(&mut draft.sound_volume, 0..=100).suffix("%"),
+                "100%",
             );
             // Let it be heard once it's set, not all the way along a drag.
             if slider.drag_stopped() || (slider.changed() && !slider.dragged()) {

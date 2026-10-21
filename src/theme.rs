@@ -421,12 +421,17 @@ fn segmented_in<R>(ui: &mut Ui, wrap: bool, add: impl FnOnce(&mut Ui) -> R) -> R
         .inner
 }
 
-/// A slider whose filled part, up to the handle, is the accent.
-pub fn slider(ui: &mut Ui, slider: egui::Slider<'_>) -> Response {
+/// A slider whose filled part, up to the handle, is the accent. Its value's
+/// box is as wide as `widest`, the longest the value gets, so the box doesn't
+/// change width, and move the slider, as the value does.
+pub fn slider(ui: &mut Ui, slider: egui::Slider<'_>, widest: &str) -> Response {
     ui.scope(|ui| {
         let v = ui.visuals_mut();
         v.slider_trailing_fill = true;
         v.selection.bg_fill = ACCENT;
+        let text = WidgetText::from(widest).into_galley(ui, None, f32::INFINITY, egui::TextStyle::Button);
+        let s = ui.spacing_mut();
+        s.interact_size.x = s.interact_size.x.max(text.size().x + 2.0 * s.button_padding.x);
         ui.add(slider)
     })
     .inner
