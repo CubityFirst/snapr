@@ -396,13 +396,8 @@ impl App {
         if self.recording.as_ref().is_some_and(|r| r.id == id) {
             self.recording = None;
         }
-        let (path, first_frame) = match result {
-            Ok(Some(r)) => {
-                if let Some(w) = r.warning {
-                    self.report_on(event_loop, format!("recording: {w}"), true, Page::Recording);
-                }
-                (r.path, r.first_frame)
-            }
+        let (path, first_frame, warning) = match result {
+            Ok(Some(r)) => (r.path, r.first_frame, r.warning),
             Ok(None) => return self.set_status("Recording discarded".into()),
             Err(e) => return self.report_on(event_loop, format!("recording failed: {e}"), true, Page::Recording),
         };
@@ -414,7 +409,15 @@ impl App {
         if uploading {
             self.output.upload_file(path.clone(), ctx);
         }
-        self.status = Some((format!("Recording saved to {}", path.display()), false));
+        // The video's fine, so a warning (say, H.264 where AV1 wasn't
+        // available) only goes on the status line, without opening the window.
+        self.status = Some(match warning {
+            Some(w) => {
+                eprintln!("recording: {w}");
+                (format!("Recording saved to {} \u{2014} {w}", path.display()), true)
+            }
+            None => (format!("Recording saved to {}", path.display()), false),
+        });
         if let Some(w) = &mut self.main_window {
             w.form.status = self.status.clone();
             w.form.last_capture = self.last_capture.clone();
