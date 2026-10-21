@@ -253,7 +253,7 @@ impl Tools {
             ui.label("Copy as");
             // Shown with the last colour picked, or snapr's blue.
             let example = self.color.unwrap_or([0x3d, 0x9b, 0xff]);
-            theme::segmented(ui, |ui| {
+            theme::segmented_wrapped(ui, |ui| {
                 for format in ColorFormat::ALL {
                     ui.selectable_value(
                         &mut picker.copy_as,

@@ -9,7 +9,7 @@ use serde::Deserialize;
 
 use crate::settings::Settings;
 use crate::settings_search::found;
-use crate::settings_ui::Action;
+use crate::settings_ui::{Action, ERROR, SUCCESS, block, card, group, heading, row};
 use crate::theme;
 use crate::update;
 
@@ -51,109 +51,148 @@ pub struct About {
 }
 
 impl About {
-    pub fn ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+    /// `check_for_updates` is the setting; `update` where the last check is up to.
+    pub fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        check_for_updates: &mut bool,
+        update: &update::Status,
+        actions: &mut Vec<Action>,
+    ) {
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-            ui.label(RichText::new(format!("snapr {}", update::VERSION)).strong().size(16.0));
-            ui.add_space(8.0);
-            egui::Grid::new("about").num_columns(2).spacing([14.0, 8.0]).show(ui, |ui| {
-                let label = ui.label("Source code");
-                let r = ui.link(REPOSITORY);
-                if r.clicked() {
-                    actions.push(Action::OpenUrl(REPOSITORY.into()));
-                }
-                found(ui, "source-code", label.rect.union(r.rect));
-                ui.end_row();
+            group(ui, "Version", |ui| {
+                let version = RichText::new(format!("snapr {}", update::VERSION)).strong().size(15.0);
+                row(ui, "version", version, None, false, |ui| {
+                    if ui.add_enabled(!update.busy(), egui::Button::new("Check for updates")).clicked() {
+                        actions.push(Action::CheckForUpdates);
+                    }
+                });
+                update_status(ui, update, actions);
+                row(ui, "check-for-updates", "Check for updates automatically",
+                    Some("From GitHub, when snapr starts and twice a day. A new release installs to run from the next start"),
+                    false, |ui| {
+                    theme::switch(ui, check_for_updates, "");
+                });
+            });
 
-                let label = ui.label("Licence");
-                let r = ui.vertical(|ui| {
+            group(ui, "Project", |ui| {
+                row(ui, "source-code", "Source code", None, false, |ui| {
+                    if ui.link(REPOSITORY).clicked() {
+                        actions.push(Action::OpenUrl(REPOSITORY.into()));
+                    }
+                });
+                row(ui, "licence", "Licence",
+                    Some("Free to use, change and share for anything but commercial purposes. The snapr name and logo aren't covered by it"),
+                    false, |ui| {
                     if ui.link("PolyForm Noncommercial 1.0.0").clicked() {
                         actions.push(Action::OpenUrl(format!("{REPOSITORY}/blob/main/LICENSE")));
                     }
-                    ui.label(
-                        RichText::new(
-                            "Free to use, change and share for anything but commercial purposes. \
-                             The snapr name and logo aren't covered by it.",
-                        )
-                        .weak(),
-                    );
                 });
-                found(ui, "licence", label.rect.union(r.response.rect));
-                ui.end_row();
-
                 if let Some(config) = Settings::config_dir() {
-                    let label = ui.label("Settings folder");
-                    let r = ui.horizontal(|ui| {
-                        ui.label(RichText::new(config.display().to_string()).monospace());
+                    let note = format!("{}: its settings, capture history and stats", config.display());
+                    row(ui, "settings-folder", "Settings folder", Some(&note), false, |ui| {
                         if ui.button("Show").clicked() {
-                            actions.push(Action::Reveal(config));
+                            actions.push(Action::Reveal(config.clone()));
                         }
-                    })
-                    .response
-                    .on_hover_text("Where snapr keeps its settings, capture history and stats");
-                    found(ui, "settings-folder", label.rect.union(r.rect));
-                    ui.end_row();
+                    });
                 }
             });
 
-            ui.add_space(16.0);
-            ui.label(RichText::new("Attributions").strong());
-            ui.add_space(4.0);
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                ui.label(crate::locale::spelled!("The colour picker's colour names are from "));
-                if ui.link("Name that Color").clicked() {
-                    actions.push(Action::OpenUrl("https://chir.ag/projects/ntc/".into()));
-                }
-                ui.label(" by Chirag Mehta, under the ");
-                if ui.link("Creative Commons Attribution 2.5").clicked() {
-                    actions.push(Action::OpenUrl("https://creativecommons.org/licenses/by/2.5/".into()));
-                }
-                ui.label(
-                    " licence. Many of them are from the Resene RGB Values List, \
-                     copyright Resene Paints Ltd 2001.",
-                );
+            group(ui, "Attributions", |ui| {
+                block(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        ui.label(crate::locale::spelled!("The colour picker's colour names are from "));
+                        if ui.link("Name that Color").clicked() {
+                            actions.push(Action::OpenUrl("https://chir.ag/projects/ntc/".into()));
+                        }
+                        ui.label(" by Chirag Mehta, under the ");
+                        if ui.link("Creative Commons Attribution 2.5").clicked() {
+                            actions.push(Action::OpenUrl("https://creativecommons.org/licenses/by/2.5/".into()));
+                        }
+                        ui.label(
+                            " licence. Many of them are from the Resene RGB Values List, \
+                             copyright Resene Paints Ltd 2001.",
+                        );
+                    });
+                    egui::CollapsingHeader::new("Notices")
+                        .id_salt("color-names-notice")
+                        .show(ui, |ui| licence_text(ui, &crate::color_names::notice()));
+                });
             });
-            egui::CollapsingHeader::new("Notices")
-                .id_salt("color-names-notice")
-                .show(ui, |ui| licence_text(ui, &crate::color_names::notice()));
 
-            ui.add_space(16.0);
-            let r = ui.label(RichText::new("Open-source libraries").strong());
-            found(ui, "libraries", r.rect);
-            ui.add_space(4.0);
             let credits = &*CREDITS;
-            if credits.crates.is_empty() {
-                ui.label(RichText::new("The list of libraries wasn't included in this build.").weak());
-                return;
-            }
-            ui.label(
-                RichText::new(format!(
+            let note = if credits.crates.is_empty() {
+                "The list of libraries wasn't included in this build.".to_string()
+            } else {
+                format!(
                     "snapr is built with these {} open-source Rust crates. Click one for its licence.",
                     credits.crates.len()
-                ))
-                .weak(),
-            );
-            ui.add_space(4.0);
-            ui.add(
-                TextEdit::singleline(&mut self.filter)
-                    .margin(theme::FIELD_MARGIN)
-                    .hint_text("Search")
-                    .desired_width(240.0),
-            );
-            ui.add_space(4.0);
-            let filter = self.filter.trim().to_lowercase();
-            for (i, c) in credits.crates.iter().enumerate() {
-                if !c.name.to_lowercase().contains(&filter) {
-                    continue;
-                }
-                let licence = c.license.as_deref().unwrap_or("see its licence file");
-                let title = format!("{} {}  \u{00b7}  {licence}", c.name, c.version);
-                egui::CollapsingHeader::new(title).id_salt(("crate", i)).show(ui, |ui| {
-                    crate_ui(ui, c, &credits.texts, actions);
-                });
+                )
+            };
+            let r = heading(ui, "Open-source libraries", Some(&note));
+            found(ui, "libraries", r);
+            if credits.crates.is_empty() {
+                return;
             }
+            card(ui, |ui| {
+                block(ui, |ui| {
+                    ui.add(
+                        TextEdit::singleline(&mut self.filter)
+                            .margin(theme::FIELD_MARGIN)
+                            .hint_text("Search")
+                            .desired_width(240.0),
+                    );
+                    let filter = self.filter.trim().to_lowercase();
+                    for (i, c) in credits.crates.iter().enumerate() {
+                        if !c.name.to_lowercase().contains(&filter) {
+                            continue;
+                        }
+                        let licence = c.license.as_deref().unwrap_or("see its licence file");
+                        let title = format!("{} {}  \u{00b7}  {licence}", c.name, c.version);
+                        egui::CollapsingHeader::new(title).id_salt(("crate", i)).show(ui, |ui| {
+                            crate_ui(ui, c, &credits.texts, actions);
+                        });
+                    }
+                });
+            });
         });
     }
+}
+
+/// What the last update check found, and what can be done about it.
+fn update_status(ui: &mut egui::Ui, update: &update::Status, actions: &mut Vec<Action>) {
+    use update::Status;
+    let title = match update {
+        Status::Idle => return,
+        Status::Checking => RichText::new("Checking for updates\u{2026}").weak(),
+        Status::UpToDate(at) => RichText::new(format!("Up to date (checked {})", at.format("%H:%M"))).weak(),
+        Status::Downloading(version) => RichText::new(format!("Downloading snapr {version}\u{2026}")),
+        Status::Available(version, _) => {
+            RichText::new(format!("snapr {version} is available (development builds don't install it)"))
+        }
+        Status::Installed(version, _) => RichText::new(format!("snapr {version} is installed")).color(SUCCESS),
+        Status::Failed(e) => RichText::new(format!("Couldn't update: {e}")).color(ERROR),
+    };
+    row(ui, "update-status", title, None, true, |ui| match update {
+        Status::Checking | Status::Downloading(_) => {
+            ui.spinner();
+        }
+        Status::Available(_, page) => {
+            if ui.link("Release notes").clicked() {
+                actions.push(Action::OpenUrl(page.clone()));
+            }
+        }
+        Status::Installed(_, page) => {
+            if ui.link("Release notes").clicked() {
+                actions.push(Action::OpenUrl(page.clone()));
+            }
+            if ui.button("Restart now").clicked() {
+                actions.push(Action::RestartToUpdate);
+            }
+        }
+        Status::Idle | Status::UpToDate(_) | Status::Failed(_) => {}
+    });
 }
 
 /// A crate's authors, link and licence files.
@@ -226,9 +265,11 @@ mod tests {
     #[ignore]
     fn about_preview() {
         let mut about = About::default();
+        let mut check = true;
+        let status = update::Status::UpToDate(chrono::Local::now());
         crate::preview::render("settings-about-preview", [920, 900], 1.0, |root| {
             crate::theme::apply(root.ctx());
-            egui::CentralPanel::default().show(root, |ui| about.ui(ui, &mut Vec::new()));
+            egui::CentralPanel::default().show(root, |ui| about.ui(ui, &mut check, &status, &mut Vec::new()));
         });
     }
 }

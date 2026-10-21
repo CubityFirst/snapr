@@ -264,153 +264,97 @@ impl Form {
     /// The General tab.
     pub fn ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-            egui::Grid::new("settings").num_columns(2).spacing([14.0, 8.0]).show(ui, |ui| {
-                if cfg!(windows) {
-                    ui.label("");
-                    let r = theme::switch(ui, &mut self.draft.start_with_windows, "Start snapr when you sign in to Windows")
-                        .on_hover_text("So the hotkeys work without starting it yourself");
-                    found(ui, "start-with-windows", r.rect);
-                    ui.end_row();
-                }
-
-                ui.label("");
-                let r = theme::switch(ui, &mut self.draft.play_sounds, "Play sounds (shutter on capture)");
-                found(ui, "play-sounds", r.rect);
-                ui.end_row();
-
-                let label = ui.label("Sound volume");
-                let r = ui.add_enabled_ui(self.draft.play_sounds, |ui| {
-                    let slider = theme::slider(ui, egui::Slider::new(&mut self.draft.sound_volume, 0..=100).suffix("%"));
-                    // Let it be heard once it's set, not all the way along a drag.
-                    if slider.drag_stopped() || (slider.changed() && !slider.dragged()) {
-                        sound::play(Sound::Done, self.draft.sound_volume);
-                    }
+            if cfg!(windows) {
+                group(ui, "Startup", |ui| {
+                    row(ui, "start-with-windows", "Start snapr when you sign in to Windows",
+                        Some("So the hotkeys work without starting it yourself"), false, |ui| {
+                        theme::switch(ui, &mut self.draft.start_with_windows, "");
+                    });
                 });
-                found(ui, "sound-volume", label.rect.union(r.response.rect));
-                ui.end_row();
+            }
 
-                ui.label("");
-                let r = theme::switch(ui, &mut self.draft.show_toast, "Show a preview in the corner after each capture")
-                    .on_hover_text("Click it to open the link (or the image), middle-click to copy the image, right-click to close it");
-                found(ui, "show-toast", r.rect);
-                ui.end_row();
-
-                let icon = if cfg!(target_os = "macos") { "menu bar icon" } else { "tray icon" };
-                let label = ui.label(format!("Clicking the {icon}"))
-                    .on_hover_text("A right-click always shows the menu");
-                let r = egui::ComboBox::from_id_salt("tray-click")
-                    .selected_text(self.draft.tray_click.label())
-                    .width(220.0)
-                    .show_ui(ui, |ui| {
-                        for click in TrayClick::all() {
-                            ui.selectable_value(&mut self.draft.tray_click, click, click.label());
+            group(ui, "After each capture", |ui| {
+                row(ui, "play-sounds", "Play sounds", Some("A shutter on capture, and a chime when something's done"), false, |ui| {
+                    theme::switch(ui, &mut self.draft.play_sounds, "");
+                });
+                ui.add_enabled_ui(self.draft.play_sounds, |ui| {
+                    row(ui, "sound-volume", "Volume", None, true, |ui| {
+                        let slider = theme::slider(ui, egui::Slider::new(&mut self.draft.sound_volume, 0..=100).suffix("%"));
+                        // Let it be heard once it's set, not all the way along a drag.
+                        if slider.drag_stopped() || (slider.changed() && !slider.dragged()) {
+                            sound::play(Sound::Done, self.draft.sound_volume);
                         }
                     });
-                found(ui, "tray-click", label.rect.union(r.response.rect));
-                ui.end_row();
+                });
+                row(ui, "show-toast", "Show a preview in the corner",
+                    Some("Click it to open the link or the image, middle-click to copy the image, right-click to close it"),
+                    false, |ui| {
+                    theme::switch(ui, &mut self.draft.show_toast, "");
+                });
+            });
 
+            let icon = if cfg!(target_os = "macos") { "Menu bar icon" } else { "Tray icon" };
+            group(ui, icon, |ui| {
+                row(ui, "tray-click", "Clicking it", Some("A right-click always shows the menu"), false, |ui| {
+                    egui::ComboBox::from_id_salt("tray-click")
+                        .selected_text(self.draft.tray_click.label())
+                        .width(220.0)
+                        .show_ui(ui, |ui| {
+                            for click in TrayClick::all() {
+                                ui.selectable_value(&mut self.draft.tray_click, click, click.label());
+                            }
+                        });
+                });
                 // macOS tints menu bar icons to suit the menu bar itself.
                 if !cfg!(target_os = "macos") {
-                    let label = ui.label(crate::locale::spelled!("Tray icon colour"))
-                        .on_hover_text("Each shown on a dark taskbar and a light one");
-                    let r = ui.horizontal_wrapped(|ui| {
+                    row(ui, "tray-icon", crate::locale::spelled!("Colour"),
+                        Some("Each shown on a dark taskbar and a light one"), false, |ui| {
                         for style in TrayIconStyle::all() {
                             tray_icon_choice(ui, &mut self.draft.tray_icon, style);
                         }
                     });
-                    found(ui, "tray-icon", label.rect.union(r.response.rect));
-                    ui.end_row();
                 }
+            });
 
-                ui.label(RichText::new("Updates").strong());
-                ui.end_row();
-
-                ui.label("");
-                let mut never = !self.draft.check_for_updates;
-                let r = theme::switch(ui, &mut never, "Do not check for updates").on_hover_text(
-                    "Otherwise snapr looks for a new release on GitHub when it starts and twice a day, \
-                     and installs it to run from the next start",
-                );
-                found(ui, "check-for-updates", r.rect);
-                if r.changed() {
-                    self.draft.check_for_updates = !never;
-                }
-                ui.end_row();
-
-                let label = ui.label("Version");
-                let r = ui.horizontal(|ui| {
-                    ui.label(update::VERSION);
-                    if ui
-                        .add_enabled(!self.update.busy(), egui::Button::new("Check for updates now"))
-                        .clicked()
-                    {
-                        actions.push(Action::CheckForUpdates);
-                    }
-                });
-                found(ui, "version", label.rect.union(r.response.rect));
-                ui.end_row();
-
-                if !matches!(self.update, update::Status::Idle) {
-                    ui.label("");
-                    self.update_status_ui(ui, actions);
-                    ui.end_row();
-                }
-
-                ui.label(RichText::new("Move to another computer").strong());
-                ui.end_row();
-
-                ui.label("");
-                let r = ui.horizontal(|ui| {
-                    if ui
-                        .button("Export settings\u{2026}")
-                        .on_hover_text("Saves these settings and the capture tools' to a file")
-                        .clicked()
-                    {
+            group(ui, "Setup", |ui| {
+                row(ui, "transfer", "Move to another computer",
+                    Some("Saves these settings, the hotkeys, upload destinations and capture tools' settings to a file, or loads them"),
+                    false, |ui| {
+                    if ui.button("Export\u{2026}").clicked() {
                         self.export_settings();
                     }
                     if ui
-                        .button("Import settings\u{2026}")
+                        .button("Import\u{2026}")
                         .on_hover_text("Replaces these settings with ones exported from snapr")
                         .clicked()
                     {
                         self.import_settings(actions);
                     }
                 });
-                found(ui, "transfer", r.response.rect);
-                ui.end_row();
-
-                ui.label("");
-                let r = theme::switch(ui, &mut self.export_secrets, "Include upload secret keys in the export")
-                    .on_hover_text(
-                        "So destinations work straight away after importing. They're written \
-                         in the file as plain text: keep it private",
-                    );
-                found(ui, "export-secrets", r.rect);
-                ui.end_row();
-
+                row(ui, "export-secrets", "Include upload secret keys in the export",
+                    Some("So destinations work straight away after importing. They're written in the file as plain text: keep it private"),
+                    true, |ui| {
+                    theme::switch(ui, &mut self.export_secrets, "");
+                });
                 if let Some((note, is_err)) = &self.transfer_note {
-                    ui.label("");
                     let text = RichText::new(note.as_str());
-                    ui.label(if *is_err { text.color(ERROR) } else { text.weak() });
-                    ui.end_row();
+                    row(ui, "transfer-note", if *is_err { text.color(ERROR) } else { text.weak() }, None, true, |_| {});
                 }
-
-                ui.label(RichText::new("First-time setup").strong());
-                ui.end_row();
-
-                ui.label("");
-                let r = ui
-                    .button("Run setup again")
-                    .on_hover_text("The questions from snapr's first start, with your current answers picked");
-                found(ui, "run-setup", r.rect);
-                if r.clicked() {
-                    self.run_setup = true;
-                }
-                ui.end_row();
+                row(ui, "run-setup", "First-time setup",
+                    Some("The questions from snapr's first start, with your current answers picked"), false, |ui| {
+                    if ui.button("Run setup again").clicked() {
+                        self.run_setup = true;
+                    }
+                });
             });
 
             self.save_bar(ui, actions);
         });
+    }
+
+    /// The About tab, which also checks for updates.
+    pub fn about_ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        self.about.ui(ui, &mut self.draft.check_for_updates, &self.update, actions);
     }
 
     /// The Capture tab: how the overlay behaves while picking a region.
@@ -420,37 +364,31 @@ impl Form {
                 RichText::new("Press the hotkey and drag a region to capture it (click for a whole screen). Draw first to annotate.")
                     .weak(),
             );
-            ui.add_space(10.0);
 
-            egui::Grid::new("capture").num_columns(2).spacing([14.0, 8.0]).show(ui, |ui| {
-                ui.label("");
-                let r = theme::switch(ui, &mut self.draft.annotate, "Show the annotation toolbar while capturing");
-                found(ui, "annotate", r.rect);
-                ui.end_row();
-
-                let label = ui.label("Overlay frame rate");
-                let r = ui.horizontal(|ui| {
+            group(ui, "While picking a region", |ui| {
+                row(ui, "annotate", "Show the annotation toolbar",
+                    Some("Arrows, text, boxes and more, to draw on the capture before it's taken"), false, |ui| {
+                    theme::switch(ui, &mut self.draft.annotate, "");
+                });
+                row(ui, "overlay-fps", "Frame rate", Some("How often the screen redraws as the mouse moves"), false, |ui| {
+                    // 0 matches the monitor. The custom rate goes before the
+                    // choice, so the choice stays put at the right.
                     let mut custom = self.draft.overlay_fps != 0;
+                    if custom {
+                        ui.add(egui::DragValue::new(&mut self.draft.overlay_fps).range(15..=1000).suffix(" fps"));
+                    }
                     theme::segmented(ui, |ui| {
                         ui.selectable_value(&mut custom, false, "Match monitor");
                         ui.selectable_value(&mut custom, true, "Custom");
                     });
-                    if custom {
-                        if self.draft.overlay_fps == 0 {
-                            self.draft.overlay_fps = 144;
-                        }
-                        ui.add(egui::DragValue::new(&mut self.draft.overlay_fps).range(15..=1000).suffix(" fps"));
-                    } else {
-                        self.draft.overlay_fps = 0;
+                    if custom != (self.draft.overlay_fps != 0) {
+                        self.draft.overlay_fps = if custom { 144 } else { 0 };
                     }
                 });
-                found(ui, "overlay-fps", label.rect.union(r.response.rect));
-                ui.end_row();
+            });
 
-                let label = ui.label("Beside the crosshair").on_hover_text(
-                    "Shown next to the cursor while selecting a region",
-                );
-                let r = ui.horizontal(|ui| {
+            group(ui, "Crosshair", |ui| {
+                row(ui, "crosshair", "Beside it", Some("Shown next to the cursor while selecting a region"), false, |ui| {
                     let info = &mut self.draft.crosshair_info;
                     theme::checkbox(ui, &mut info.position, "Position")
                         .on_hover_text("The pixel's X and Y on the screen");
@@ -459,15 +397,9 @@ impl Form {
                     theme::checkbox(ui, &mut info.magnifier, "Magnifier")
                         .on_hover_text("The pixels around the cursor, enlarged");
                 });
-                found(ui, "crosshair", label.rect.union(r.response.rect));
-                ui.end_row();
-
-                let label = ui.label("Scrolling the magnifier").on_hover_text(
-                    crate::locale::spelled!(
-                        "What the mouse wheel does to the magnifier, here and in the colour picker"
-                    ),
-                );
-                let r = ui.horizontal(|ui| {
+                row(ui, "magnifier-scroll", "Scrolling the magnifier",
+                    Some(&crate::locale::spell("What the mouse wheel does to it, here and in the colour picker")),
+                    false, |ui| {
                     let scroll = &mut self.draft.crosshair_info.scroll;
                     theme::segmented(ui, |ui| {
                         ui.selectable_value(scroll, MagnifierScroll::Resize, "Resizes it")
@@ -476,17 +408,14 @@ impl Form {
                             .on_hover_text("Fewer, bigger pixels, or more, smaller ones");
                     });
                 });
-                found(ui, "magnifier-scroll", label.rect.union(r.response.rect));
-                ui.end_row();
+            });
 
-                let label = ui.label("Redaction image").on_hover_text(
-                    "The image redaction tool (I) covers areas with this picture",
-                );
-                let r = ui.horizontal(|ui| {
+            group(ui, "Redaction", |ui| {
+                row(ui, "redact-image", "Image", Some("The image redaction tool (I) covers areas with this picture"), false, |ui| {
                     ui.add(
                         TextEdit::singleline(&mut self.draft.redact_image).margin(theme::FIELD_MARGIN)
                             .hint_text("None (black boxes)")
-                            .desired_width(300.0),
+                            .desired_width(260.0),
                     );
                     if ui.button("Browse\u{2026}").clicked()
                         && let Some(file) = rfd::FileDialog::new()
@@ -499,17 +428,11 @@ impl Form {
                         self.draft.redact_image.clear();
                     }
                 });
-                found(ui, "redact-image", label.rect.union(r.response.rect));
-                ui.end_row();
-
-                ui.label("");
-                let r = theme::switch(ui, &mut self.draft.redact_stretch, "Stretch the image to fill each area")
-                    .on_hover_text(
-                        "Squash or stretch it to the area's shape. Off, it keeps its proportions \
-                         and is cropped to cover the area",
-                    );
-                found(ui, "redact-stretch", r.rect);
-                ui.end_row();
+                row(ui, "redact-stretch", "Stretch the image to fill each area",
+                    Some("Squash or stretch it to the area's shape. Off, it keeps its proportions and is cropped to cover the area"),
+                    true, |ui| {
+                    theme::switch(ui, &mut self.draft.redact_stretch, "");
+                });
             });
 
             self.save_bar(ui, actions);
@@ -583,223 +506,181 @@ impl Form {
     pub fn recording_ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             ui.label(
-                RichText::new("Press the record hotkey and drag a region to record it; press it again to stop.")
-                    .weak(),
+                RichText::new(if cfg!(target_os = "linux") || self.draft.record_with_ffmpeg {
+                    "Press the record hotkey and drag a region to record it; press it again to stop. \
+                     Recordings are encoded with FFmpeg and saved next to your screenshots."
+                } else {
+                    "Press the record hotkey and drag a region to record it; press it again to stop. \
+                     Recordings are saved next to your screenshots."
+                })
+                .weak(),
             );
-            ui.add_space(10.0);
 
-            egui::Grid::new("recording").num_columns(2).spacing([14.0, 8.0]).show(ui, |ui| {
-                let label = ui.label("Frame rate");
-                let r = ui.add(egui::DragValue::new(&mut self.draft.record_fps).range(1..=120).suffix(" fps"));
-                found(ui, "record-fps", label.rect.union(r.rect));
-                ui.end_row();
+            group(ui, "Video", |ui| {
+                row(ui, "record-fps", "Frame rate", None, false, |ui| {
+                    ui.add(egui::DragValue::new(&mut self.draft.record_fps).range(1..=120).suffix(" fps"));
+                });
 
                 if crate::encode::webm_supported() {
                     use crate::settings::RecordFormat;
-                    let label = ui.label("Format");
-                    let r = ui.horizontal(|ui| theme::segmented(ui, |ui| {
-                        ui.selectable_value(&mut self.draft.record_format, RecordFormat::Mp4, "MP4")
-                            .on_hover_text("H.264 and AAC: plays everywhere");
-                        if cfg!(windows) {
-                            ui.selectable_value(&mut self.draft.record_format, RecordFormat::Av1, "MP4 (AV1)")
-                                .on_hover_text(
-                                    "AV1 and AAC, made by the graphics card (NVIDIA RTX 40, AMD RX 7000, Intel Arc or newer): \
-                                     sharper for the size. Plays in browsers, Discord and Windows' apps; not on older devices. \
-                                     Falls back to H.264 without such a card.",
-                                );
-                        }
-                        ui.selectable_value(&mut self.draft.record_format, RecordFormat::Webm, "WebM")
-                            .on_hover_text("VP9 and Opus: smaller files, plays in browsers");
-                    }));
-                    found(ui, "record-format", label.rect.union(r.response.rect));
-                    ui.end_row();
+                    let note = match self.draft.record_format {
+                        RecordFormat::Mp4 => "H.264 and AAC: plays everywhere",
+                        RecordFormat::Av1 => "AV1 from the graphics card: sharper for the size, but not for older devices",
+                        RecordFormat::Webm => "VP9 and Opus: smaller files, plays in browsers",
+                    };
+                    row(ui, "record-format", "Format", Some(note), false, |ui| {
+                        theme::segmented(ui, |ui| {
+                            ui.selectable_value(&mut self.draft.record_format, RecordFormat::Mp4, "MP4")
+                                .on_hover_text("H.264 and AAC: plays everywhere");
+                            if cfg!(windows) {
+                                ui.selectable_value(&mut self.draft.record_format, RecordFormat::Av1, "MP4 (AV1)")
+                                    .on_hover_text(
+                                        "AV1 and AAC, made by the graphics card (NVIDIA RTX 40, AMD RX 7000, Intel Arc or newer): \
+                                         sharper for the size. Plays in browsers, Discord and Windows' apps; not on older devices. \
+                                         Falls back to H.264 without such a card.",
+                                    );
+                            }
+                            ui.selectable_value(&mut self.draft.record_format, RecordFormat::Webm, "WebM")
+                                .on_hover_text("VP9 and Opus: smaller files, plays in browsers");
+                        });
+                    });
                 }
 
                 // Windows and macOS encode and play videos themselves, and
                 // can encode with FFmpeg instead.
                 if !cfg!(target_os = "linux") {
-                    let label = ui.label("Encoder");
-                    let r = ui.horizontal(|ui| theme::segmented(ui, |ui| {
-                        ui.selectable_value(&mut self.draft.record_with_ffmpeg, false, "System")
-                            .on_hover_text("The encoder the system provides: nothing to install, and light on the CPU");
-                        ui.selectable_value(&mut self.draft.record_with_ffmpeg, true, "FFmpeg")
-                            .on_hover_text(
-                                "x264 (MP4) or libvpx (WebM): sharper for the file size, but uses more CPU. \
-                                 Needs FFmpeg installed; without it, recordings use the system's encoder. \
-                                 AV1 and HDR recordings are still made by the graphics card.",
-                            );
-                    }));
-                    found(ui, "encoder", label.rect.union(r.response.rect));
-                    ui.end_row();
+                    let note = if self.draft.record_with_ffmpeg {
+                        "Sharper for the file size, but uses more CPU and needs FFmpeg installed"
+                    } else {
+                        "The system's own: nothing to install, and light on the CPU"
+                    };
+                    row(ui, "encoder", "Encoder", Some(note), false, |ui| {
+                        theme::segmented(ui, |ui| {
+                            ui.selectable_value(&mut self.draft.record_with_ffmpeg, false, "System")
+                                .on_hover_text("The encoder the system provides: nothing to install, and light on the CPU");
+                            ui.selectable_value(&mut self.draft.record_with_ffmpeg, true, "FFmpeg")
+                                .on_hover_text(
+                                    "x264 (MP4) or libvpx (WebM): sharper for the file size, but uses more CPU. \
+                                     Needs FFmpeg installed; without it, recordings use the system's encoder. \
+                                     AV1 and HDR recordings are still made by the graphics card.",
+                                );
+                        });
+                    });
                 }
                 if cfg!(target_os = "linux") || self.draft.record_with_ffmpeg {
-                    let label = ui.label("FFmpeg");
-                    let r = ui.horizontal(|ui| {
-                        ui.add(
-                            TextEdit::singleline(&mut self.draft.ffmpeg_path).margin(theme::FIELD_MARGIN)
-                                .hint_text("ffmpeg (found on PATH)")
-                                .desired_width(300.0),
-                        );
-                        if ui.button("Browse\u{2026}").clicked()
-                            && let Some(file) = rfd::FileDialog::new().pick_file()
-                        {
-                            self.draft.ffmpeg_path = file.display().to_string();
-                        }
-                        self.ffmpeg_check_button(ui);
-                    });
-                    found(ui, "ffmpeg", label.rect.union(r.response.rect));
-                    ui.end_row();
-                    self.ffmpeg_check_result(ui);
-
-                    // The settings for the format being recorded.
-                    let ff = &mut self.draft.ffmpeg;
-                    if self.draft.record_format == crate::settings::RecordFormat::Webm && crate::encode::webm_supported() {
-                        let label = ui.label("VP9 (WebM)");
-                        let r = ui.horizontal(|ui| {
-                            ui.label("Speed");
-                            ui.add(egui::DragValue::new(&mut ff.vp9_speed).range(0..=8)).on_hover_text(
-                                "0 (slowest, smallest files) to 8 (fastest). Below about 5 \
-                                 may not keep up with the recording.",
-                            );
-                            ui.label("Quality");
-                            ui.add(egui::DragValue::new(&mut ff.vp9_crf).range(0..=63).prefix("CRF "))
-                                .on_hover_text("0 to 63: lower is sharper, with bigger files. 32 is the default.");
-                        });
-                        found(ui, "ffmpeg-codec", label.rect.union(r.response.rect));
-                    } else {
-                        let label = ui.label("x264 (MP4)");
-                        let r = ui.horizontal(|ui| {
-                            ui.label("Preset");
-                            egui::ComboBox::from_id_salt("x264_preset")
-                                .selected_text(ff.x264_preset.as_str())
-                                .show_ui(ui, |ui| {
-                                    for p in crate::settings::FfmpegOptions::X264_PRESETS {
-                                        ui.selectable_value(&mut ff.x264_preset, p.to_string(), *p);
-                                    }
-                                })
-                                .response
-                                .on_hover_text(
-                                    "Slower presets make smaller files at the same quality, but use more CPU; \
-                                     too slow and the recording can't keep up. veryfast is the default.",
-                                );
-                            ui.label("Quality");
-                            ui.add(egui::DragValue::new(&mut ff.x264_crf).range(0..=51).prefix("CRF "))
-                                .on_hover_text(
-                                    "0 (lossless) to 51: lower is sharper, with bigger files. 23 is the default; \
-                                     18 looks about lossless.",
-                                );
-                        });
-                        found(ui, "ffmpeg-codec", label.rect.union(r.response.rect));
-                    }
-                    ui.end_row();
-                    let label = ui.label("Extra arguments");
-                    let r = ui.add(
-                        TextEdit::singleline(&mut ff.extra_args).margin(theme::FIELD_MARGIN)
-                            .hint_text("e.g. -tune stillimage")
-                            .desired_width(300.0),
-                    )
-                    .on_hover_text(
-                        "Added to FFmpeg's output options, after snapr's own, so they override them",
-                    );
-                    found(ui, "ffmpeg-args", label.rect.union(r.rect));
-                    ui.end_row();
-                }
-                ui.label("");
-                let r = theme::switch(ui, &mut self.draft.record_cursor, "Show the mouse pointer");
-                found(ui, "record-cursor", r.rect);
-                ui.end_row();
-                if cfg!(windows) {
-                    ui.label("");
-                    let r = theme::switch(ui, &mut self.draft.record_hdr, "Record in HDR when the display is in HDR mode")
-                        .on_hover_text(
-                            "HDR10 MP4 (10-bit HEVC) made by the graphics card. Recordings start about a second later.",
-                        );
-                    found(ui, "record-hdr", r.rect);
-                    ui.end_row();
+                    self.ffmpeg_rows(ui);
                 }
 
-                let label = ui.label("Sound");
-                let r = ui.vertical(|ui| {
-                    theme::checkbox(ui, &mut self.draft.record_system_audio, "What's playing (system audio)")
-                        .on_hover_text("Everything the default speakers or headphones play");
-                    ui.horizontal(|ui| {
-                        theme::checkbox(ui, &mut self.draft.record_microphone, "Microphone");
-                        let mics = self.microphones.get_or_insert_with(crate::audio::microphones);
-                        let selected = if self.draft.microphone.is_empty() {
-                            "Default".to_string()
-                        } else {
-                            self.draft.microphone.clone()
-                        };
-                        ui.add_enabled_ui(self.draft.record_microphone, |ui| {
-                            egui::ComboBox::from_id_salt("microphone")
-                                .selected_text(selected)
-                                .width(260.0)
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(&mut self.draft.microphone, String::new(), "Default");
-                                    for m in mics.iter() {
-                                        ui.selectable_value(&mut self.draft.microphone, m.clone(), m);
-                                    }
-                                });
-                        });
-                    });
+                row(ui, "record-cursor", "Show the mouse pointer", None, false, |ui| {
+                    theme::switch(ui, &mut self.draft.record_cursor, "");
                 });
-                found(ui, "record-sound", label.rect.union(r.response.rect));
-                ui.end_row();
+                if cfg!(windows) {
+                    row(ui, "record-hdr", "Record in HDR when the display is in HDR mode",
+                        Some("HDR10 MP4 (10-bit HEVC) made by the graphics card. Recordings start about a second later"),
+                        false, |ui| {
+                        theme::switch(ui, &mut self.draft.record_hdr, "");
+                    });
+                }
+            });
 
-                ui.label("");
-                ui.label(
-                    RichText::new(if cfg!(target_os = "linux") || self.draft.record_with_ffmpeg {
-                        "Recordings are encoded with FFmpeg and saved next to your screenshots."
+            group(ui, "Sound", |ui| {
+                row(ui, "record-system-audio", "What's playing", Some("Everything the default speakers or headphones play"), false, |ui| {
+                    theme::switch(ui, &mut self.draft.record_system_audio, "");
+                });
+                row(ui, "record-microphone", "Microphone", None, false, |ui| {
+                    let mics = self.microphones.get_or_insert_with(crate::audio::microphones);
+                    let selected = if self.draft.microphone.is_empty() {
+                        "Default".to_string()
                     } else {
-                        "Recordings are saved next to your screenshots."
-                    })
-                        .weak()
-                        .small(),
-                );
-                ui.end_row();
+                        self.draft.microphone.clone()
+                    };
+                    ui.add_enabled_ui(self.draft.record_microphone, |ui| {
+                        egui::ComboBox::from_id_salt("microphone")
+                            .selected_text(selected)
+                            .width(260.0)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.draft.microphone, String::new(), "Default");
+                                for m in mics.iter() {
+                                    ui.selectable_value(&mut self.draft.microphone, m.clone(), m);
+                                }
+                            });
+                    });
+                    theme::switch(ui, &mut self.draft.record_microphone, "");
+                });
             });
 
             self.save_bar(ui, actions);
         });
     }
 
-    /// What the last update check found, and what can be done about it.
-    fn update_status_ui(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        use update::Status;
-        ui.horizontal(|ui| match &self.update {
-            Status::Idle => {}
-            Status::Checking => {
-                ui.spinner();
-                ui.label("Checking for updates\u{2026}");
+    /// The FFmpeg rows of the Recording tab: where it is, whether it works,
+    /// and its settings for the format being recorded.
+    fn ffmpeg_rows(&mut self, ui: &mut egui::Ui) {
+        let indent = !cfg!(target_os = "linux");
+        row(ui, "ffmpeg", "FFmpeg", Some("The program, if it isn't on PATH"), indent, |ui| {
+            ui.add(
+                TextEdit::singleline(&mut self.draft.ffmpeg_path).margin(theme::FIELD_MARGIN)
+                    .hint_text("ffmpeg (found on PATH)")
+                    .desired_width(260.0),
+            );
+            if ui.button("Browse\u{2026}").clicked()
+                && let Some(file) = rfd::FileDialog::new().pick_file()
+            {
+                self.draft.ffmpeg_path = file.display().to_string();
             }
-            Status::UpToDate(at) => {
-                ui.label(
-                    RichText::new(format!("Up to date (checked {})", at.format("%H:%M"))).weak(),
+            self.ffmpeg_check_button(ui);
+        });
+        match self.current_ffmpeg_check() {
+            None => {}
+            Some(None) => row(ui, "ffmpeg-check", RichText::new("Checking\u{2026}").weak(), None, indent, |ui| {
+                ui.spinner();
+            }),
+            Some(Some(Ok(msg))) => row(ui, "ffmpeg-check", RichText::new(msg).color(SUCCESS), None, indent, |_| {}),
+            Some(Some(Err(e))) => row(ui, "ffmpeg-check", RichText::new(e).color(ERROR), None, indent, |_| {}),
+        }
+
+        // The settings for the format being recorded.
+        let ff = &mut self.draft.ffmpeg;
+        if self.draft.record_format == crate::settings::RecordFormat::Webm && crate::encode::webm_supported() {
+            row(ui, "ffmpeg-codec", "VP9 (WebM)", Some("Point at each for what it does"), indent, |ui| {
+                ui.label("Speed");
+                ui.add(egui::DragValue::new(&mut ff.vp9_speed).range(0..=8)).on_hover_text(
+                    "0 (slowest, smallest files) to 8 (fastest). Below about 5 \
+                     may not keep up with the recording.",
                 );
-            }
-            Status::Downloading(version) => {
-                ui.spinner();
-                ui.label(format!("Downloading snapr {version}\u{2026}"));
-            }
-            Status::Available(version, page) => {
-                ui.label(format!("snapr {version} is available"));
-                if ui.link("Release notes").clicked() {
-                    actions.push(Action::OpenUrl(page.clone()));
-                }
-                ui.label(RichText::new("(development builds don't install it)").weak());
-            }
-            Status::Installed(version, page) => {
-                ui.colored_label(SUCCESS, format!("snapr {version} is installed"));
-                if ui.button("Restart now").clicked() {
-                    actions.push(Action::RestartToUpdate);
-                }
-                if ui.link("Release notes").clicked() {
-                    actions.push(Action::OpenUrl(page.clone()));
-                }
-            }
-            Status::Failed(e) => {
-                ui.colored_label(ERROR, format!("Couldn't update: {e}"));
-            }
+                ui.label("Quality");
+                ui.add(egui::DragValue::new(&mut ff.vp9_crf).range(0..=63).prefix("CRF "))
+                    .on_hover_text("0 to 63: lower is sharper, with bigger files. 32 is the default.");
+            });
+        } else {
+            row(ui, "ffmpeg-codec", "x264 (MP4)", Some("Point at each for what it does"), indent, |ui| {
+                ui.label("Preset");
+                egui::ComboBox::from_id_salt("x264_preset")
+                    .selected_text(ff.x264_preset.as_str())
+                    .show_ui(ui, |ui| {
+                        for p in crate::settings::FfmpegOptions::X264_PRESETS {
+                            ui.selectable_value(&mut ff.x264_preset, p.to_string(), *p);
+                        }
+                    })
+                    .response
+                    .on_hover_text(
+                        "Slower presets make smaller files at the same quality, but use more CPU; \
+                         too slow and the recording can't keep up. veryfast is the default.",
+                    );
+                ui.label("Quality");
+                ui.add(egui::DragValue::new(&mut ff.x264_crf).range(0..=51).prefix("CRF "))
+                    .on_hover_text(
+                        "0 (lossless) to 51: lower is sharper, with bigger files. 23 is the default; \
+                         18 looks about lossless.",
+                    );
+            });
+        }
+        row(ui, "ffmpeg-args", "Extra arguments", Some("Added after snapr's own, so they override them"), indent, |ui| {
+            ui.add(
+                TextEdit::singleline(&mut ff.extra_args).margin(theme::FIELD_MARGIN)
+                    .hint_text("e.g. -tune stillimage")
+                    .desired_width(260.0),
+            );
         });
     }
 
@@ -850,77 +731,52 @@ impl Form {
     }
 
     /// A hotkey text box with a Record button that captures the next key
-    /// combination, and anything `extra` adds after them.
-    fn hotkey_editor(
-        &mut self,
-        ui: &mut egui::Ui,
-        field: HotkeyField,
-        extra: impl FnOnce(&mut egui::Ui),
-    ) -> egui::Response {
-        ui.horizontal(|ui| {
-            if self.recording && self.recording_field == field {
-                ui.add(egui::Button::new("Press a key combination\u{2026}").selected(true));
-                if ui.button("Cancel").clicked() {
-                    self.recording = false;
-                }
-            } else {
-                let value = match field {
-                    HotkeyField::Capture => &mut self.draft.hotkey,
-                    HotkeyField::Record => &mut self.draft.record_hotkey,
-                    HotkeyField::Tool(i) => &mut self.draft.tool_hotkeys[i].hotkey,
-                };
-                ui.add(
-                    TextEdit::singleline(value).margin(theme::FIELD_MARGIN)
-                        .hint_text("none")
-                        .desired_width(220.0),
-                );
-                if ui.button("Record").clicked() {
-                    self.recording = true;
-                    self.recording_field = field;
-                }
+    /// combination.
+    fn hotkey_editor(&mut self, ui: &mut egui::Ui, field: HotkeyField) {
+        if self.recording && self.recording_field == field {
+            ui.add(egui::Button::new("Press a key combination\u{2026}").selected(true));
+            if ui.button("Cancel").clicked() {
+                self.recording = false;
             }
-            extra(ui);
-        })
-        .response
+            return;
+        }
+        let value = match field {
+            HotkeyField::Capture => &mut self.draft.hotkey,
+            HotkeyField::Record => &mut self.draft.record_hotkey,
+            HotkeyField::Tool(i) => &mut self.draft.tool_hotkeys[i].hotkey,
+        };
+        ui.add(
+            TextEdit::singleline(value).margin(theme::FIELD_MARGIN)
+                .hint_text("none")
+                .desired_width(220.0),
+        );
+        if ui.button("Record").clicked() {
+            self.recording = true;
+            self.recording_field = field;
+        }
     }
 
-    fn hotkey_row(&mut self, ui: &mut egui::Ui, label: &str, field: HotkeyField) {
+    fn hotkey_row(&mut self, ui: &mut egui::Ui, key: &str, title: &str, note: &str, field: HotkeyField) {
         let err = match field {
             HotkeyField::Capture => parse_hotkey(&self.draft.hotkey).err(),
             HotkeyField::Record => self.record_hotkey_problem(),
             HotkeyField::Tool(i) => self.tool_hotkey_problem(i),
         };
-        let label = ui.label(label);
-        let r = self.hotkey_editor(ui, field, |_| {});
-        let key = match field {
-            HotkeyField::Capture => "capture-hotkey",
-            HotkeyField::Record => "record-hotkey",
-            HotkeyField::Tool(_) => "",
-        };
-        found(ui, key, label.rect.union(r.rect));
-        ui.end_row();
-        error_row(ui, err.as_deref());
+        row(ui, key, title, Some(note), false, |ui| self.hotkey_editor(ui, field));
+        error_row(ui, &format!("{key}-error"), err.as_deref());
     }
 
-    /// A tool hotkey: which tool, its key combination, and a remove button.
+    /// A tool hotkey: its tool, key combination, and a remove button.
     /// Returns whether it was removed.
     fn tool_hotkey_row(&mut self, ui: &mut egui::Ui, i: usize) -> bool {
         let err = self.tool_hotkey_problem(i);
-        let action = &mut self.draft.tool_hotkeys[i].action;
-        egui::ComboBox::from_id_salt(("tool-hotkey", i))
-            .selected_text(action.label())
-            .width(150.0)
-            .show_ui(ui, |ui| {
-                for a in ToolAction::ALL {
-                    ui.selectable_value(action, a, a.label());
-                }
-            });
+        let key = format!("tool-hotkey-{i}");
         let mut remove = false;
-        self.hotkey_editor(ui, HotkeyField::Tool(i), |ui| {
+        row(ui, &key, self.draft.tool_hotkeys[i].action.label(), None, false, |ui| {
+            self.hotkey_editor(ui, HotkeyField::Tool(i));
             remove = ui.add(theme::danger(ui, "Remove")).clicked();
         });
-        ui.end_row();
-        error_row(ui, err.as_deref());
+        error_row(ui, &format!("{key}-error"), err.as_deref());
         remove
     }
 
@@ -933,53 +789,38 @@ impl Form {
                     RichText::new("Global hotkeys work from any app while snapr is running.")
                         .weak(),
                 );
-                ui.add_space(10.0);
 
-                egui::Grid::new("hotkeys")
-                    .num_columns(2)
-                    .spacing([14.0, 8.0])
-                    .show(ui, |ui| {
-                        self.hotkey_row(ui, "Capture region", HotkeyField::Capture);
-                        self.hotkey_row(ui, "Record region", HotkeyField::Record);
-                    });
-                ui.label(
-                    RichText::new("Leave Record region empty for no hotkey. Press it again to stop recording.")
-                        .weak()
-                        .small(),
-                );
+                group(ui, "Capture and record", |ui| {
+                    self.hotkey_row(ui, "capture-hotkey", "Capture region",
+                        "Then drag a region, or click for a whole screen", HotkeyField::Capture);
+                    self.hotkey_row(ui, "record-hotkey", "Record region",
+                        "Press it again to stop. Leave it empty for no hotkey", HotkeyField::Record);
+                });
 
-                ui.add_space(16.0);
-                let heading = ui.label(RichText::new("Tool hotkeys").strong());
-                let r = ui.label(
-                    RichText::new(crate::locale::spelled!(
-                        "Run a tool straight away from anywhere, e.g. pick a colour without opening snapr."
-                    ))
-                        .weak(),
-                );
-                found(ui, "tool-hotkeys", heading.rect.union(r.rect));
-                ui.add_space(6.0);
+                heading(ui, "Tools", Some(&crate::locale::spell(
+                    "Run a tool straight away from anywhere, e.g. pick a colour without opening snapr",
+                )));
                 let mut removed = None;
-                egui::Grid::new("tool-hotkeys")
-                    .num_columns(2)
-                    .spacing([14.0, 8.0])
-                    .show(ui, |ui| {
-                        for i in 0..self.draft.tool_hotkeys.len() {
-                            if self.tool_hotkey_row(ui, i) {
-                                removed = Some(i);
-                            }
+                let r = card(ui, |ui| {
+                    for i in 0..self.draft.tool_hotkeys.len() {
+                        if self.tool_hotkey_row(ui, i) {
+                            removed = Some(i);
                         }
+                    }
+                    block(ui, |ui| {
+                        ui.menu_button("+ Add hotkey", |ui| {
+                            for a in ToolAction::ALL {
+                                if ui.button(a.label()).clicked() {
+                                    self.add_tool_hotkey(a);
+                                }
+                            }
+                        });
                     });
+                });
+                found(ui, "tool-hotkeys", r);
                 if let Some(i) = removed {
                     self.draft.tool_hotkeys.remove(i);
                     self.recording = false;
-                }
-                if ui.button("+ Add hotkey").clicked() {
-                    // The first tool without one, else the first tool.
-                    let action = ToolAction::ALL
-                        .into_iter()
-                        .find(|a| !self.draft.tool_hotkeys.iter().any(|t| t.action == *a))
-                        .unwrap_or(ToolAction::ALL[0]);
-                    self.add_tool_hotkey(action);
                 }
 
                 self.save_bar(ui, actions);
@@ -995,11 +836,9 @@ impl Form {
                 RichText::new("Where saved screenshots go. Use Insert to add the date, window name, a counter and more.")
                     .weak(),
             );
-            ui.add_space(10.0);
 
-            egui::Grid::new("naming").num_columns(2).spacing([14.0, 8.0]).show(ui, |ui| {
-                let label = ui.label("Save folder");
-                let r = ui.horizontal(|ui| {
+            group(ui, "Saved screenshots", |ui| {
+                row(ui, "folder", "Save folder", None, false, |ui| {
                     ui.add(
                         TextEdit::singleline(&mut self.draft.folder)
                             .margin(theme::FIELD_MARGIN)
@@ -1014,26 +853,14 @@ impl Form {
                         actions.push(Action::Reveal(PathBuf::from(&self.draft.folder)));
                     }
                 });
-                found(ui, "folder", label.rect.union(r.response.rect));
-                ui.end_row();
-
-                let label = ui.label("Sub-folder");
-                let r = ui.horizontal(|ui| {
+                row(ui, "subfolder", "Sub-folder", Some("Inside the save folder, e.g. one for each month"), false, |ui| {
                     template_field(ui, "subfolder", &mut self.draft.subfolder, "none \u{2014} e.g. %y-%mo or %pn");
                 });
-                found(ui, "subfolder", label.rect.union(r.response.rect));
-                ui.end_row();
-
-                let label = ui.label("File name");
-                let r = ui.horizontal(|ui| {
+                row(ui, "file-name", "File name", None, false, |ui| {
                     template_field(ui, "file_name", &mut self.draft.file_name, "");
                     ui.label(".png");
                 });
-                found(ui, "file-name", label.rect.union(r.response.rect));
-                ui.end_row();
-
-                ui.label("");
-                match &naming {
+                let example = match &naming {
                     Ok(n) => {
                         let example = n.preview(&Context {
                             process: Some("firefox".into()),
@@ -1043,20 +870,18 @@ impl Form {
                             counter: output::peek_counter() + 1,
                             ..Context::new(chrono::Local::now())
                         });
-                        ui.label(RichText::new(format!("e.g. {}", example.display())).monospace().weak());
+                        RichText::new(format!("e.g. {}", example.display())).monospace().weak()
                     }
-                    Err(e) => {
-                        ui.colored_label(ERROR, e);
-                    }
-                }
-                ui.end_row();
+                    Err(e) => RichText::new(e.as_str()).color(ERROR),
+                };
+                row(ui, "naming-example", example, None, false, |_| {});
             });
 
             ui.add_space(6.0);
             ui.label(
-                RichText::new("Uploaded object names are set per destination, under Destinations.")
+                RichText::new("Uploaded files are named by each destination, under Destinations.")
                     .weak()
-                    .small(),
+                    .size(11.5),
             );
 
             self.save_bar(ui, actions);
@@ -1169,30 +994,6 @@ impl Form {
         self.ffmpeg_check = Some(FfmpegCheck { program, webm, result });
     }
 
-    /// The outcome of the FFmpeg check, under the path, while it's for the
-    /// path and format shown.
-    fn ffmpeg_check_result(&self, ui: &mut egui::Ui) {
-        let Some(result) = self.current_ffmpeg_check() else {
-            return;
-        };
-        ui.label("");
-        match result {
-            None => {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label("Checking\u{2026}");
-                });
-            }
-            Some(Ok(msg)) => {
-                ui.colored_label(SUCCESS, msg);
-            }
-            Some(Err(e)) => {
-                ui.colored_label(ERROR, e);
-            }
-        }
-        ui.end_row();
-    }
-
     /// The last FFmpeg check's outcome (`None` while it runs), if it was of
     /// the path and format now set.
     fn current_ffmpeg_check(&self) -> Option<Option<Result<String, String>>> {
@@ -1248,11 +1049,164 @@ fn permission_card(ui: &mut egui::Ui, missing: &crate::macos::MissingPermission,
         });
 }
 
-fn error_row(ui: &mut egui::Ui, err: Option<&str>) {
+/// A titled group of settings, on a card of [`row`]s. Returns where the
+/// card is.
+pub(crate) fn group(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) -> egui::Rect {
+    heading(ui, title, None);
+    card(ui, add)
+}
+
+/// The title over a group of settings, and what they're for if there's a
+/// `note`. Returns where the title is.
+pub(crate) fn heading(ui: &mut egui::Ui, title: &str, note: Option<&str>) -> egui::Rect {
+    let p = theme::palette(ui);
+    // Space from what's above, not from the top of the page.
+    if ui.cursor().top() > ui.min_rect().top() + 0.5 {
+        ui.add_space(18.0);
+    }
+    let r = ui.label(RichText::new(title.to_uppercase()).size(11.0).strong().color(p.text_weak));
+    if let Some(note) = note {
+        ui.label(RichText::new(note).size(11.5).color(p.text_weak));
+    }
+    ui.add_space(2.0);
+    r.rect
+}
+
+/// A card of [`row`]s and [`block`]s, divided by lines. Returns where it is.
+pub(crate) fn card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) -> egui::Rect {
+    let p = theme::palette(ui);
+    egui::Frame::new()
+        .fill(p.card)
+        .stroke(egui::Stroke::new(1.0, p.divider))
+        .corner_radius(8)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let top = ui.cursor().top();
+            ui.data_mut(|d| d.insert_temp(group_top_id(), top));
+            add(ui);
+        })
+        .response
+        .rect
+}
+
+/// Anything on a [`card`] other than a setting's row, padded as rows are.
+pub(crate) fn block<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<R> {
+    let item_spacing = ui.ctx().global_style().spacing.item_spacing;
+    let r = egui::Frame::new().inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing = item_spacing;
+        add(ui)
+    });
+    divider_above(ui, r.response.rect);
+    r
+}
+
+/// The line between something on a card and what's above it, unless it's
+/// the first thing on it.
+fn divider_above(ui: &egui::Ui, rect: egui::Rect) {
+    let first = ui.data(|d| d.get_temp::<f32>(group_top_id())).is_some_and(|t| rect.top() <= t + 0.5);
+    if !first {
+        ui.painter().hline(rect.x_range(), rect.top(), egui::Stroke::new(1.0, theme::palette(ui).divider));
+    }
+}
+
+/// Where the group being laid out starts, so its first row knows it's first.
+fn group_top_id() -> egui::Id {
+    egui::Id::new("settings-group-top")
+}
+
+/// A row of a [`group`]: the setting's name, with what it does under it if
+/// there's a `note`, and its control on the right. `indent` sets it in under
+/// the row above, for a setting that only matters with that one. `key` is
+/// what the search points out it by.
+pub(crate) fn row(
+    ui: &mut egui::Ui,
+    key: &str,
+    title: impl Into<egui::WidgetText>,
+    note: Option<&str>,
+    indent: bool,
+    control: impl FnOnce(&mut egui::Ui),
+) {
+    use egui::{Align, Layout, Rect, TextStyle, TextWrapMode, UiBuilder, Vec2, WidgetText, pos2, vec2};
+    const PAD: Vec2 = vec2(14.0, 9.0);
+    const GAP: f32 = 16.0;
+    let p = theme::palette(ui);
+    let full = ui.available_rect_before_wrap();
+    let top = ui.cursor().top();
+    let left = full.left() + PAD.x + if indent { 20.0 } else { 0.0 };
+    let right = full.right() - PAD.x;
+
+    let width = right - left;
+
+    // The control is put at the right once its size is known: the first
+    // time it's laid out after the text and measured, and that pass is
+    // thrown away for another. Where it would crowd the text, it goes
+    // under it instead.
+    let id = ui.id().with(("settings-row", key));
+    let measured: Option<Vec2> = ui.data(|d| d.get_temp(id));
+    let control_size = measured.unwrap_or(Vec2::ZERO);
+
+    let title: WidgetText = title.into();
+    let text_color = if ui.is_enabled() { p.text } else { p.text_weak };
+    let title_width = title.clone().into_galley(ui, Some(TextWrapMode::Wrap), width, TextStyle::Body).size().x;
+    // Room beside the control for the title, and a fair width for a note.
+    let text_min = if note.is_some() { title_width.max(180.0) } else { title_width }.min(width);
+    let stacked = control_size.x > 0.0 && control_size.x + GAP + text_min > width;
+    let wrap = if stacked { width } else { width - control_size.x - GAP };
+    let title = title.into_galley(ui, Some(TextWrapMode::Wrap), wrap, TextStyle::Body);
+    let note = note.map(|n| {
+        WidgetText::from(RichText::new(n).size(11.5).color(p.text_weak))
+            .into_galley(ui, Some(TextWrapMode::Wrap), wrap, TextStyle::Body)
+    });
+    let text_height = title.size().y + note.as_ref().map_or(0.0, |n| n.size().y + 2.0);
+    let height = if stacked {
+        text_height + 8.0 + control_size.y
+    } else {
+        text_height.max(control_size.y).max(ui.spacing().interact_size.y)
+    };
+    let rect = Rect::from_min_max(pos2(full.left(), top), pos2(full.right(), top + height + 2.0 * PAD.y));
+    let inner = rect.shrink2(vec2(0.0, PAD.y));
+
+    let text_width = title.size().x.max(note.as_ref().map_or(0.0, |n| n.size().x));
+    let control_rect = if stacked {
+        Rect::from_min_max(pos2(left, inner.bottom() - control_size.y), pos2(right, inner.bottom()))
+    } else {
+        let control_left = match measured {
+            Some(size) => right - size.x - 1.0,
+            None => left + text_width + GAP,
+        };
+        Rect::from_min_max(pos2(control_left, inner.top()), pos2(right, inner.bottom()))
+    };
+    let mut child = ui.new_child(
+        UiBuilder::new()
+            .max_rect(control_rect)
+            .layout(Layout::left_to_right(Align::Center)),
+    );
+    control(&mut child);
+    let size = child.min_rect().size();
+    if measured.is_none_or(|m| (m - size).length() > 0.5) {
+        ui.data_mut(|d| d.insert_temp(id, size));
+        ui.ctx().request_discard("settings row measured");
+    }
+
+    divider_above(ui, rect);
+    let painter = ui.painter();
+    let y = if stacked { inner.top() } else { inner.center().y - text_height / 2.0 };
+    let below = y + title.size().y + 2.0;
+    painter.galley(pos2(left, y), title, text_color);
+    if let Some(note) = note {
+        painter.galley(pos2(left, below), note, p.text_weak);
+    }
+    ui.advance_cursor_after_rect(rect);
+    // Outlined just inside the card's edge.
+    found(ui, key, rect.shrink2(vec2(10.0, 6.0)));
+}
+
+/// Why the setting in the row above can't be used, if it can't.
+fn error_row(ui: &mut egui::Ui, key: &str, err: Option<&str>) {
     if let Some(e) = err {
-        ui.label("");
-        ui.colored_label(Color32::from_rgb(0xe5, 0x48, 0x4d), e);
-        ui.end_row();
+        row(ui, key, RichText::new(e).color(ERROR), None, true, |_| {});
     }
 }
 
@@ -1410,6 +1364,11 @@ mod tests {
                 },
             );
         }
+        form.draft.record_with_ffmpeg = true;
+        crate::preview::render("settings-recording-ffmpeg-preview", [920, 900], 1.0, |root| {
+            crate::theme::apply(root.ctx());
+            egui::CentralPanel::default().show(root, |ui| form.recording_ui(ui, &mut Vec::new()));
+        });
         crate::preview::render("settings-general-light-preview", [920, 900], 1.0, |root| {
             crate::theme::apply(root.ctx());
             root.ctx().set_theme(egui::Theme::Light);

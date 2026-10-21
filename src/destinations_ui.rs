@@ -6,9 +6,12 @@ use egui::{RichText, TextEdit};
 use crate::naming::Context;
 use crate::settings::{SpeedUnit, Upload, UploadKind};
 use crate::settings_search::found;
-use crate::settings_ui::{Action, ERROR, Form, SUCCESS, Test, template_field};
+use crate::settings_ui::{Action, ERROR, Form, SUCCESS, Test, block, card, group, heading, row, template_field};
 use crate::theme;
 use crate::upload::{DEFAULT_CONCURRENCY, MAX_CONCURRENCY};
+
+/// How wide the text boxes of an upload destination are.
+const FIELD_WIDTH: f32 = 320.0;
 
 impl Form {
     pub fn destinations_ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
@@ -16,37 +19,19 @@ impl Form {
             .auto_shrink(false)
             .show(ui, |ui| {
                 ui.label(RichText::new("Where each screenshot goes after you capture it.").weak());
-                ui.add_space(10.0);
 
-                let r = card(ui, |ui| {
-                    theme::switch(
-                        ui,
-                        &mut self.draft.save_to_folder,
-                        RichText::new("Save to folder").strong(),
-                    );
-                    ui.label(
-                        RichText::new(format!(
-                            "{}  (change the folder and file names under General)",
-                            self.draft.folder
-                        ))
-                        .weak()
-                        .small(),
-                    );
+                group(ui, "On this computer", |ui| {
+                    let note = format!("{}  (change it under Paths & naming)", self.draft.folder);
+                    row(ui, "save-to-folder", "Save to folder", Some(&note), false, |ui| {
+                        theme::switch(ui, &mut self.draft.save_to_folder, "");
+                    });
+                    row(ui, "copy-to-clipboard", "Copy image to clipboard", None, false, |ui| {
+                        theme::switch(ui, &mut self.draft.copy_to_clipboard, "");
+                    });
                 });
-                found(ui, "save-to-folder", r);
-                let r = card(ui, |ui| {
-                    theme::switch(
-                        ui,
-                        &mut self.draft.copy_to_clipboard,
-                        RichText::new("Copy image to clipboard").strong(),
-                    );
-                });
-                found(ui, "copy-to-clipboard", r);
 
-                ui.add_space(8.0);
-                let r = ui.label(RichText::new("Uploads").heading().size(16.0));
-                found(ui, "uploads", r.rect);
-                ui.add_space(2.0);
+                let r = heading(ui, "Uploads", None);
+                found(ui, "uploads", r);
                 if crate::policy::uploads_disabled() {
                     ui.label(RichText::new(crate::policy::UPLOADS_OFF).color(ui.visuals().warn_fg_color));
                 }
@@ -59,6 +44,7 @@ impl Form {
                         if self.upload_card(ui, i, actions) {
                             remove = Some(i);
                         }
+                        ui.add_space(8.0);
                     }
                     if let Some(i) = remove {
                         let u = self.draft.uploads.remove(i);
@@ -105,62 +91,55 @@ impl Form {
                             }
                         }
                     });
-                    ui.add_space(6.0);
-                    let r = theme::switch(
-                        ui,
-                        &mut self.draft.copy_link,
-                        "Copy the link to the clipboard after uploading (instead of the image)",
-                    );
-                    found(ui, "copy-link", r.rect);
-                    let enabled: Vec<(String, String)> = self
-                        .draft
-                        .uploads
-                        .iter()
-                        .filter(|u| u.enabled)
-                        .map(|u| (u.id.clone(), u.name.clone()))
-                        .collect();
-                    let r = ui.add_enabled_ui(enabled.len() > 1, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label("Link from").on_hover_text(
-                                "Uploading to more than one destination, the link that's copied, \
-                                 shown in the corner preview and kept in Recent",
-                            );
-                            const FIRST: &str = "Whichever finishes first";
-                            let selected = enabled
-                                .iter()
-                                .find(|(id, _)| *id == self.draft.link_from)
-                                .map_or(FIRST, |(_, name)| name.as_str());
-                            egui::ComboBox::from_id_salt("link-from")
-                                .selected_text(selected)
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(&mut self.draft.link_from, String::new(), FIRST);
-                                    for (id, name) in &enabled {
-                                        ui.selectable_value(&mut self.draft.link_from, id.clone(), name)
-                                            .on_hover_text("Or, if it fails, the first that works");
-                                    }
-                                });
+
+                    group(ui, "After uploading", |ui| {
+                        row(ui, "copy-link", "Copy the link to the clipboard", Some("Instead of the image"), false, |ui| {
+                            theme::switch(ui, &mut self.draft.copy_link, "");
                         });
-                    })
-                    .response
-                    .on_disabled_hover_text("Turn on more than one destination to choose");
-                    found(ui, "link-from", r.rect);
-                    let r = ui.horizontal(|ui| {
-                        ui.label("Show upload speed in");
-                        theme::segmented(ui, |ui| {
-                            ui.selectable_value(&mut self.draft.speed_unit, SpeedUnit::Bytes, "MB/s")
-                                .on_hover_text("Megabytes per second, like file sizes");
-                            ui.selectable_value(&mut self.draft.speed_unit, SpeedUnit::Bits, "Mbps")
-                                .on_hover_text("Megabits per second, like internet speeds");
+                        let enabled: Vec<(String, String)> = self
+                            .draft
+                            .uploads
+                            .iter()
+                            .filter(|u| u.enabled)
+                            .map(|u| (u.id.clone(), u.name.clone()))
+                            .collect();
+                        row(ui, "link-from", "Link from",
+                            Some("Uploading to more than one destination, the link that's copied, shown in the corner preview and kept in Recent"),
+                            false, |ui| {
+                            ui.add_enabled_ui(enabled.len() > 1, |ui| {
+                                const FIRST: &str = "Whichever finishes first";
+                                let selected = enabled
+                                    .iter()
+                                    .find(|(id, _)| *id == self.draft.link_from)
+                                    .map_or(FIRST, |(_, name)| name.as_str());
+                                egui::ComboBox::from_id_salt("link-from")
+                                    .selected_text(selected)
+                                    .width(220.0)
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(&mut self.draft.link_from, String::new(), FIRST);
+                                        for (id, name) in &enabled {
+                                            ui.selectable_value(&mut self.draft.link_from, id.clone(), name)
+                                                .on_hover_text("Or, if it fails, the first that works");
+                                        }
+                                    });
+                            })
+                            .response
+                            .on_disabled_hover_text("Turn on more than one destination to choose");
+                        });
+                        row(ui, "speed-unit", "Show upload speed in", None, false, |ui| {
+                            theme::segmented(ui, |ui| {
+                                ui.selectable_value(&mut self.draft.speed_unit, SpeedUnit::Bytes, "MB/s")
+                                    .on_hover_text("Megabytes per second, like file sizes");
+                                ui.selectable_value(&mut self.draft.speed_unit, SpeedUnit::Bits, "Mbps")
+                                    .on_hover_text("Megabits per second, like internet speeds");
+                            });
+                        });
+                        let icon = if cfg!(target_os = "macos") { "menu bar icon" } else { "tray icon" };
+                        row(ui, "tray-percentage", &format!("Show the percentage uploaded on the {icon}"),
+                            Some("Above the progress bar the icon shows while uploading"), false, |ui| {
+                            theme::switch(ui, &mut self.draft.tray_percentage, "");
                         });
                     });
-                    found(ui, "speed-unit", r.response.rect);
-                    let r = theme::switch(
-                        ui,
-                        &mut self.draft.tray_percentage,
-                        "Show the percentage uploaded on the tray icon",
-                    )
-                    .on_hover_text("Above the progress bar the icon shows while uploading");
-                    found(ui, "tray-percentage", r.rect);
                 });
 
                 self.save_bar(ui, actions);
@@ -173,254 +152,157 @@ impl Form {
         let id = self.draft.uploads[i].id.clone();
         let expanded = self.expanded.as_deref() == Some(id.as_str());
         let stored = self.stored_secrets.contains(&id);
-        card(ui, |ui| {
-            let u = &mut self.draft.uploads[i];
-            ui.horizontal(|ui| {
-                theme::switch(ui, &mut u.enabled, RichText::new(&u.name).strong());
-                let host = u
-                    .endpoint
-                    .split("://")
-                    .nth(1)
-                    .unwrap_or(&u.endpoint)
-                    .split('/')
-                    .next()
-                    .unwrap_or("");
-                let what = match u.kind {
-                    UploadKind::Pomf => "Pomf",
-                    UploadKind::S3 if u.bucket.is_empty() => "no bucket",
-                    UploadKind::S3 => &u.bucket,
-                };
-                ui.label(RichText::new(format!("{what} \u{00b7} {host}")).weak().small());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add(theme::danger(ui, "Remove")).clicked() {
-                        remove = true;
-                    }
-                    if ui.button(if expanded { "Done" } else { "Edit" }).clicked() {
-                        self.expanded = if expanded { None } else { Some(id.clone()) };
-                    }
-                    let running = matches!(self.tests.get(&id), Some(Test::Running));
-                    if ui
-                        .add_enabled(!running, egui::Button::new("Test"))
-                        .on_hover_text(if u.deletable() {
-                            "Upload a tiny file and delete it again"
-                        } else {
-                            "Upload snapr's icon and show its link (it stays there: Pomf \
-                             uploads can't be deleted)"
-                        })
-                        .clicked()
-                    {
-                        let secret = self.secrets.get(&id).filter(|s| !s.is_empty()).cloned();
-                        actions.push(Action::TestUpload(u.clone(), secret));
-                        self.tests.insert(id.clone(), Test::Running);
-                    }
-                });
-            });
-            match self.tests.get(&id) {
-                Some(Test::Running) => {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label("Testing\u{2026}");
+        ui.push_id(&id, |ui| card(ui, |ui| {
+            block(ui, |ui| {
+                let u = &mut self.draft.uploads[i];
+                ui.horizontal(|ui| {
+                    theme::switch(ui, &mut u.enabled, RichText::new(&u.name).strong());
+                    let host = u
+                        .endpoint
+                        .split("://")
+                        .nth(1)
+                        .unwrap_or(&u.endpoint)
+                        .split('/')
+                        .next()
+                        .unwrap_or("");
+                    let what = match u.kind {
+                        UploadKind::Pomf => "Pomf",
+                        UploadKind::S3 if u.bucket.is_empty() => "no bucket",
+                        UploadKind::S3 => &u.bucket,
+                    };
+                    ui.label(RichText::new(format!("{what} \u{00b7} {host}")).weak().size(11.5));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(theme::danger(ui, "Remove")).clicked() {
+                            remove = true;
+                        }
+                        if ui.button(if expanded { "Done" } else { "Edit" }).clicked() {
+                            self.expanded = if expanded { None } else { Some(id.clone()) };
+                        }
+                        let running = matches!(self.tests.get(&id), Some(Test::Running));
+                        if ui
+                            .add_enabled(!running, egui::Button::new("Test"))
+                            .on_hover_text(if u.deletable() {
+                                "Upload a tiny file and delete it again"
+                            } else {
+                                "Upload snapr's icon and show its link (it stays there: Pomf \
+                                 uploads can't be deleted)"
+                            })
+                            .clicked()
+                        {
+                            let secret = self.secrets.get(&id).filter(|s| !s.is_empty()).cloned();
+                            actions.push(Action::TestUpload(u.clone(), secret));
+                            self.tests.insert(id.clone(), Test::Running);
+                        }
                     });
+                });
+                match self.tests.get(&id) {
+                    Some(Test::Running) => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Testing\u{2026}");
+                        });
+                    }
+                    Some(Test::Passed(msg)) => {
+                        ui.colored_label(SUCCESS, msg);
+                    }
+                    Some(Test::Failed(msg)) => {
+                        ui.colored_label(ERROR, msg);
+                    }
+                    None => {}
                 }
-                Some(Test::Passed(msg)) => {
-                    ui.colored_label(SUCCESS, msg);
-                }
-                Some(Test::Failed(msg)) => {
-                    ui.colored_label(ERROR, msg);
-                }
-                None => {}
-            }
+            });
             if !expanded {
                 return;
             }
-            ui.add_space(4.0);
             let u = &mut self.draft.uploads[i];
-            egui::Grid::new(("upload", &id))
-                .num_columns(2)
-                .spacing([14.0, 6.0])
-                .show(ui, |ui| {
-                    let field = |ui: &mut egui::Ui, label: &str, value: &mut String, hint: &str| {
-                        ui.label(label);
-                        ui.add(
-                            TextEdit::singleline(value).margin(theme::FIELD_MARGIN)
-                                .hint_text(hint)
-                                .desired_width(360.0),
-                        );
-                        ui.end_row();
-                    };
-                    field(ui, "Name", &mut u.name, "");
-                    if u.kind == UploadKind::Pomf {
-                        field(ui, "Upload URL", &mut u.endpoint, "https://pomf.lain.la/upload.php");
-                        ui.label("File name");
-                        ui.horizontal(|ui| {
-                            template_field(ui, &format!("key-{id}"), &mut u.key_template, "%rna{10}");
-                            ui.label(".png");
-                        });
-                        ui.end_row();
-                        ui.label("");
-                        ui.label(
-                            RichText::new("Most hosts give the file a name of their own.")
-                                .weak()
-                                .small(),
-                        );
-                        ui.end_row();
-                        field(
-                            ui,
-                            "Public URL",
-                            &mut u.public_url,
-                            "optional: put links under your own domain instead",
-                        );
-                    } else {
-                        field(
-                            ui,
-                            "Endpoint",
-                            &mut u.endpoint,
-                            "https://<account>.r2.cloudflarestorage.com",
-                        );
-                        field(ui, "Region", &mut u.region, "auto (R2) or e.g. us-east-1");
-                        field(ui, "Bucket", &mut u.bucket, "");
-                        field(ui, "Access key ID", &mut u.access_key_id, "");
-
-                        ui.label("Secret access key");
-                        let secret = self.secrets.entry(id.clone()).or_default();
-                        let hint = if stored {
-                            "saved \u{2014} type to replace"
-                        } else {
-                            ""
-                        };
-                        ui.add(
-                            TextEdit::singleline(secret).margin(theme::FIELD_MARGIN)
-                                .password(true)
-                                .hint_text(hint)
-                                .desired_width(360.0),
-                        );
-                        ui.end_row();
-                        ui.label("");
-                        ui.label(
-                            RichText::new(
-                                "Kept in your system's credential store, not in the config file.",
-                            )
-                            .weak()
-                            .small(),
-                        );
-                        ui.end_row();
-
-                        ui.label("Object key");
-                        ui.horizontal(|ui| {
-                            template_field(
-                                ui,
-                                &format!("key-{id}"),
-                                &mut u.key_template,
-                                "%y-%mo/%rna{10}",
-                            );
-                            ui.label(".png");
-                        });
-                        ui.end_row();
-
-                        field(
-                            ui,
-                            "Public URL",
-                            &mut u.public_url,
-                            "https://pub-\u{2026}.r2.dev or your own domain",
-                        );
-                        ui.label("");
-                        theme::switch(
-                            ui,
-                            &mut u.path_style,
-                            "Path-style requests (endpoint/bucket/key)",
-                        );
-                        ui.end_row();
-
-                        ui.label("");
-                        theme::switch(
-                            ui,
-                            &mut u.signed_payload,
-                            "Signed payload (hash the file into the signature)",
-                        );
-                        ui.end_row();
-
-                        ui.label("Parallel parts");
-                        ui.horizontal(|ui| {
-                            ui.add(
-                                egui::DragValue::new(&mut u.parallel_parts)
-                                    .range(1..=MAX_CONCURRENCY)
-                                    .speed(0.1),
-                            )
-                            .on_hover_text(
-                                "How many pieces of a large file (over 16 MB) are sent at once. \
-                                 More can be faster on a fast connection; each one holds \
-                                 8 MB or more in memory while it's sent.",
-                            );
-                            ui.label(
-                                RichText::new(format!("for files over 16 MB (default {DEFAULT_CONCURRENCY})"))
-                                    .weak()
-                                    .small(),
-                            );
-                        });
-                        ui.end_row();
-                    }
-
-                    ui.label("");
-                    match u.validate() {
-                        Ok(_) if u.kind == UploadKind::Pomf => {
-                            let public = u.public_url.trim().trim_end_matches('/');
-                            let link = if public.is_empty() {
-                                "the one the host gives".to_string()
-                            } else {
-                                format!("{public}/<name the host gives>")
-                            };
-                            ui.label(
-                                RichText::new(format!("Link: {link}"))
-                                    .monospace()
-                                    .weak()
-                                    .small(),
-                            );
-                        }
-                        Ok(key) => {
-                            let ctx = Context {
-                                process: Some("firefox".into()),
-                                ..Context::new(chrono::Local::now())
-                            };
-                            fastrand::seed(0x5eed);
-                            let link = u.link(&key.render_key(&ctx, "png")).unwrap_or_default();
-                            ui.label(
-                                RichText::new(format!("Link: {link}"))
-                                    .monospace()
-                                    .weak()
-                                    .small(),
-                            );
-                        }
-                        Err(e) => {
-                            ui.colored_label(ERROR, e);
-                        }
-                    }
-                    ui.end_row();
+            let field = |ui: &mut egui::Ui, title: &str, note: Option<&str>, value: &mut String, hint: &str| {
+                row(ui, title, title, note, false, |ui| {
+                    ui.add(
+                        TextEdit::singleline(value).margin(theme::FIELD_MARGIN)
+                            .hint_text(hint)
+                            .desired_width(FIELD_WIDTH),
+                    );
                 });
+            };
+            field(ui, "Name", None, &mut u.name, "");
+            if u.kind == UploadKind::Pomf {
+                field(ui, "Upload URL", None, &mut u.endpoint, "https://pomf.lain.la/upload.php");
+                row(ui, "File name", "File name", Some("Most hosts give the file a name of their own"), false, |ui| {
+                    template_field(ui, &format!("key-{id}"), &mut u.key_template, "%rna{10}");
+                    ui.label(".png");
+                });
+                field(
+                    ui,
+                    "Public URL",
+                    Some("Optional: put links under your own domain instead"),
+                    &mut u.public_url,
+                    "https://\u{2026}",
+                );
+            } else {
+                field(ui, "Endpoint", None, &mut u.endpoint, "https://<account>.r2.cloudflarestorage.com");
+                field(ui, "Region", None, &mut u.region, "auto (R2) or e.g. us-east-1");
+                field(ui, "Bucket", None, &mut u.bucket, "");
+                field(ui, "Access key ID", None, &mut u.access_key_id, "");
+                let secret = self.secrets.entry(id.clone()).or_default();
+                let hint = if stored { "saved \u{2014} type to replace" } else { "" };
+                row(ui, "Secret access key", "Secret access key",
+                    Some("Kept in your system's credential store, not in the config file"), false, |ui| {
+                    ui.add(
+                        TextEdit::singleline(secret).margin(theme::FIELD_MARGIN)
+                            .password(true)
+                            .hint_text(hint)
+                            .desired_width(FIELD_WIDTH),
+                    );
+                });
+                row(ui, "Object key", "Object key", Some("Its name in the bucket"), false, |ui| {
+                    template_field(ui, &format!("key-{id}"), &mut u.key_template, "%y-%mo/%rna{10}");
+                    ui.label(".png");
+                });
+                field(ui, "Public URL", None, &mut u.public_url, "https://pub-\u{2026}.r2.dev or your own domain");
+                row(ui, "Path-style requests", "Path-style requests", Some("endpoint/bucket/key, rather than bucket.endpoint/key"), false, |ui| {
+                    theme::switch(ui, &mut u.path_style, "");
+                });
+                row(ui, "Signed payload", "Signed payload", Some("Hash the file into the request's signature"), false, |ui| {
+                    theme::switch(ui, &mut u.signed_payload, "");
+                });
+                let note = format!(
+                    "How many pieces of a file over 16 MB are sent at once (default {DEFAULT_CONCURRENCY}). \
+                     Each holds 8 MB or more in memory while it's sent"
+                );
+                row(ui, "Parallel parts", "Parallel parts", Some(&note), false, |ui| {
+                    ui.add(egui::DragValue::new(&mut u.parallel_parts).range(1..=MAX_CONCURRENCY).speed(0.1));
+                });
+            }
+
+            let link = match u.validate() {
+                Ok(_) if u.kind == UploadKind::Pomf => {
+                    let public = u.public_url.trim().trim_end_matches('/');
+                    let link = if public.is_empty() {
+                        "the one the host gives".to_string()
+                    } else {
+                        format!("{public}/<name the host gives>")
+                    };
+                    RichText::new(format!("Link: {link}")).monospace().weak()
+                }
+                Ok(key) => {
+                    let ctx = Context {
+                        process: Some("firefox".into()),
+                        ..Context::new(chrono::Local::now())
+                    };
+                    fastrand::seed(0x5eed);
+                    let link = u.link(&key.render_key(&ctx, "png")).unwrap_or_default();
+                    RichText::new(format!("Link: {link}")).monospace().weak()
+                }
+                Err(e) => RichText::new(e).color(ERROR),
+            };
+            row(ui, "link", link, None, false, |_| {});
             // Don't keep empty drafts around (they'd mark the form as changed).
             if self.secrets.get(&id).is_some_and(|s| s.is_empty()) {
                 self.secrets.remove(&id);
             }
-        });
+        }));
         remove
     }
-}
-
-/// Returns where the card is.
-fn card(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) -> egui::Rect {
-    let palette = theme::palette(ui);
-    let rect = egui::Frame::new()
-        .fill(palette.surface)
-        .stroke(egui::Stroke::new(1.0, palette.stroke))
-        .corner_radius(10)
-        .inner_margin(12)
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            contents(ui);
-        })
-        .response
-        .rect;
-    ui.add_space(6.0);
-    rect
 }
 
 #[cfg(test)]

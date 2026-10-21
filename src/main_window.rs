@@ -706,7 +706,7 @@ fn settings_page(
                 Page::Naming => form.naming_ui(ui, actions),
                 Page::Destinations => form.destinations_ui(ui, actions),
                 Page::Recording => form.recording_ui(ui, actions),
-                Page::About => form.about.ui(ui, actions),
+                Page::About => form.about_ui(ui, actions),
                 _ => form.ui(ui, actions),
             }
         });

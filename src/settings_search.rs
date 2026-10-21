@@ -52,8 +52,6 @@ static INDEX: LazyLock<Vec<Entry>> = LazyLock::new(|| {
     if !cfg!(target_os = "macos") {
         add(Settings, "tray-icon", "Tray icon colour", "color colour white black blue taskbar theme system tray");
     }
-    add(Settings, "check-for-updates", "Do not check for updates", "automatic updates auto-update release github");
-    add(Settings, "version", "Check for updates now", "version update upgrade release");
     add(Settings, "transfer", "Export settings", "backup move another computer transfer save file");
     add(Settings, "transfer", "Import settings", "restore move another computer transfer load file");
     add(Settings, "export-secrets", "Include upload secret keys in the export", "passwords credentials export");
@@ -85,8 +83,8 @@ static INDEX: LazyLock<Vec<Entry>> = LazyLock::new(|| {
     if cfg!(windows) {
         add(Recording, "record-hdr", "Record in HDR", "hdr10 hevc high dynamic range 10-bit");
     }
-    add(Recording, "record-sound", "Record system audio", "sound what's playing speakers headphones recording");
-    add(Recording, "record-sound", "Record the microphone", "mic voice input sound recording");
+    add(Recording, "record-system-audio", "Record system audio", "sound what's playing speakers headphones recording");
+    add(Recording, "record-microphone", "Record the microphone", "mic voice input sound recording");
 
     // Hotkeys
     add(Hotkeys, "capture-hotkey", "Capture region hotkey", "shortcut keyboard key combination screenshot");
@@ -110,6 +108,8 @@ static INDEX: LazyLock<Vec<Entry>> = LazyLock::new(|| {
     add(Destinations, "tray-percentage", if cfg!(target_os = "macos") { "Show the percentage uploaded on the menu bar icon" } else { "Show the percentage uploaded on the tray icon" }, "progress upload");
 
     // About
+    add(About, "version", "Check for updates", "version update upgrade release");
+    add(About, "check-for-updates", "Check for updates automatically", "automatic updates auto-update release github never");
     add(About, "source-code", "Source code", "github repository");
     add(About, "licence", "Licence", "license polyform terms");
     add(About, "settings-folder", "Settings folder", "config configuration directory where settings are kept history stats");
@@ -429,7 +429,7 @@ mod tests {
         }
     }
 
-    /// Renders the Recording tab with the search gone to its Sound row to
+    /// Renders the Recording tab with the search gone to its Microphone row to
     /// `target/settings-found-preview.png`:
     /// `cargo test settings_found_preview -- --ignored`.
     #[test]
@@ -438,7 +438,7 @@ mod tests {
         let mut form = crate::settings_ui::Form::new(&Settings::default());
         crate::preview::render("settings-found-preview", [820, 700], 1.0, |root| {
             crate::theme::apply(root.ctx());
-            let reveal = Reveal { key: "record-sound", at: root.input(|i| i.time), scrolled: false };
+            let reveal = Reveal { key: "record-microphone", at: root.input(|i| i.time), scrolled: false };
             root.data_mut(|d| d.insert_temp(reveal_id(), reveal));
             egui::CentralPanel::default().show(root, |ui| form.recording_ui(ui, &mut Vec::new()));
         });

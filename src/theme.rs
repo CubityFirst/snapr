@@ -28,8 +28,10 @@ pub struct Palette {
     pub nav: Color32,
     /// The page behind everything.
     pub panel: Color32,
-    /// Menus, popups and cards.
+    /// Menus and popups.
     pub surface: Color32,
+    /// The cards a page's settings are grouped on.
+    pub card: Color32,
     /// Buttons and other controls at rest.
     pub control: Color32,
     pub control_hover: Color32,
@@ -57,6 +59,7 @@ pub const DARK: Palette = Palette {
     nav: Color32::from_rgb(0x16, 0x17, 0x1a),
     panel: Color32::from_rgb(0x1a, 0x1b, 0x1e),
     surface: Color32::from_rgb(0x1c, 0x1d, 0x20),
+    card: Color32::from_rgb(0x20, 0x21, 0x25),
     control: Color32::from_rgb(0x26, 0x27, 0x2b),
     control_hover: Color32::from_rgb(0x2e, 0x30, 0x35),
     control_pressed: Color32::from_rgb(0x1f, 0x20, 0x23),
@@ -78,6 +81,7 @@ pub const LIGHT: Palette = Palette {
     nav: Color32::from_rgb(0xe8, 0xea, 0xee),
     panel: Color32::from_rgb(0xf6, 0xf7, 0xf9),
     surface: Color32::from_rgb(0xff, 0xff, 0xff),
+    card: Color32::from_rgb(0xff, 0xff, 0xff),
     control: Color32::from_rgb(0xff, 0xff, 0xff),
     control_hover: Color32::from_rgb(0xef, 0xf1, 0xf4),
     control_pressed: Color32::from_rgb(0xe4, 0xe6, 0xea),
@@ -371,8 +375,18 @@ pub fn compact_menu(ui: &mut Ui) {
 }
 
 /// A row of options where one is picked, in a sunken track with the picked
-/// one raised. `add` adds them with `selectable_value`.
+/// one raised. `add` adds them with `selectable_value`. It stays on one line,
+/// so it's as wide as its options wherever it's put.
 pub fn segmented<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    segmented_in(ui, false, add)
+}
+
+/// [`segmented`], wrapping onto more lines if its options don't fit.
+pub fn segmented_wrapped<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    segmented_in(ui, true, add)
+}
+
+fn segmented_in<R>(ui: &mut Ui, wrap: bool, add: impl FnOnce(&mut Ui) -> R) -> R {
     let p = palette(ui);
     egui::Frame::new()
         .fill(p.track)
@@ -398,7 +412,11 @@ pub fn segmented<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
             v.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
             v.widgets.inactive.fg_stroke = Stroke::new(1.0, p.text_weak);
             v.widgets.hovered.weak_bg_fill = p.control;
-            ui.horizontal_wrapped(add).inner
+            if wrap {
+                ui.horizontal_wrapped(add).inner
+            } else {
+                ui.horizontal(add).inner
+            }
         })
         .inner
 }
