@@ -25,8 +25,8 @@ chmod 755 "$app/Contents/MacOS/snapr"
 # -- --ignored` writes the iconset).
 iconutil -c icns "$(dirname "$0")/../assets/snapr.iconset" -o "$app/Contents/Resources/snapr.icns"
 
-# The bundle identifier is what macOS files granted permissions under: keep
-# it. LSUIElement keeps snapr out of the Dock from launch (it lives in the
+# The bundle identifier is part of what macOS files granted permissions
+# under (with the signature, below): keep it. LSUIElement keeps snapr out of the Dock from launch (it lives in the
 # menu bar). The usage descriptions are what macOS shows when asking for
 # the microphone and for system audio; without them it refuses outright.
 cat > "$app/Contents/Info.plist" <<EOF
@@ -67,10 +67,22 @@ cat > "$app/Contents/Info.plist" <<EOF
 EOF
 plutil -lint "$app/Contents/Info.plist"
 
-# Ad hoc: no developer identity, but it seals the app as a whole, and Apple
-# silicon won't run unsigned code.
-codesign --force --sign - "$app"
+# macOS files granted permissions under the signature's designated
+# requirement as well as the bundle identifier. An ad hoc signature's
+# requirement is the hash of this very build, so every update would lose
+# them; signing with the same certificate every time (the release workflow's
+# self-signed one, named in SNAPR_SIGN_IDENTITY) makes it name the
+# certificate instead. Without one it falls back to ad hoc, which still seals
+# the app (Apple silicon won't run unsigned code).
+identity=${SNAPR_SIGN_IDENTITY:--}
+codesign --force --sign "$identity" ${SNAPR_SIGN_KEYCHAIN:+--keychain "$SNAPR_SIGN_KEYCHAIN"} "$app"
 codesign --verify --strict --verbose=2 "$app"
+requirement=$(codesign --display --requirements - "$app" 2>&1)
+echo "$requirement"
+if [ "$identity" != - ] && grep -q cdhash <<<"$requirement"; then
+  echo "error: the designated requirement is the build's hash, not the certificate" >&2
+  exit 1
+fi
 
 mkdir -p "$out"
 ditto -c -k --keepParent "$app" "$out/snapr-macos-$arch.app.zip"

@@ -91,7 +91,10 @@ as a GitHub release named after the tag, with a `SHA256SUMS` file and
 notes made from the commits since the last release
 (`scripts/release-notes.sh`). The macOS build is packed as `snapr.app`
 (`scripts/macos-bundle.sh`), published as a `.dmg` to install from and a
-zip the updater swaps the whole app for. It refuses a tag that doesn't
+zip the updater swaps the whole app for. It's signed with a self-signed
+certificate kept in the `MACOS_SIGNING_P12` and
+`MACOS_SIGNING_P12_PASSWORD` secrets, so macOS keeps its permissions across
+updates; replacing that certificate resets them for everyone. It refuses a tag that doesn't
 match `Cargo.toml`'s version (such a build would keep offering itself as an
 update). A tag with a hyphen, e.g. `v0.2.0-rc.1`, is published as a
 pre-release.

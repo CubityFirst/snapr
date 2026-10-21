@@ -88,6 +88,38 @@ jobs:
           mkdir dist
           cp "target/${{ matrix.target }}/release/snapr${{ runner.os == 'Windows' && '.exe' || '' }}" "dist/${{ matrix.asset }}"
 
+      # The self-signed certificate snapr.app is signed with, so macOS keeps
+      # its permissions across updates (scripts/macos-bundle.sh). It must
+      # stay the same certificate: a new one resets everyone's permissions
+      # once more. A release won't go out without it; a run by hand signs
+      # ad hoc instead.
+      - name: Load the signing certificate
+        if: runner.os == 'macOS'
+        env:
+          P12: ${{ secrets.MACOS_SIGNING_P12 }}
+          P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
+        run: |
+          if [ -z "$P12" ]; then
+            if [ "$GITHUB_REF_TYPE" = tag ]; then
+              echo "::error::The MACOS_SIGNING_P12 secret is missing"
+              exit 1
+            fi
+            echo "::warning::No MACOS_SIGNING_P12 secret: signing ad hoc"
+            exit 0
+          fi
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password=$(openssl rand -hex 16)
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          base64 --decode <<<"$P12" > "$RUNNER_TEMP/signing.p12"
+          security import "$RUNNER_TEMP/signing.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/signing.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          echo "SNAPR_SIGN_IDENTITY=snapr self-signed" >> "$GITHUB_ENV"
+          echo "SNAPR_SIGN_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+
       # snapr.app as a .dmg to install from and a zip for the updater. The
       # bare binary above stays for installs from before snapr.app, which
       # run it bare and whose updater fetches it.
