@@ -436,9 +436,15 @@ impl Tools {
                 }
             });
             ui.add_space(GAP);
-            let (rect, _) = ui.allocate_exact_size(vec2(CODE_PREVIEW, CODE_PREVIEW), Sense::hover());
+            let (rect, response) = ui.allocate_exact_size(vec2(CODE_PREVIEW, CODE_PREVIEW), Sense::click());
             match self.generated.as_ref().map(|g| &g.code) {
-                Some(Ok((image, texture))) => paint_code(ui, rect, image, texture),
+                Some(Ok((image, texture))) => {
+                    paint_code(ui, rect, image, texture);
+                    // Right-clicking the code copies it, without a menu in between.
+                    if response.on_hover_text("Right-click to copy").secondary_clicked() {
+                        actions.push(Action::CopyImage(image.clone()));
+                    }
+                }
                 _ => {
                     ui.painter().rect(rect, 8.0, p.field, Stroke::new(1.0, p.divider), egui::StrokeKind::Inside);
                     ui.painter().text(
