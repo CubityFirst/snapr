@@ -173,7 +173,9 @@ Changes on the Settings pages save as you make them (once a change is valid).
 Settings are stored in `<config dir>/snapr/config.toml`
 (`%APPDATA%\snapr` on Windows, `~/Library/Application Support/snapr` on macOS,
 `~/.config/snapr` on Linux). Set `SNAPR_CONFIG_DIR` to use another folder, e.g.
-for a portable copy or a second, independent instance. Files are saved by
+for a portable copy or a second, independent instance; its upload keys are
+kept apart from the usual copy's in the credential store too, so they're
+entered again there. Files are saved by
 writing a new copy and swapping it in, so a crash mid-save leaves the old one
 intact. If `config.toml` can't be read, snapr starts with the defaults and
 keeps the unreadable file as `config.toml.broken`.

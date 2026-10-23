@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::remembered::Remembered;
 use crate::secrets;
-use crate::settings::{Settings, default_folder};
+use crate::settings::{Settings, Upload, default_folder};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Exported {
@@ -40,7 +40,7 @@ pub fn export(path: &Path, settings: &Settings, with_secrets: bool) -> Result<us
             .uploads
             .iter()
             .filter(|u| u.keeps_secret())
-            .filter_map(|u| Some((u.id.clone(), secrets::get(&u.id)?)))
+            .filter_map(|u| Some((u.id.clone(), secrets::get(u)?)))
             .collect()
     } else {
         BTreeMap::new()
@@ -67,18 +67,19 @@ pub fn import(path: &Path) -> Result<Imported, String> {
         .map_err(|e| format!("couldn't read {}: {e}", path.display()))?;
     let exported: Exported = toml::from_str(&text)
         .map_err(|e| format!("{} isn't a snapr settings file: {e}", path.display()))?;
-    Ok(fit(exported, |id| secrets::get(id).is_some()))
+    Ok(fit(exported, |u| secrets::get(u).is_some()))
 }
 
 /// Resets paths that don't exist here, and turns off destinations with no
 /// secret key in the file or on this computer (`has_secret`).
-fn fit(exported: Exported, has_secret: impl Fn(&str) -> bool) -> Imported {
+fn fit(exported: Exported, has_secret: impl Fn(&Upload) -> bool) -> Imported {
     let Exported {
         mut settings,
         tools,
         secrets,
         ..
     } = exported;
+    settings.fix_duplicate_ids();
     let mut notes = Vec::new();
     let folder = Path::new(settings.folder.trim());
     if !folder.exists() && !folder.parent().is_some_and(Path::exists) {
@@ -96,7 +97,7 @@ fn fit(exported: Exported, has_secret: impl Fn(&str) -> bool) -> Imported {
         notes.push("FFmpeg isn't where it was, so it's looked for on the PATH".into());
     }
     for u in &mut settings.uploads {
-        if u.enabled && u.needs_secret() && !secrets.contains_key(&u.id) && !has_secret(&u.id) {
+        if u.enabled && u.needs_secret() && !secrets.contains_key(&u.id) && !has_secret(u) {
             u.enabled = false;
             notes.push(format!("{} is off until its secret key is entered on Destinations", u.name));
         }

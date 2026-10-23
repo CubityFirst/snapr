@@ -706,7 +706,11 @@ impl App {
         new_secrets: HashMap<String, String>,
     ) {
         for (id, secret) in &new_secrets {
-            if let Err(e) = secrets::set(id, secret) {
+            // Stored by kind and id, so it needs the destination itself.
+            let Some(upload) = new.uploads.iter().find(|u| u.id == *id) else {
+                continue;
+            };
+            if let Err(e) = secrets::set(upload, secret) {
                 return self.report_on(event_loop, e, true, Page::Destinations);
             }
         }
@@ -753,7 +757,7 @@ impl App {
         // Forget the secret keys of removed upload destinations.
         for old in &self.settings.uploads {
             if !new.uploads.iter().any(|u| u.id == old.id) {
-                secrets::delete(&old.id);
+                secrets::delete(old);
             }
         }
         if let Some(t) = &self.tray {
@@ -996,7 +1000,7 @@ impl App {
         };
         let proxy = Mutex::new(self.proxy.clone());
         std::thread::spawn(move || {
-            let secret = match secrets::get(&upload.id) {
+            let secret = match secrets::get(&upload) {
                 Some(s) => Ok(s),
                 None if upload.needs_secret() => Err("its secret access key isn't saved".to_string()),
                 None => Ok(String::new()),
@@ -1032,10 +1036,10 @@ impl App {
                 let template = upload.validate()?;
                 let secret = if upload.needs_secret() {
                     secret
-                        .or_else(|| secrets::get(&upload.id))
+                        .or_else(|| secrets::get(&upload))
                         .ok_or("enter the secret access key")?
                 } else if upload.keeps_secret() {
-                    secret.or_else(|| secrets::get(&upload.id)).unwrap_or_default()
+                    secret.or_else(|| secrets::get(&upload)).unwrap_or_default()
                 } else {
                     String::new()
                 };
@@ -1588,13 +1592,13 @@ fn output_config(settings: &Settings) -> Result<output::Config, String> {
             }
         };
         let secret = if u.needs_secret() {
-            let Some(secret) = secrets::get(&u.id) else {
+            let Some(secret) = secrets::get(u) else {
                 eprintln!("upload destination {}: no secret key stored", u.name);
                 continue;
             };
             secret
         } else if u.keeps_secret() {
-            secrets::get(&u.id).unwrap_or_default()
+            secrets::get(u).unwrap_or_default()
         } else {
             String::new()
         };

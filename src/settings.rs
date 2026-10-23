@@ -450,6 +450,7 @@ impl Settings {
             Ok(text) => match toml::from_str::<Self>(&text) {
                 Ok(mut s) => {
                     s.migrate_templates();
+                    s.fix_duplicate_ids();
                     (s, Loaded::Existing)
                 }
                 Err(e) => {
@@ -463,6 +464,23 @@ impl Settings {
                 }
             },
         }
+    }
+
+    /// Gives a new id to each upload destination whose id an earlier one
+    /// already has (the first keeps it), so no two share a stored key.
+    /// Returns how many changed.
+    pub(crate) fn fix_duplicate_ids(&mut self) -> usize {
+        let mut seen = std::collections::HashSet::new();
+        let mut fixed = 0;
+        for u in &mut self.uploads {
+            if !seen.insert(u.id.clone()) {
+                eprintln!("upload destination {} had a duplicate id; it gets a new one", u.name);
+                u.id = new_upload_id();
+                seen.insert(u.id.clone());
+                fixed += 1;
+            }
+        }
+        fixed
     }
 
     /// Rewrites templates from the old `{random}` syntax to ShareX's `%rna{10}`.
@@ -524,6 +542,30 @@ pub enum UploadKind {
     ImgFish,
 }
 
+impl UploadKind {
+    /// How it's written in the config file and credential names.
+    pub fn slug(self) -> &'static str {
+        match self {
+            UploadKind::S3 => "s3",
+            UploadKind::Pomf => "pomf",
+            UploadKind::ImgFish => "imgfish",
+        }
+    }
+}
+
+/// A new destination's id: 12 lower-case letters and digits, drawn from a
+/// generator of its own seeded by the OS, as the shared one is reseeded to
+/// draw previews the same each frame.
+fn new_upload_id() -> String {
+    use std::hash::BuildHasher;
+    let seed = std::collections::hash_map::RandomState::new().hash_one(0u8);
+    let mut rng = fastrand::Rng::with_seed(seed);
+    (0..12)
+        .map(|_| rng.alphanumeric())
+        .collect::<String>()
+        .to_lowercase()
+}
+
 /// Where screenshots are uploaded to: an S3-compatible bucket, whose secret
 /// key is kept in the OS credential store under `id`, a Pomf host, or
 /// img.fish (whose optional API key is kept the same way).
@@ -558,10 +600,7 @@ pub struct Upload {
 impl Default for Upload {
     fn default() -> Self {
         Self {
-            id: (0..12)
-                .map(|_| fastrand::alphanumeric())
-                .collect::<String>()
-                .to_lowercase(),
+            id: new_upload_id(),
             name: "S3".into(),
             enabled: true,
             kind: UploadKind::S3,
@@ -748,6 +787,36 @@ pub fn default_folder() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_ids_ignore_the_shared_rng() {
+        // Previews seed it to draw the same every frame.
+        fastrand::seed(7);
+        let a = Upload::default();
+        fastrand::seed(7);
+        let b = Upload::img_fish();
+        assert_ne!(a.id, b.id);
+        assert_eq!(a.id.len(), 12);
+    }
+
+    #[test]
+    fn duplicate_ids_get_new_ones() {
+        let r2 = Upload::default();
+        let mut settings = Settings {
+            uploads: vec![
+                r2.clone(),
+                Upload { id: r2.id.clone(), ..Upload::img_fish() },
+                Upload::pomf(),
+            ],
+            ..Settings::default()
+        };
+        let pomf = settings.uploads[2].id.clone();
+        assert_eq!(settings.fix_duplicate_ids(), 1);
+        assert_eq!(settings.uploads[0].id, r2.id, "the first keeps its id");
+        assert_ne!(settings.uploads[1].id, r2.id);
+        assert_eq!(settings.uploads[2].id, pomf);
+        assert_eq!(settings.fix_duplicate_ids(), 0);
+    }
 
     #[test]
     fn tool_hotkeys_round_trip() {

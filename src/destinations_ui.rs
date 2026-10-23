@@ -319,8 +319,12 @@ impl Form {
                         process: Some("firefox".into()),
                         ..Context::new(chrono::Local::now())
                     };
+                    // The same random part every frame, so it doesn't flicker;
+                    // the shared generator goes back to how it was after.
+                    let saved = fastrand::get_seed();
                     fastrand::seed(0x5eed);
                     let link = u.link(&key.render_key(&ctx, "png")).unwrap_or_default();
+                    fastrand::seed(saved);
                     RichText::new(format!("Link: {link}")).monospace().weak()
                 }
                 Err(e) => RichText::new(e).color(ERROR),
@@ -339,6 +343,35 @@ impl Form {
 mod tests {
     use crate::settings::{Settings, Upload};
     use crate::settings_ui::{Form, Test};
+
+    /// The link preview seeds the shared generator to draw the same name
+    /// each frame. It used to leave it seeded, so every destination added
+    /// afterwards got the same id, and with it another's stored key.
+    #[test]
+    fn link_preview_leaves_the_shared_rng_alone() {
+        let r2 = Upload {
+            endpoint: "https://acct.r2.cloudflarestorage.com".into(),
+            bucket: "shots".into(),
+            access_key_id: "AK".into(),
+            ..Upload::default()
+        };
+        let mut form = Form::new(&Settings {
+            uploads: vec![r2.clone()],
+            ..Settings::default()
+        });
+        form.expanded = Some(r2.id.clone());
+        fastrand::seed(42);
+        let before = fastrand::get_seed();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 900.0))),
+            ..Default::default()
+        };
+        egui::Context::default()
+            .run_ui(input, |ui| form.destinations_ui(ui, &mut Vec::new()))
+            .textures_delta
+            .clear();
+        assert_eq!(fastrand::get_seed(), before);
+    }
 
     /// Renders the Destinations page with an R2 destination being edited to
     /// `target/destinations-preview.png`: `cargo test destinations_preview -- --ignored`.

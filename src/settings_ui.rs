@@ -119,7 +119,7 @@ impl Form {
             stored_secrets: settings
                 .uploads
                 .iter()
-                .filter(|u| secrets::get(&u.id).is_some())
+                .filter(|u| secrets::get(u).is_some())
                 .map(|u| u.id.clone())
                 .collect(),
             tests: HashMap::new(),
