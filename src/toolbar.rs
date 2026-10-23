@@ -7,7 +7,7 @@ use egui::{
 };
 
 use crate::annotate::{
-    ArrowOptions, COLORS, HighlighterInk, HighlighterShape, PIXEL_BLOCKS, PixelateOptions, Size, Style, TEXT_SIZES, TextOptions, Tool,
+    ArrowOptions, COLORS, HighlighterInk, HighlighterShape, PIXEL_BLOCKS, PixelateOptions, STEP_SIZES, Size, StepOptions, Style, TEXT_SIZES, TextOptions, Tool,
 };
 use crate::session::MAGNIFIER_PIXELS;
 
@@ -28,6 +28,7 @@ pub enum Action {
     Pixelate(PixelateOptions),
     Arrow(ArrowOptions),
     ClipShadow(bool),
+    Step(StepOptions),
     Text(TextOptions),
     Highlighter(HighlighterShape),
     HighlighterInk(HighlighterInk),
@@ -56,7 +57,8 @@ pub struct View {
     /// The selection on this monitor, and its size in pixels.
     pub selection: Option<(Rect, [u32; 2])>,
     pub cursor: CursorIcon,
-    /// Handles for curving lines or arrows, in points.
+    /// Handles for curving lines or arrows, or drawing steps out to a
+    /// point, in points.
     pub arrow_nodes: Vec<egui::Pos2>,
     /// The annotation under the cursor, outlined because it can be
     /// right-clicked away.
@@ -665,6 +667,8 @@ fn toolbar_contents(ui: &mut egui::Ui, view: &View, actions: &mut Vec<Action>) -
         format!("Thickness: {label}")
     } else if view.tool == Tool::Text {
         "Text size is in the tool settings".into()
+    } else if view.tool == Tool::Step {
+        "Step sizes are in the tool settings".into()
     } else {
         "This tool has no thickness".into()
     };
@@ -707,7 +711,13 @@ fn toolbar_contents(ui: &mut egui::Ui, view: &View, actions: &mut Vec<Action>) -
 fn uses_size(tool: Tool) -> bool {
     !matches!(
         tool,
-        Tool::Select | Tool::Pixelate | Tool::Image | Tool::Eraser | Tool::Clip | Tool::Text
+        Tool::Select
+            | Tool::Pixelate
+            | Tool::Image
+            | Tool::Eraser
+            | Tool::Clip
+            | Tool::Text
+            | Tool::Step
     )
 }
 
@@ -715,12 +725,66 @@ fn uses_size(tool: Tool) -> bool {
 fn has_options(tool: Tool) -> bool {
     matches!(
         tool,
-        Tool::Pixelate | Tool::Arrow | Tool::Clip | Tool::Text | Tool::Highlighter
+        Tool::Pixelate | Tool::Arrow | Tool::Clip | Tool::Text | Tool::Highlighter | Tool::Step
     )
 }
 
-/// The current tool's settings, in the options popup.
+/// The current tool's name, over its settings.
+fn options_title(tool: Tool) -> &'static str {
+    match tool {
+        Tool::Pixelate => "Pixelate",
+        Tool::Arrow => "Arrow",
+        Tool::Clip => "Clip",
+        Tool::Text => "Text",
+        Tool::Highlighter => "Highlighter",
+        Tool::Step => "Step",
+        _ => "Settings",
+    }
+}
+
+/// What puts `tool`'s settings back to how they start: nothing if they
+/// already are.
+fn reset_options(tool: Tool, style: &Style) -> Vec<Action> {
+    let d = Style::default();
+    let mut actions = Vec::new();
+    match tool {
+        Tool::Pixelate if style.pixelate != d.pixelate => actions.push(Action::Pixelate(d.pixelate)),
+        Tool::Arrow if style.arrow != d.arrow => actions.push(Action::Arrow(d.arrow)),
+        Tool::Clip if style.clip_shadow != d.clip_shadow => {
+            actions.push(Action::ClipShadow(d.clip_shadow))
+        }
+        Tool::Text if style.text != d.text => actions.push(Action::Text(d.text)),
+        Tool::Highlighter => {
+            if style.highlighter != d.highlighter {
+                actions.push(Action::Highlighter(d.highlighter));
+            }
+            if style.highlighter_ink != d.highlighter_ink {
+                actions.push(Action::HighlighterInk(d.highlighter_ink));
+            }
+        }
+        Tool::Step if style.step != d.step => actions.push(Action::Step(d.step)),
+        _ => {}
+    }
+    actions
+}
+
+/// The current tool's settings, in the options popup, under its name and
+/// a button to reset them.
 fn tool_options(ui: &mut egui::Ui, view: &View, actions: &mut Vec<Action>) {
+    // As wide as the settings under it, with the button at the right.
+    let (header, _) = ui.allocate_exact_size(vec2(230.0, 24.0), Sense::hover());
+    ui.painter().text(
+        header.left_center(),
+        Align2::LEFT_CENTER,
+        options_title(view.tool),
+        FontId::proportional(13.0),
+        ICON,
+    );
+    let reset = reset_options(view.tool, &view.style);
+    let button = Rect::from_min_size(header.right_top() - vec2(24.0, 0.0), vec2(24.0, 24.0));
+    if reset_button(ui, button, !reset.is_empty()).clicked() {
+        actions.extend(reset);
+    }
     match view.tool {
         Tool::Pixelate => {
             let opts = view.style.pixelate;
@@ -843,11 +907,7 @@ fn tool_options(ui: &mut egui::Ui, view: &View, actions: &mut Vec<Action>) {
             }
             option_heading(ui, "Size");
             let mut size = opts.size;
-            ui.spacing_mut().slider_width = 180.0;
-            if ui
-                .add(egui::Slider::new(&mut size, TEXT_SIZES).suffix(" px"))
-                .changed()
-            {
+            if px_slider(ui, &mut size, TEXT_SIZES).changed() {
                 actions.push(Action::Text(TextOptions { size, ..opts }));
             }
             option_heading(ui, "Outline");
@@ -914,6 +974,38 @@ fn tool_options(ui: &mut egui::Ui, view: &View, actions: &mut Vec<Action>) {
                 }
             });
         }
+        Tool::Step => {
+            let opts = view.style.step;
+            option_heading(ui, "Circle size");
+            let mut size = opts.size;
+            if px_slider(ui, &mut size, STEP_SIZES).changed() {
+                // A smaller circle takes the number down with it.
+                let opts = StepOptions { size, ..opts };
+                let number = opts.number.min(*opts.number_sizes().end());
+                actions.push(Action::Step(StepOptions { number, ..opts }));
+            }
+            option_heading(ui, "Number size");
+            let mut number = opts.number;
+            if px_slider(ui, &mut number, opts.number_sizes())
+                .on_hover_text("How tall the digits are, up to what fits in the circle")
+                .changed()
+            {
+                actions.push(Action::Step(StepOptions { number, ..opts }));
+            }
+            option_heading(ui, "Border");
+            ui.horizontal(|ui| {
+                for (border, label) in [(true, "On"), (false, "Off")] {
+                    if option(ui, label, 114.0, opts.border == border, true)
+                        .on_hover_text(crate::locale::spelled!(
+                            "A thin white edge, so steps stand out on their own colour"
+                        ))
+                        .clicked()
+                    {
+                        actions.push(Action::Step(StepOptions { border, ..opts }));
+                    }
+                }
+            });
+        }
         _ => {}
     }
 }
@@ -927,6 +1019,105 @@ fn option_heading(ui: &mut egui::Ui, text: &str) {
             .color(Color32::from_gray(150)),
     );
     ui.add_space(1.0);
+}
+
+/// A size in pixels to pick by dragging along a track, with the size shown
+/// beside it. As wide as two choices side by side.
+fn px_slider(
+    ui: &mut egui::Ui,
+    value: &mut u16,
+    range: std::ops::RangeInclusive<u16>,
+) -> egui::Response {
+    const LABEL: f32 = 50.0;
+    const KNOB: f32 = 7.0;
+    let (rect, mut resp) = ui.allocate_exact_size(vec2(230.0, 28.0), Sense::click_and_drag());
+    let track = Rect::from_min_max(
+        pos2(rect.left() + KNOB + 2.0, rect.center().y - 2.0),
+        pos2(rect.right() - LABEL - KNOB - 6.0, rect.center().y + 2.0),
+    );
+    let (lo, hi) = (*range.start() as f32, *range.end() as f32);
+    if let Some(at) = resp.interact_pointer_pos() {
+        let t = ((at.x - track.left()) / track.width()).clamp(0.0, 1.0);
+        let picked = (lo + t * (hi - lo)).round() as u16;
+        if picked != *value {
+            *value = picked;
+            resp.mark_changed();
+        }
+    }
+    let t = if hi > lo {
+        ((*value as f32 - lo) / (hi - lo)).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let knob = pos2(track.left() + t * track.width(), track.center().y);
+    let p = ui.painter();
+    p.rect_filled(track, 2.0, Color32::from_white_alpha(30));
+    p.rect_filled(
+        Rect::from_min_max(track.min, pos2(knob.x, track.max.y)),
+        2.0,
+        ACCENT,
+    );
+    let active = resp.hovered() || resp.dragged();
+    p.circle_filled(knob + vec2(0.0, 1.0), KNOB + 1.0, Color32::from_black_alpha(80));
+    p.circle_filled(knob, if active { KNOB + 1.0 } else { KNOB }, Color32::WHITE);
+    let label = Rect::from_min_max(
+        pos2(rect.right() - LABEL, rect.top() + 2.0),
+        pos2(rect.right(), rect.bottom() - 2.0),
+    );
+    p.rect_filled(label, 6.0, Color32::from_white_alpha(14));
+    p.text(
+        label.center(),
+        Align2::CENTER_CENTER,
+        format!("{value} px"),
+        FontId::proportional(12.5),
+        ICON,
+    );
+    resp.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// A small button at `rect` putting a tool's settings back to how they
+/// start: a grey circling arrow, lighter when hovered and dimmed when
+/// there's nothing to reset.
+fn reset_button(ui: &mut egui::Ui, rect: Rect, enabled: bool) -> egui::Response {
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let resp = ui.interact(rect, egui::Id::new("reset-tool-options"), sense);
+    let p = ui.painter();
+    let color = if !enabled {
+        ICON_DISABLED
+    } else if resp.hovered() {
+        p.rect_filled(rect, 6.0, Color32::from_white_alpha(14));
+        ICON
+    } else {
+        Color32::from_gray(150)
+    };
+    // Most of a circle, open at the top left, the arrow on its end
+    // pointing back round anticlockwise.
+    let (c, rad) = (rect.center(), 6.0);
+    let angle = |i: usize| (-100.0f32 + 300.0 * i as f32 / 24.0).to_radians();
+    let pts: Vec<Pos2> = (0..=24)
+        .map(|i| c + vec2(angle(i).cos(), angle(i).sin()) * rad)
+        .collect();
+    let end = pts[0];
+    p.add(Shape::line(pts, Stroke::new(1.6, color)));
+    p.add(Shape::convex_polygon(
+        vec![end + vec2(-4.0, -0.8), end + vec2(1.6, -3.6), end + vec2(1.2, 2.6)],
+        color,
+        Stroke::NONE,
+    ));
+    let resp = resp.on_hover_text(if enabled {
+        "Reset to defaults"
+    } else {
+        "These are the defaults"
+    });
+    if enabled {
+        resp.on_hover_cursor(CursorIcon::PointingHand)
+    } else {
+        resp
+    }
 }
 
 /// One choice in the settings popup: its label, highlighted when selected.
@@ -1130,14 +1321,21 @@ fn draw_icon(p: &egui::Painter, r: Rect, icon: Icon, color: Color32, bg: Color32
             p.line_segment([at(0.5, 0.18), at(0.5, 0.86)], Stroke::new(2.2, color));
         }
         Icon::Tool(Tool::Step) => {
-            p.circle_stroke(r.center(), r.width() * 0.48, Stroke::new(1.7, color));
-            p.text(
-                r.center() + vec2(0.0, 0.5),
-                Align2::CENTER_CENTER,
-                "1",
-                FontId::proportional(r.height() * 0.72),
-                color,
-            );
+            // A filled marker with a 1 cut out of it, like the ones it places.
+            // Measured in sixteenths of the icon.
+            let u = r.width() / 16.0;
+            p.circle_filled(r.center(), 7.6 * u, color);
+            let one = vec![
+                at(6.1 / 16.0, 5.7 / 16.0),
+                at(8.6 / 16.0, 4.1 / 16.0),
+                at(8.6 / 16.0, 11.9 / 16.0),
+            ];
+            let width = 1.9 * u;
+            // Round the ends, as egui's lines stop square.
+            for end in [one[0], one[2]] {
+                p.circle_filled(end, width / 2.0, bg);
+            }
+            p.add(Shape::line(one, Stroke::new(width, bg)));
         }
         Icon::Tool(Tool::Eraser) => {
             // A tilted eraser, rubber end down-left, with a sparkle cut into it.
@@ -1284,6 +1482,27 @@ mod tests {
     /// Renders the toolbar offscreen to `target/toolbar-preview.png` for a
     /// visual check: `cargo test toolbar_preview -- --ignored`.
     #[test]
+    fn reset_puts_back_only_that_tools_settings() {
+        let d = Style::default();
+        assert!(reset_options(Tool::Step, &d).is_empty());
+        let mut style = d;
+        style.step.size = 60;
+        style.step.border = false;
+        style.arrow.double = true;
+        style.highlighter_ink = HighlighterInk::Tint;
+        assert!(matches!(
+            reset_options(Tool::Step, &style)[..],
+            [Action::Step(s)] if s == d.step
+        ));
+        assert!(matches!(
+            reset_options(Tool::Highlighter, &style)[..],
+            [Action::HighlighterInk(HighlighterInk::Realistic)]
+        ));
+        assert_eq!(reset_options(Tool::Arrow, &style).len(), 1);
+        assert!(reset_options(Tool::Clip, &style).is_empty());
+    }
+
+    #[test]
     #[ignore]
     fn toolbar_preview() {
         let view = View {
@@ -1319,9 +1538,17 @@ mod tests {
         while crate::fonts::installed().is_none() {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        for tool in [Tool::Pixelate, Tool::Arrow, Tool::Clip, Tool::Text, Tool::Highlighter] {
+        for tool in [
+            Tool::Pixelate,
+            Tool::Arrow,
+            Tool::Clip,
+            Tool::Text,
+            Tool::Highlighter,
+            Tool::Step,
+        ] {
             let mut style = Style::default();
             style.arrow.double = true;
+            style.step.size = 44;
             let view = View {
                 tool,
                 style,

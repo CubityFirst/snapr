@@ -232,6 +232,32 @@ pub struct TextOptions {
 /// The text sizes offered, in pixels per em.
 pub const TEXT_SIZES: std::ops::RangeInclusive<u16> = 10..=160;
 
+/// How the step tool's markers look.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StepOptions {
+    /// Across the circle, in pixels.
+    pub size: u16,
+    /// How tall the digits are, in pixels; at most what fits the circle
+    /// (see [`Self::number_sizes`]). Numbers of two digits or more are
+    /// narrowed to fit it.
+    pub number: u16,
+    /// A thin white border, to show on their own colour.
+    pub border: bool,
+}
+
+impl StepOptions {
+    /// The number sizes that fit inside the circle, in pixels tall.
+    pub fn number_sizes(&self) -> std::ops::RangeInclusive<u16> {
+        8..=(self.size as f32 * STEP_NUMBER_FIT) as u16
+    }
+}
+
+/// The circle sizes offered, in pixels across.
+pub const STEP_SIZES: std::ops::RangeInclusive<u16> = 16..=120;
+
+/// How tall a number can be, for each pixel across its circle.
+const STEP_NUMBER_FIT: f32 = 0.55;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ArrowOptions {
     /// A head at both ends.
@@ -260,6 +286,7 @@ pub struct Style {
     pub arrow: ArrowOptions,
     /// Clips get a soft drop shadow, lifting them off the screen under them.
     pub clip_shadow: bool,
+    pub step: StepOptions,
     pub text: TextOptions,
     pub highlighter: HighlighterShape,
     pub highlighter_ink: HighlighterInk,
@@ -279,6 +306,11 @@ impl Default for Style {
                 head_at_start: false,
             },
             clip_shadow: true,
+            step: StepOptions {
+                size: 30,
+                number: 16,
+                border: true,
+            },
             highlighter: HighlighterShape::Freehand,
             highlighter_ink: HighlighterInk::Realistic,
             text: TextOptions {
@@ -312,8 +344,9 @@ enum Shape {
     ClipSelect(Point, Point),
     /// A copied piece of the screen, with its top-left corner.
     Clip(Arc<Pixmap>, (i32, i32)),
-    /// A numbered marker: its centre and number.
-    Step(Point, u32),
+    /// A numbered marker: its centre and number, and the tip of the point
+    /// it's drawn out to, once its node has been dragged.
+    Step(Point, u32, Option<Point>),
     /// Typed text, by its top-left corner; lines split at `\n`. In a box
     /// dragged out for it, the box's size: the text wraps to its width.
     Text(Point, String, Option<(f32, f32)>),
@@ -383,7 +416,7 @@ impl Annotation {
             Tool::Image => Shape::Image(p, p, None),
             Tool::Clip => Shape::ClipSelect(p, p),
             // Numbered when it's added to the canvas.
-            Tool::Step => Shape::Step(p, 0),
+            Tool::Step => Shape::Step(p, 0, None),
             // Typed into once it's let go: in the box it's dragged out to,
             // or, clicked, with the click in the middle of its first line.
             Tool::Text => Shape::TextSelect(p, p),
@@ -432,7 +465,7 @@ impl Annotation {
             Shape::TextSelect(_, b) => *b = p,
             Shape::Clip(..) | Shape::Text(..) => {}
             // It follows the mouse until it's dropped.
-            Shape::Step(c, _) => *c = p,
+            Shape::Step(c, _, _) => *c = p,
         }
     }
 
@@ -460,7 +493,13 @@ impl Annotation {
                 mv(a);
                 mv(b);
             }
-            Shape::Step(c, _) | Shape::Text(c, _, _) => mv(c),
+            Shape::Step(c, _, tip) => {
+                mv(c);
+                if let Some(t) = tip {
+                    mv(t);
+                }
+            }
+            Shape::Text(c, _, _) => mv(c),
             Shape::Clip(_, at) => *at = (at.0 + d.0.round() as i32, at.1 + d.1.round() as i32),
         }
     }
@@ -490,11 +529,7 @@ impl Annotation {
     }
 
     fn step_radius(&self) -> f32 {
-        match self.style.size {
-            Size::Small => 11.0,
-            Size::Medium => 15.0,
-            Size::Large => 21.0,
-        }
+        self.style.step.size as f32 / 2.0
     }
 
     /// Where it is on screen (global pixels), if `tool` can move it: clips
@@ -519,7 +554,7 @@ impl Annotation {
                 (a.0 as f64, a.1 as f64),
                 (b.0 as f64, b.1 as f64),
             )),
-            (Shape::Step(c, _), Tool::Step) => {
+            (Shape::Step(c, _, _), Tool::Step) => {
                 let r = self.step_radius() as f64;
                 let c = (c.0 as f64, c.1 as f64);
                 Some(Rect::from_points((c.0 - r, c.1 - r), (c.0 + r, c.1 + r)))
@@ -635,6 +670,9 @@ impl Annotation {
                     .collect();
                 Some((vec![line], fills))
             }
+            Shape::Step(c, _, tip) => {
+                Some((Vec::new(), vec![step_path(*c, self.step_radius(), *tip)?]))
+            }
             _ => None,
         }
     }
@@ -704,7 +742,10 @@ impl Annotation {
     /// anywhere inside a clip or area; within a few pixels of what's drawn
     /// for lines, shapes and strokes.
     fn hit(&self, p: Point) -> Option<Rect> {
-        if let Some(tool) = self.mover() {
+        // A step's point sticks out of the box it's moved by.
+        if let Some(tool) = self.mover()
+            && !matches!(self.shape, Shape::Step(..))
+        {
             return self
                 .movable_rect(tool)
                 .filter(|r| r.contains((p.0 as f64, p.1 as f64)));
@@ -751,7 +792,14 @@ impl Annotation {
                 *b = (p.0 + size.0, p.1 + size.1);
             }
             // `p` is the top-left of its square; the centre is a radius in.
-            Shape::Step(c, _) => *c = (p.0 + radius, p.1 + radius),
+            // Its point goes with it.
+            Shape::Step(c, _, tip) => {
+                let to = (p.0 + radius, p.1 + radius);
+                if let Some(t) = tip {
+                    *t = (t.0 + to.0 - c.0, t.1 + to.1 - c.1);
+                }
+                *c = to;
+            }
             Shape::Text(at, _, _) => *at = p,
             _ => {}
         }
@@ -769,23 +817,36 @@ impl Annotation {
         }
     }
 
-    /// The middle node of a line drawn with `tool` (a line or an arrow),
-    /// which can be dragged to curve it.
+    /// The node of a shape drawn with `tool` that can be dragged to reshape
+    /// it: a line's or an arrow's middle, to curve it, or the tip of a
+    /// step's point (on its edge, down and right, until it has one).
     fn bend_node(&self, tool: Tool) -> Option<Point> {
         match (&self.shape, tool) {
             (Shape::Line(a, b, mid), Tool::Line) | (Shape::Arrow(a, b, mid), Tool::Arrow) => {
                 Some(mid.unwrap_or(midpoint(*a, *b)))
             }
+            (Shape::Step(c, _, tip), Tool::Step) => {
+                let edge = self.step_radius() * std::f32::consts::FRAC_1_SQRT_2;
+                Some(tip.unwrap_or((c.0 + edge, c.1 + edge)))
+            }
             _ => None,
         }
     }
 
-    /// Moves a line's or an arrow's middle node to `p`. Close to the
-    /// straight line, it snaps back to straight.
+    /// Moves a shape's node to `p`. Close to the straight line, a line or an
+    /// arrow snaps back to straight; close to its circle, a step loses its
+    /// point.
     fn bend_to(&mut self, p: Point) {
-        if let Shape::Line(a, b, mid) | Shape::Arrow(a, b, mid) = &mut self.shape {
-            let m = midpoint(*a, *b);
-            *mid = ((p.0 - m.0).hypot(p.1 - m.1) >= 4.0).then_some(p);
+        let radius = self.step_radius();
+        match &mut self.shape {
+            Shape::Line(a, b, mid) | Shape::Arrow(a, b, mid) => {
+                let m = midpoint(*a, *b);
+                *mid = ((p.0 - m.0).hypot(p.1 - m.1) >= 4.0).then_some(p);
+            }
+            Shape::Step(c, _, tip) => {
+                *tip = ((p.0 - c.0).hypot(p.1 - c.1) >= radius + 6.0).then_some(p);
+            }
+            _ => {}
         }
     }
 
@@ -816,12 +877,16 @@ impl Annotation {
                 h: r.h + 2 * pad as u32,
             };
         }
-        if let Shape::Step(c, _) = self.shape {
+        if let Shape::Step(c, _, tip) = self.shape {
             let r = self.step_radius() + 2.0;
-            return Rect::from_points(
-                ((c.0 - r) as f64, (c.1 - r) as f64),
-                ((c.0 + r) as f64, (c.1 + r) as f64),
-            );
+            let (mut x0, mut y0, mut x1, mut y1) = (c.0 - r, c.1 - r, c.0 + r, c.1 + r);
+            if let Some(t) = tip {
+                // Room for its outline, wider at a sharp point.
+                let pad = 4.0;
+                (x0, y0) = (x0.min(t.0 - pad), y0.min(t.1 - pad));
+                (x1, y1) = (x1.max(t.0 + pad), y1.max(t.1 + pad));
+            }
+            return Rect::from_points((x0 as f64, y0 as f64), (x1 as f64, y1 as f64));
         }
         let pts: Vec<Point> = match &self.shape {
             Shape::Pen(p) | Shape::Highlighter(p) => p.clone(),
@@ -1080,22 +1145,24 @@ impl Annotation {
                 let wrap = boxed.map(|b| b.0);
                 draw_text(pm, self.style.text, text, local(at), wrap, self.style.color);
             }
-            Shape::Step(c, n) => {
+            Shape::Step(c, n, tip) => {
                 let c = local(c);
                 let r = self.step_radius();
-                if let Some(circle) = PathBuilder::from_circle(c.0, c.1, r) {
+                if let Some(circle) = step_path(c, r, tip.as_ref().map(local)) {
                     pm.fill_path(&circle, &paint, FillRule::Winding, id, None);
                     // A thin ring keeps it visible on its own colour.
-                    let mut ring = Paint {
-                        anti_alias: true,
-                        ..Paint::default()
-                    };
-                    ring.set_color_rgba8(255, 255, 255, 200);
-                    let stroke = Stroke {
-                        width: 1.5,
-                        ..Stroke::default()
-                    };
-                    pm.stroke_path(&circle, &ring, &stroke, id, None);
+                    if self.style.step.border {
+                        let mut ring = Paint {
+                            anti_alias: true,
+                            ..Paint::default()
+                        };
+                        ring.set_color_rgba8(255, 255, 255, 200);
+                        let stroke = Stroke {
+                            width: 1.5,
+                            ..Stroke::default()
+                        };
+                        pm.stroke_path(&circle, &ring, &stroke, id, None);
+                    }
                 }
                 // Dark digits on light colours, white ones otherwise.
                 let luma = 0.299 * r_ as f32 + 0.587 * g_ as f32 + 0.114 * b_ as f32;
@@ -1108,7 +1175,7 @@ impl Annotation {
                 } else {
                     text.set_color_rgba8(255, 255, 255, 255);
                 }
-                draw_number(pm, *n, c, r, &text);
+                draw_number(pm, *n, c, r, self.style.step.number as f32, &text);
             }
             Shape::Clip(img, (x, y)) => {
                 let (x, y) = (x - origin.0, y - origin.1);
@@ -1150,6 +1217,43 @@ impl Annotation {
             }
         }
     }
+}
+
+/// A step's marker: the circle around `c`, drawn out to a point at `tip`
+/// if it has one, with straight sides that meet the circle at a tangent.
+fn step_path(c: Point, r: f32, tip: Option<Point>) -> Option<Path> {
+    let Some(t) = tip.filter(|t| (t.0 - c.0).hypot(t.1 - c.1) > r) else {
+        return PathBuilder::from_circle(c.0, c.1, r);
+    };
+    let toward = (t.1 - c.1).atan2(t.0 - c.0);
+    // Either side of the line to the tip, where its sides touch the circle.
+    let spread = (r / (t.0 - c.0).hypot(t.1 - c.1)).acos();
+    let at = |a: f32| (c.0 + r * a.cos(), c.1 + r * a.sin());
+    let mut pb = PathBuilder::new();
+    pb.move_to(t.0, t.1);
+    let start = toward + spread;
+    let first = at(start);
+    pb.line_to(first.0, first.1);
+    // Round the far side back to the other tangent, in Bézier curves of
+    // at most a quarter turn each.
+    let sweep = std::f32::consts::TAU - 2.0 * spread;
+    let n = (sweep / std::f32::consts::FRAC_PI_2).ceil() as usize;
+    let turn = sweep / n as f32;
+    let k = r * 4.0 / 3.0 * (turn / 4.0).tan();
+    for i in 0..n {
+        let (a0, a1) = (start + turn * i as f32, start + turn * (i + 1) as f32);
+        let (p0, p1) = (at(a0), at(a1));
+        pb.cubic_to(
+            p0.0 - k * a0.sin(),
+            p0.1 + k * a0.cos(),
+            p1.0 + k * a1.sin(),
+            p1.1 - k * a1.cos(),
+            p1.0,
+            p1.1,
+        );
+    }
+    pb.close();
+    pb.finish()
 }
 
 /// The font for step numbers: egui's bundled Ubuntu.
@@ -1195,7 +1299,9 @@ impl ttf_parser::OutlineBuilder for GlyphPath<'_> {
 }
 
 /// Draws `n` centred on `c`, sized to fit a circle of radius `r`.
-fn draw_number(pm: &mut Pixmap, n: u32, c: Point, r: f32, paint: &Paint) {
+/// Writes `n` centred on `c`, its digits `height` pixels tall, or less to
+/// fit inside a circle of radius `r`.
+fn draw_number(pm: &mut Pixmap, n: u32, c: Point, r: f32, height: f32, paint: &Paint) {
     let Some(face) = FONT.as_ref() else { return };
     let digits = n.to_string();
     let glyphs: Vec<_> = digits
@@ -1208,8 +1314,8 @@ fn draw_number(pm: &mut Pixmap, n: u32, c: Point, r: f32, paint: &Paint) {
         .map(|&g| face.glyph_hor_advance(g).unwrap_or(0) as f32)
         .sum();
     let cap = face.capital_height().map_or(units * 0.7, |h| h as f32);
-    // Digits about as tall as the circle is wide, narrowed to fit 2+ digits.
-    let scale = (r * 1.1 / cap).min(r * 1.45 / advance.max(1.0));
+    let height = height.min(r * 2.0 * STEP_NUMBER_FIT);
+    let scale = (height / cap).min(r * 1.45 / advance.max(1.0));
     let mut pb = PathBuilder::new();
     let mut x = c.0 - advance * scale / 2.0;
     for g in glyphs {
@@ -1226,7 +1332,7 @@ fn draw_number(pm: &mut Pixmap, n: u32, c: Point, r: f32, paint: &Paint) {
     pm.fill_path(&path, paint, FillRule::Winding, id, None);
     // The bundled face is light; a thin stroke makes it read as bold.
     let stroke = Stroke {
-        width: (r * 0.09).max(1.0),
+        width: (cap * scale * 0.08).max(1.0),
         line_join: LineJoin::Round,
         ..Stroke::default()
     };
@@ -1735,7 +1841,7 @@ struct Edit {
 
 #[derive(Clone, Copy)]
 enum EditKind {
-    /// Moving an arrow's middle node.
+    /// Moving a line's or an arrow's middle node, or a step's point.
     Bend,
     /// Moving a clip, held at `grab` from its top-left corner.
     Move { grab: Point },
@@ -1874,7 +1980,7 @@ impl Canvas {
 
     pub fn begin(&mut self, mut annotation: Annotation) {
         match &mut annotation.shape {
-            Shape::Step(_, n) => {
+            Shape::Step(_, n, _) => {
                 let steps = self
                     .annotations
                     .iter()
@@ -1910,9 +2016,9 @@ impl Canvas {
         self.replay();
     }
 
-    /// Picks up the topmost line or arrow drawn with `tool` whose middle node
-    /// is within `radius` of `p`, to bend it by dragging. Returns whether
-    /// there was one.
+    /// Picks up the topmost shape drawn with `tool` whose node is within
+    /// `radius` of `p`, to reshape it by dragging. Returns whether there
+    /// was one.
     pub fn begin_bend(&mut self, p: Point, radius: f32, tool: Tool) -> bool {
         let near = |a: &Annotation| {
             a.bend_node(tool)
@@ -2046,8 +2152,8 @@ impl Canvas {
         self.editing.is_some()
     }
 
-    /// Middle nodes of the lines or arrows drawn with `tool`, which can be
-    /// dragged to curve them.
+    /// Nodes of the shapes drawn with `tool` that can be dragged to reshape
+    /// them: lines' and arrows' middles, and steps' points.
     pub fn bend_nodes(&self, tool: Tool) -> Vec<Point> {
         let edited = self.active.as_ref().filter(|_| self.editing.is_some());
         self.annotations
@@ -2408,6 +2514,53 @@ mod tests {
         let untouched = [200, 200, 200, 255];
         assert_ne!(below_clip(true), untouched);
         assert_eq!(below_clip(false), untouched);
+    }
+
+    #[test]
+    fn step_circle_and_number_sizes_are_separate() {
+        // The image after placing a step, and how many of its pixels are
+        // the white of its number.
+        let place = |size, number| {
+            let mut c = canvas();
+            let mut style = Style::default();
+            style.step = StepOptions {
+                size,
+                number,
+                border: false,
+            };
+            c.begin(Annotation::new(Tool::Step, style, (1050.0, 530.0)).unwrap());
+            c.commit();
+            let img = c.image();
+            let white = img.pixels().filter(|p| p.0 == [255, 255, 255, 255]).count();
+            (img, white)
+        };
+        let red = [0xff, 0x3b, 0x30, 255];
+        let (small, digits) = place(30, 16);
+        let (big, same_digits) = place(50, 16);
+        assert_ne!(small.get_pixel(72, 30).0, red);
+        assert_eq!(big.get_pixel(72, 30).0, red);
+        assert_eq!(digits, same_digits);
+        let (_, bigger_digits) = place(50, 26);
+        assert!(bigger_digits > digits * 2, "{digits} -> {bigger_digits}");
+        // However big it's asked to be, the number stays inside its circle.
+        let (huge, huge_digits) = place(30, 90);
+        assert!(huge_digits < digits + digits / 5, "{digits} -> {huge_digits}");
+        assert_eq!(huge.get_pixel(50, 13).0, [200, 200, 200, 255]);
+    }
+
+    #[test]
+    fn step_border_can_be_turned_off() {
+        let just_outside = |border| {
+            let mut c = canvas();
+            let mut style = Style::default();
+            style.step.border = border;
+            c.begin(Annotation::new(Tool::Step, style, (1020.0, 530.0)).unwrap());
+            c.commit();
+            c.image().get_pixel(35, 30).0
+        };
+        let untouched = [200, 200, 200, 255];
+        assert_ne!(just_outside(true), untouched);
+        assert_eq!(just_outside(false), untouched);
     }
 
     #[test]
@@ -2841,7 +2994,7 @@ mod tests {
             c.annotations
                 .iter()
                 .filter_map(|a| match a.shape {
-                    Shape::Step(_, n) => Some(n),
+                    Shape::Step(_, n, _) => Some(n),
                     _ => None,
                 })
                 .collect()
@@ -2861,6 +3014,45 @@ mod tests {
         step(&mut c, 1080.0);
         assert_eq!(numbers(&c), [1, 2]);
         assert!(c.movable_at((1080.0, 530.0), Tool::Step));
+    }
+
+    #[test]
+    fn steps_draw_out_to_a_point_from_their_node() {
+        let mut c = canvas();
+        c.begin(Annotation::new(Tool::Step, Style::default(), (1020.0, 530.0)).unwrap());
+        c.commit();
+        // A plain circle, with its node on the edge, down and right.
+        let [node] = c.bend_nodes(Tool::Step)[..] else {
+            panic!("one node")
+        };
+        assert!((node.0 - 1030.6).abs() < 0.1 && (node.1 - 540.6).abs() < 0.1);
+        assert!(c.bend_nodes(Tool::Line).is_empty());
+        let untouched = [200, 200, 200, 255];
+        let red = [0xff, 0x3b, 0x30, 255];
+        assert_eq!(c.image().get_pixel(55, 30).0, untouched);
+
+        assert!(c.begin_bend(node, 10.0, Tool::Step));
+        c.drag_to((1070.0, 530.0), false);
+        c.commit();
+        assert_eq!(c.bend_nodes(Tool::Step), vec![(1070.0, 530.0)]);
+        assert_eq!(c.image().get_pixel(55, 30).0, red); // on the point
+        assert_eq!(c.image().get_pixel(55, 40).0, untouched); // beside it
+        // The point can be picked to delete it.
+        assert!(c.deletable_highlight((1060.0, 530.0)).is_some());
+
+        // It goes along when the step is moved.
+        assert!(c.begin_move((1020.0, 530.0), Tool::Step));
+        c.drag_to((1025.0, 530.0), false);
+        c.commit();
+        assert_eq!(c.bend_nodes(Tool::Step), vec![(1075.0, 530.0)]);
+
+        // Dragged back to the circle, it's gone.
+        assert!(c.begin_bend((1075.0, 530.0), 10.0, Tool::Step));
+        c.drag_to((1030.0, 535.0), false);
+        c.commit();
+        assert_eq!(c.image().get_pixel(60, 30).0, untouched);
+        c.undo();
+        assert_eq!(c.bend_nodes(Tool::Step), vec![(1075.0, 530.0)]);
     }
 
     #[test]

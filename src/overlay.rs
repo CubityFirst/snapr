@@ -35,8 +35,8 @@ pub struct Frame {
     pub can_undo: bool,
     pub can_redo: bool,
     pub cursor: egui::CursorIcon,
-    /// Lines' or arrows' middle nodes (global pixels), shown as handles to
-    /// curve them.
+    /// Lines' or arrows' middle nodes, or steps' points (global pixels),
+    /// shown as handles to reshape them.
     pub arrow_nodes: Vec<(f64, f64)>,
     /// The annotation under the cursor (global pixels), outlined because it
     /// can be right-clicked away.

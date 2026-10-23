@@ -3,7 +3,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::annotate::{HighlighterInk, HighlighterShape, Size, Style, TEXT_SIZES};
+use crate::annotate::{
+    HighlighterInk, HighlighterShape, STEP_SIZES, Size, Style, TEXT_SIZES,
+};
 use crate::session::{MAGNIFIER_PIXELS, MAGNIFIER_ZOOM};
 use crate::settings::Settings;
 
@@ -18,6 +20,7 @@ pub struct Remembered {
     arrow_double: bool,
     arrow_head_at_start: bool,
     clip_shadow: bool,
+    step: Step,
     /// "freehand", "straight" or "box".
     highlighter: String,
     /// "realistic" or "tint".
@@ -36,6 +39,16 @@ struct Text {
     outline: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+struct Step {
+    /// Across the circle, in pixels.
+    size: u16,
+    /// How tall the digits are, in pixels.
+    number: u16,
+    border: bool,
+}
+
 impl Default for Remembered {
     fn default() -> Self {
         Self::new(Style::default(), MAGNIFIER_PIXELS)
@@ -45,6 +58,12 @@ impl Default for Remembered {
 impl Default for Text {
     fn default() -> Self {
         Remembered::default().text
+    }
+}
+
+impl Default for Step {
+    fn default() -> Self {
+        Remembered::default().step
     }
 }
 
@@ -67,6 +86,11 @@ impl Remembered {
             arrow_double: style.arrow.double,
             arrow_head_at_start: style.arrow.head_at_start,
             clip_shadow: style.clip_shadow,
+            step: Step {
+                size: style.step.size,
+                number: style.step.number,
+                border: style.step.border,
+            },
             highlighter: match style.highlighter {
                 HighlighterShape::Freehand => "freehand",
                 HighlighterShape::Straight => "straight",
@@ -130,6 +154,10 @@ impl Remembered {
         style.arrow.double = self.arrow_double;
         style.arrow.head_at_start = self.arrow_head_at_start;
         style.clip_shadow = self.clip_shadow;
+        style.step.size = self.step.size.clamp(*STEP_SIZES.start(), *STEP_SIZES.end());
+        let numbers = style.step.number_sizes();
+        style.step.number = self.step.number.clamp(*numbers.start(), *numbers.end());
+        style.step.border = self.step.border;
         style.highlighter = match self.highlighter.as_str() {
             "straight" => HighlighterShape::Straight,
             "box" => HighlighterShape::Box,
@@ -162,7 +190,7 @@ impl Remembered {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::annotate::{Size, TextOptions};
+    use crate::annotate::{Size, StepOptions, TextOptions};
 
     #[test]
     fn round_trips_through_toml() {
@@ -172,6 +200,11 @@ mod tests {
         style.pixelate.secure = true;
         style.arrow.double = true;
         style.clip_shadow = false;
+        style.step = StepOptions {
+            size: 48,
+            number: 24,
+            border: false,
+        };
         style.highlighter = HighlighterShape::Box;
         style.highlighter_ink = HighlighterInk::Tint;
         style.text = TextOptions {
@@ -197,7 +230,13 @@ mod tests {
         assert_eq!(style.color, Style::default().color);
         assert_eq!(style.text.size, *TEXT_SIZES.start());
         assert!(style.text.outline);
+        assert_eq!(style.step, Style::default().step);
+
         assert_eq!(loaded.magnifier(), MAGNIFIER_ZOOM.1 as u32);
         assert_eq!(loaded.font(), Some("Arial"));
+
+        // A number too big for its circle is brought down to fit.
+        let crowded: Remembered = toml::from_str("[step]\nsize = 20\nnumber = 90").unwrap();
+        assert_eq!(crowded.style().step.number, 11);
     }
 }

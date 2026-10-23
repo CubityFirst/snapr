@@ -94,7 +94,7 @@ pub const MAGNIFIER_PIXELS: u32 = 15;
 pub const MAGNIFIER_ZOOM: (i32, i32) = (5, 45);
 
 /// How close (in pixels) a press must be to a line's or an arrow's middle
-/// node to grab it.
+/// node, or a step's point, to grab it.
 const NODE_RADIUS: f64 = 9.0;
 
 fn node_hit(node: (f32, f32), p: (f64, f64)) -> bool {
@@ -396,7 +396,7 @@ impl Session {
         let editing = canvas.is_some_and(Canvas::is_editing);
         let arrow_nodes = match canvas {
             Some(c)
-                if matches!(self.tool, Tool::Line | Tool::Arrow)
+                if matches!(self.tool, Tool::Line | Tool::Arrow | Tool::Step)
                     && (editing || self.grab == Grab::None) =>
             {
                 c.bend_nodes(self.tool)
@@ -826,6 +826,7 @@ impl Session {
             Action::Pixelate(o) => self.style.pixelate = o,
             Action::Arrow(o) => self.style.arrow = o,
             Action::ClipShadow(on) => self.style.clip_shadow = on,
+            Action::Step(o) => self.style.step = o,
             Action::Text(t) => self.style.text = t,
             Action::Highlighter(shape) => self.style.highlighter = shape,
             Action::HighlighterInk(ink) => self.style.highlighter_ink = ink,
@@ -1007,6 +1008,7 @@ impl Session {
             && canvas.begin_bend((p.0 as f32, p.1 as f32), NODE_RADIUS as f32, self.tool)
         {
             // Grabbed a line's or an arrow's middle node: drag to curve it.
+            // Or a step's: drag to draw it out to a point.
             self.grab = Grab::Draw;
         } else if let Some(canvas) = &mut self.canvas
             && canvas.begin_move((p.0 as f32, p.1 as f32), self.tool)
