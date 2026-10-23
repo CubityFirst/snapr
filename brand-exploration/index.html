@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>snapr — Focus Field brand direction</title>
+  <meta name="description" content="Focus Field, the visual and verbal brand direction for snapr, a fast cross-platform screen capture tool.">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2316171A'/%3E%3Cpath d='M10 25V10h15v7h-8v8zm29-15h15v15h-7v-8h-8zM10 39h7v8h8v7H10zm37 0h7v15H39v-7h8z' fill='%233D9BFF'/%3E%3Crect x='27' y='27' width='10' height='10' fill='%233D9BFF'/%3E%3C/svg%3E">
+  <style>
+    :root {
+      color-scheme: dark;
+      --paper: #f5f3ee;
+      --ink: #141519;
+      --muted: #9da1ab;
+      --line: rgba(255,255,255,.12);
+      --blue: #3d9bff;
+      --mint: #71e6c1;
+      font-family: "Segoe UI Variable", "SF Pro Text", Inter, system-ui, sans-serif;
+      font-synthesis: none;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: #f6f7f9;
+      background:
+        radial-gradient(circle at 12% 0%, rgba(61,155,255,.11), transparent 32rem),
+        #101114;
+    }
+    img { display: block; max-width: 100%; }
+    a { color: inherit; }
+    .shell { width: min(1180px, calc(100% - 36px)); margin: auto; }
+    .topbar {
+      position: sticky; top: 0; z-index: 20;
+      border-bottom: 1px solid var(--line);
+      background: rgba(16,17,20,.82);
+      backdrop-filter: blur(18px);
+    }
+    .topbar .shell { min-height: 58px; display: flex; align-items: center; gap: 22px; }
+    .mini-brand { display: flex; align-items: center; gap: 9px; font-weight: 760; letter-spacing: -.04em; }
+    .mini-brand svg { width: 25px; height: 25px; }
+    .topbar nav { display: flex; gap: 6px; margin-left: auto; overflow-x: auto; }
+    .topbar a { color: #aeb2bd; text-decoration: none; font-size: 13px; padding: 8px 10px; border-radius: 8px; white-space: nowrap; }
+    .topbar a:hover { color: white; background: rgba(255,255,255,.07); }
+    .eyebrow { font-size: 12px; font-weight: 720; letter-spacing: .14em; text-transform: uppercase; }
+    .intro { padding: 92px 0 64px; }
+    .intro-grid { display: grid; grid-template-columns: 1.25fr .75fr; gap: 70px; align-items: end; }
+    h1 { margin: 14px 0 20px; max-width: 900px; font-size: clamp(48px, 8vw, 98px); line-height: .92; letter-spacing: -.075em; }
+    .lede { margin: 0; max-width: 700px; color: #b9bdc7; font-size: clamp(18px, 2.2vw, 24px); line-height: 1.45; }
+    .working-note { border: 1px solid rgba(255,211,78,.32); background: rgba(255,211,78,.07); border-radius: 18px; padding: 20px; color: #ded9c4; }
+    .working-note strong { color: #ffe27e; display: block; margin-bottom: 7px; }
+    .working-note p { margin: 0; font-size: 14px; line-height: 1.55; }
+    .working-note a { text-underline-offset: 3px; }
+    .section { padding: 82px 0; border-top: 1px solid var(--line); }
+    .section-head { display: grid; grid-template-columns: .6fr 1.4fr; gap: 30px; margin-bottom: 34px; }
+    .section-head h2 { margin: 0; font-size: clamp(35px, 5vw, 64px); line-height: .96; letter-spacing: -.055em; }
+    .section-head p { margin: 4px 0 0; max-width: 680px; color: #b8bbc5; font-size: 17px; line-height: 1.6; }
+    .direction { --accent: var(--blue); --surface: #171a21; }
+    .board {
+      display: grid; grid-template-columns: 1.05fr .95fr;
+      min-height: 610px; border: 1px solid var(--line); border-radius: 30px; overflow: hidden;
+      background: var(--surface);
+    }
+    .brand-panel { position: relative; padding: clamp(28px, 5vw, 62px); display: flex; flex-direction: column; overflow: hidden; }
+    .brand-panel:before { content: ""; position: absolute; inset: 0; background-image: linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px); background-size: 48px 48px; mask-image: linear-gradient(to bottom, black, transparent 80%); }
+    .brand-panel > * { position: relative; z-index: 1; }
+    .concept-num { font-size: 12px; font-weight: 750; letter-spacing: .15em; text-transform: uppercase; opacity: .56; }
+    .lockup { display: flex; align-items: center; gap: 17px; margin-top: 46px; }
+    .lockup svg { width: 80px; height: 80px; flex: 0 0 auto; }
+    .wordmark { font-size: clamp(58px, 8vw, 88px); font-weight: 780; letter-spacing: -.075em; line-height: 1; }
+    .wordmark .r { color: var(--accent); }
+    .bigline { margin: auto 0 16px; max-width: 560px; font-size: clamp(36px, 5vw, 62px); line-height: .98; letter-spacing: -.055em; font-weight: 720; }
+    .subline { margin: 0; max-width: 520px; color: rgba(255,255,255,.63); font-size: 17px; line-height: 1.5; }
+    .art-panel { position: relative; min-height: 500px; background: #0c0d10; }
+    .art-panel img { width: 100%; height: 100%; object-fit: cover; }
+    .art-label { position: absolute; inset: auto 18px 18px auto; padding: 8px 11px; border-radius: 999px; color: white; background: rgba(0,0,0,.56); backdrop-filter: blur(10px); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+    .detail-grid { display: grid; grid-template-columns: 1.05fr .95fr; gap: 16px; margin-top: 16px; }
+    .card { border: 1px solid var(--line); border-radius: 22px; padding: 25px; background: rgba(255,255,255,.025); }
+    .card h3 { margin: 0 0 17px; font-size: 20px; letter-spacing: -.025em; }
+    .card p { margin: 0; color: #aeb2bc; line-height: 1.55; }
+    .palette { display: grid; grid-template-columns: repeat(4, 1fr); min-height: 215px; padding: 0; overflow: hidden; }
+    .swatch { display: flex; flex-direction: column; justify-content: end; padding: 17px; color: white; }
+    .swatch.light { color: #15161a; }
+    .swatch b { font-size: 13px; }
+    .swatch span { font: 11px ui-monospace, "Cascadia Mono", monospace; opacity: .72; margin-top: 4px; }
+    .copy-stack { display: grid; gap: 11px; }
+    .copy-chip { border: 1px solid var(--line); border-radius: 13px; padding: 14px 15px; }
+    .copy-chip small { display: block; color: #777c87; text-transform: uppercase; letter-spacing: .1em; margin-bottom: 6px; }
+    .copy-chip strong { font-size: 17px; }
+    .type-card { min-height: 330px; display: flex; flex-direction: column; }
+    .type-sample { margin-top: auto; }
+    .type-sample .display { display: block; font-size: clamp(42px, 6vw, 72px); line-height: .95; letter-spacing: -.06em; font-weight: 760; }
+    .type-sample .meta { display: block; margin-top: 20px; font: 12px ui-monospace, "Cascadia Mono", monospace; color: #8c919d; }
+    .ui-card { padding: 18px; min-height: 330px; background: #0d0f13; overflow: hidden; }
+    .ui-window { height: 100%; min-height: 292px; border: 1px solid rgba(255,255,255,.11); border-radius: 14px; background: linear-gradient(135deg,#2a2e37,#17191f); position: relative; overflow: hidden; }
+    .ui-window:before { content: ""; position: absolute; inset: 52px 44px 45px; border: 2px solid var(--accent); box-shadow: 0 0 0 999px rgba(0,0,0,.46); }
+    .ui-window:after { content: "1280 × 720"; position: absolute; left: 50%; top: 28px; transform: translateX(-50%); background: rgba(9,10,12,.85); border: 1px solid rgba(255,255,255,.12); border-radius: 7px; padding: 6px 9px; color: white; font: 11px ui-monospace, "Cascadia Mono", monospace; }
+    .tool-pill { position: absolute; z-index: 2; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; gap: 7px; padding: 7px; background: #1c1d20; border: 1px solid #3a3c42; border-radius: 12px; }
+    .tool-pill i { width: 23px; height: 23px; border-radius: 6px; background: rgba(255,255,255,.09); }
+    .tool-pill i.active { background: var(--accent); }
+    .applications { display: grid; grid-template-columns: .75fr 1.25fr; gap: 16px; margin-top: 16px; }
+    .app-icons { display: flex; align-items: center; justify-content: center; gap: 22px; min-height: 260px; }
+    .app-icon { width: 130px; aspect-ratio: 1; border-radius: 28%; display: grid; place-items: center; box-shadow: 0 24px 65px rgba(0,0,0,.26); }
+    .app-icon svg { width: 66%; height: 66%; }
+    .app-icon.small { width: 68px; border-radius: 24%; }
+    .social { min-height: 260px; position: relative; overflow: hidden; padding: 34px; display: flex; flex-direction: column; justify-content: space-between; background: var(--surface); }
+    .social:after { content: ""; position: absolute; width: 330px; height: 330px; border-radius: 50%; right: -90px; bottom: -180px; background: var(--accent); filter: blur(35px); opacity: .36; }
+    .social > * { position: relative; z-index: 1; }
+    .social strong { max-width: 430px; font-size: clamp(32px, 4vw, 54px); line-height: 1; letter-spacing: -.055em; }
+    .social span { opacity: .62; }
+    .recommend { margin-top: 16px; display: grid; grid-template-columns: 1.25fr .75fr; gap: 16px; }
+    .recommend .card:first-child { padding: clamp(28px, 5vw, 52px); background: linear-gradient(135deg, rgba(61,155,255,.13), rgba(113,230,193,.06)); }
+    .recommend h3 { font-size: clamp(31px, 4vw, 50px); line-height: 1.02; }
+    .recommend p { max-width: 670px; font-size: 17px; }
+    .next-list { margin: 0; padding-left: 18px; color: #b5b9c3; line-height: 1.75; }
+    footer { padding: 42px 0 70px; color: #7f848f; font-size: 13px; }
+    @media (max-width: 840px) {
+      .intro-grid, .section-head, .board, .detail-grid, .applications, .recommend { grid-template-columns: 1fr; }
+      .art-panel { min-height: 360px; }
+      .brand-panel { min-height: 540px; }
+      
+    }
+    @media (max-width: 560px) {
+      .shell { width: min(100% - 22px, 1180px); }
+      .intro { padding-top: 62px; }
+      .palette { grid-template-columns: repeat(2, 1fr); }
+      .swatch { min-height: 110px; }
+      .app-icons { flex-direction: column; }
+      .lockup svg { width: 60px; height: 60px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="shell">
+      <div class="mini-brand">
+        <svg viewBox="0 0 64 64" aria-hidden="true"><g fill="#3D9BFF"><path d="M7 23V7h16v7h-9v9H7Z"/><path d="M41 7h16v16h-7v-9h-9V7Z"/><path d="M7 41h7v9h9v7H7V41Z"/><path d="M50 41h7v16H41v-7h9v-9Z"/><rect x="27" y="27" width="10" height="10" rx="1"/></g></svg>
+        <span>snapr / brand</span>
+      </div>
+      <nav aria-label="Brand directions">
+        <a href="#focus">Focus Field</a>
+        <a href="#next">Next steps</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section class="intro">
+      <div class="shell intro-grid">
+        <div>
+          <div class="eyebrow" style="color:var(--blue)">Brand direction · October 2026</div>
+          <h1>Focus Field.</h1>
+          <p class="lede">The visual and verbal direction for a fast cross-platform capture tool: screenshots, recording, annotation, pinning, history, and flexible destinations.</p>
+        </div>
+        <aside class="working-note">
+          <strong>Working name, pending clearance</strong>
+          <p>A separate “Snapr” product now operates in the same screenshot and recording category. Treat the wordmark and taglines here as exploration copy until the name is resolved. See the <a href="https://snapr.pineple.com/">existing product</a> and its <a href="https://www.producthunt.com/products/snapr-5">launch listing</a>.</p>
+        </aside>
+      </div>
+    </section>
+
+    <section class="section direction" id="focus">
+      <div class="shell">
+        <div class="section-head"><div class="eyebrow" style="color:var(--blue)">Focus Field</div><div><h2>Capture exactly what matters.</h2><p>The most natural extension of the current product. It treats the crop frame as a field of focus and the centre square as the chosen pixel: fast, controlled, dependable.</p></div></div>
+        <div class="board">
+          <div class="brand-panel">
+            <span class="concept-num">Precision system</span>
+            <div class="lockup">
+              <svg viewBox="0 0 64 64" aria-hidden="true"><g fill="#3D9BFF"><path d="M7 23V7h16v7h-9v9H7Z"/><path d="M41 7h16v16h-7v-9h-9V7Z"/><path d="M7 41h7v9h9v7H7V41Z"/><path d="M50 41h7v16H41v-7h9v-9Z"/><rect x="27" y="27" width="10" height="10" rx="1"/></g></svg>
+              <div class="wordmark">snap<span class="r">r</span></div>
+            </div>
+            <div class="bigline">Press. Frame. Done.</div>
+            <p class="subline">A crisp, professional identity for a capture utility people can trust all day without thinking about it.</p>
+          </div>
+          <div class="art-panel"><img src="assets/focus-field.png" alt="Abstract blue crop field on a dark technical grid"><span class="art-label">Atmosphere / selection field</span></div>
+        </div>
+        <div class="detail-grid">
+          <div class="card palette" aria-label="Focus Field palette">
+            <div class="swatch" style="background:#3D9BFF"><b>Capture Blue</b><span>#3D9BFF</span></div>
+            <div class="swatch" style="background:#16171A"><b>Ink</b><span>#16171A</span></div>
+            <div class="swatch light" style="background:#F4F7FB"><b>Cloud</b><span>#F4F7FB</span></div>
+            <div class="swatch light" style="background:#71E6C1"><b>Confirm Mint</b><span>#71E6C1</span></div>
+          </div>
+          <div class="card copy-stack">
+            <h3>Verbal identity</h3>
+            <div class="copy-chip"><small>Primary line</small><strong>Capture exactly what matters.</strong></div>
+            <div class="copy-chip"><small>Product line</small><strong>Fast capture. Precise control.</strong></div>
+            <div class="copy-chip"><small>Voice</small><strong>Clear, clipped, assured.</strong></div>
+          </div>
+          <div class="card type-card"><h3>Type direction</h3><p>Neutral geometry keeps dense settings and hotkey labels readable. Use weight and scale for personality, not ornament.</p><div class="type-sample"><span class="display">Frame the useful.</span><span class="meta">Candidate pairing · Inter Tight / Inter</span></div></div>
+          <div class="card ui-card"><div class="ui-window" style="--accent:#3D9BFF"><div class="tool-pill"><i class="active"></i><i></i><i></i><i></i><i></i></div></div></div>
+        </div>
+        <div class="applications">
+          <div class="card app-icons"><div class="app-icon" style="background:#16171A"><img src="assets/focus-field-mark.svg" alt="Focus Field app icon"></div><div class="app-icon small" style="background:#F4F7FB"><img src="assets/focus-field-mark.svg" alt="Focus Field small icon"></div></div>
+          <div class="card social"><span>snapr / capture utility</span><strong>Catch the detail. Keep the momentum.</strong><span>Screenshot · record · annotate · share</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="next">
+      <div class="shell">
+        <div class="section-head"><div class="eyebrow">Next steps</div><div><h2>Keep the product logic. Sharpen the words.</h2><p>Focus Field reuses the mark and accent already in the app, so the work left is making it ownable: copy, small-size refinement, and a full asset kit.</p></div></div>
+        <div class="recommend">
+          <div class="card"><h3>Why Focus Field.</h3><p>It reuses the current four-corner mark and the <code>#3D9BFF</code> UI accent, so it feels dependable immediately and costs almost nothing to adopt. Its weak spot is distinctiveness, which the voice and copy have to carry.</p></div>
+          <div class="card"><h3>Next decision</h3><ol class="next-list"><li>Resolve or replace the working name.</li><li>Refine the mark at 16–1024 px.</li><li>Build the final logo, icon, social, press, and UI token kit.</li></ol></div>
+        </div>
+      </div>
+    </section>
+  </main>
+  <footer><div class="shell">Exploration assets only · vector concept mark and atmosphere art included in <code>brand-exploration/assets</code>.</div></footer>
+</body>
+</html>

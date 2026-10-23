@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">Focus Field concept mark</title>
+  <g fill="#3D9BFF">
+    <path d="M7 23V7h16v7h-9v9H7Z"/>
+    <path d="M41 7h16v16h-7v-9h-9V7Z"/>
+    <path d="M7 41h7v9h9v7H7V41Z"/>
+    <path d="M50 41h7v16H41v-7h9v-9Z"/>
+    <rect x="27" y="27" width="10" height="10" rx="1"/>
+  </g>
+</svg>
