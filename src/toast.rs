@@ -173,7 +173,13 @@ impl Toast {
             }
             WindowEvent::CursorEntered { .. } => self.expires_at = None,
             WindowEvent::CursorLeft { .. } => self.expires_at = Some(Instant::now() + AFTER_HOVER),
-            WindowEvent::RedrawRequested => self.paint(),
+            // Not passed on to egui, which asks to repaint after every redraw:
+            // the toast would paint non-stop, and on Windows that starves the
+            // main window of redraws, so it stops responding.
+            WindowEvent::RedrawRequested => {
+                self.paint();
+                return None;
+            }
             WindowEvent::Resized(size) => {
                 if let (Some(w), Some(h)) = (
                     std::num::NonZeroU32::new(size.width),
