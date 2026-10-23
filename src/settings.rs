@@ -450,7 +450,13 @@ impl Settings {
             Ok(text) => match toml::from_str::<Self>(&text) {
                 Ok(mut s) => {
                     s.migrate_templates();
-                    s.fix_duplicate_ids();
+                    // Saved, or the new ids would change every launch and
+                    // lose track of what was uploaded under them.
+                    if s.fix_duplicate_ids() > 0
+                        && let Err(e) = s.save()
+                    {
+                        eprintln!("{e}");
+                    }
                     (s, Loaded::Existing)
                 }
                 Err(e) => {
