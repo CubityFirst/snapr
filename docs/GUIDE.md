@@ -136,6 +136,12 @@ URL** to put links under a domain of your own). Pomf can't delete uploads,
 so **Test** uploads snapr's icon and leaves it there, and those screenshots
 don't offer *Delete remotely*.
 
+*+ Add img.fish upload* sends screenshots to [img.fish](https://img.fish/api).
+Without an **API key** they go up anonymously; paste the key from *Profile &
+settings* on img.fish to keep them in your account. img.fish picks the file's
+name and link, and keeps a private delete address for each upload, so
+*Delete remotely* works. **Test** uploads snapr's icon and deletes it again.
+
 Secret access keys are kept in the system credential store (Windows Credential
 Manager, macOS Keychain, Secret Service on Linux), never in `config.toml`.
 Requests are signed with AWS Signature V4, checked against AWS's published

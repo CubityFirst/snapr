@@ -5,10 +5,11 @@ use std::path::PathBuf;
 use livesplit_hotkey::Hotkey;
 use serde::{Deserialize, Serialize};
 
+use crate::imgfish::ImgFishTarget;
 use crate::naming::{Naming, Template, migrate_legacy};
 use crate::pomf::PomfTarget;
 use crate::atomic;
-use crate::upload::{Body, Progress, S3Target, Target, encode_path};
+use crate::upload::{Body, Progress, S3Target, Target, Uploaded, encode_path};
 
 pub const DEFAULT_HOTKEY: &str = "Alt + Shift + KeyS";
 pub const DEFAULT_RECORD_HOTKEY: &str = "Alt + Shift + KeyV";
@@ -518,10 +519,14 @@ pub enum UploadKind {
     S3,
     /// A Pomf-compatible file host (version 1 of its API).
     Pomf,
+    /// img.fish, anonymously or into an account with an API key.
+    #[serde(rename = "imgfish")]
+    ImgFish,
 }
 
 /// Where screenshots are uploaded to: an S3-compatible bucket, whose secret
-/// key is kept in the OS credential store under `id`, or a Pomf host.
+/// key is kept in the OS credential store under `id`, a Pomf host, or
+/// img.fish (whose optional API key is kept the same way).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Upload {
@@ -529,8 +534,8 @@ pub struct Upload {
     pub name: String,
     pub enabled: bool,
     pub kind: UploadKind,
-    /// The storage endpoint, or for Pomf the upload address (e.g.
-    /// `https://pomf.lain.la/upload.php`).
+    /// The storage endpoint, for Pomf the upload address (e.g.
+    /// `https://pomf.lain.la/upload.php`), or img.fish's address.
     pub endpoint: String,
     pub region: String,
     pub bucket: String,
@@ -584,14 +589,30 @@ impl Upload {
         }
     }
 
+    /// A new img.fish destination.
+    pub fn img_fish() -> Self {
+        Self {
+            name: "img.fish".into(),
+            kind: UploadKind::ImgFish,
+            endpoint: "https://img.fish".into(),
+            key_template: "%rna{10}".into(),
+            ..Self::default()
+        }
+    }
+
     /// Whether it needs a secret key from the credential store.
     pub fn needs_secret(&self) -> bool {
         self.kind == UploadKind::S3
     }
 
+    /// Whether it can have a key in the credential store, needed or not.
+    pub fn keeps_secret(&self) -> bool {
+        matches!(self.kind, UploadKind::S3 | UploadKind::ImgFish)
+    }
+
     /// Whether what's uploaded there can be deleted again.
     pub fn deletable(&self) -> bool {
-        self.kind == UploadKind::S3
+        matches!(self.kind, UploadKind::S3 | UploadKind::ImgFish)
     }
 
     /// Checks the fields; returns the parsed key template.
@@ -601,6 +622,7 @@ impl Upload {
             return Err(match self.kind {
                 UploadKind::S3 => "Endpoint should start with https://",
                 UploadKind::Pomf => "Upload URL should start with https://",
+                UploadKind::ImgFish => "Address should start with https://",
             }
             .into());
         }
@@ -618,23 +640,28 @@ impl Upload {
         }
         self.key_template.parse::<Template>().map_err(|e| match self.kind {
             UploadKind::S3 => format!("Object key: {e}"),
-            UploadKind::Pomf => format!("File name: {e}"),
+            UploadKind::Pomf | UploadKind::ImgFish => format!("File name: {e}"),
         })
     }
 
-    /// Where its files go; the secret key is only used for S3.
-    pub fn target(&self, secret_access_key: String) -> Target {
+    /// Where its files go, with the key from the credential store: S3's
+    /// secret access key, or img.fish's API key (empty for none).
+    pub fn target(&self, secret: String) -> Target {
         match self.kind {
-            UploadKind::S3 => Target::S3(self.s3_target(secret_access_key)),
+            UploadKind::S3 => Target::S3(self.s3_target(secret)),
             UploadKind::Pomf => Target::Pomf(PomfTarget {
                 url: self.endpoint.trim().to_string(),
                 public_url: self.public_url.trim().to_string(),
+            }),
+            UploadKind::ImgFish => Target::ImgFish(ImgFishTarget {
+                url: self.endpoint.trim().to_string(),
+                api_key: secret,
             }),
         }
     }
 
     /// Uploads `body` to `target` (from [`Self::target`]) as `key`, following
-    /// along in `progress`. Returns its link.
+    /// along in `progress`. Returns its link, and how to delete it.
     pub fn put(
         &self,
         target: &Target,
@@ -642,16 +669,38 @@ impl Upload {
         body: &Body,
         content_type: &str,
         progress: &Progress,
-    ) -> Result<String, String> {
+    ) -> Result<Uploaded, String> {
         if crate::policy::uploads_disabled() {
             return Err(crate::policy::UPLOADS_OFF.into());
         }
         match target {
             Target::S3(t) => {
                 t.put_object(key, body, content_type, progress)?;
-                self.link(key)
+                Ok(Uploaded {
+                    link: self.link(key)?,
+                    remote_key: Some(key.to_string()),
+                })
             }
-            Target::Pomf(t) => t.upload(key, body, content_type, progress),
+            Target::Pomf(t) => Ok(Uploaded {
+                link: t.upload(key, body, content_type, progress)?,
+                remote_key: None,
+            }),
+            Target::ImgFish(t) => {
+                let (link, destroy) = t.upload(key, body, content_type, progress)?;
+                Ok(Uploaded {
+                    link,
+                    remote_key: Some(destroy),
+                })
+            }
+        }
+    }
+
+    /// Deletes what [`Self::put`] uploaded, given its `remote_key`.
+    pub fn delete(&self, target: &Target, remote_key: &str) -> Result<(), String> {
+        match target {
+            Target::S3(t) => t.delete_object(remote_key),
+            Target::Pomf(_) => Err("Pomf uploads can't be deleted".into()),
+            Target::ImgFish(t) => t.destroy(remote_key),
         }
     }
 

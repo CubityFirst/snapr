@@ -48,7 +48,7 @@ impl PomfTarget {
     ) -> Result<String, String> {
         let data = body.read(0, body.len()?)?;
         let boundary: String = (0..24).map(|_| fastrand::alphanumeric()).collect();
-        let form = form(&boundary, name, content_type, &data);
+        let form = form(&boundary, "files[]", name, content_type, &data);
         drop(data);
         progress.total.store(form.len() as u64, Ordering::Relaxed);
 
@@ -138,8 +138,14 @@ impl PomfTarget {
     }
 }
 
-/// A `multipart/form-data` body with the file as its `files[]` field.
-fn form(boundary: &str, name: &str, content_type: &str, data: &[u8]) -> Vec<u8> {
+/// A `multipart/form-data` body with the file as its `field` field.
+pub(crate) fn form(
+    boundary: &str,
+    field: &str,
+    name: &str,
+    content_type: &str,
+    data: &[u8],
+) -> Vec<u8> {
     // Only the last part of a key like `2026-10/abc.png`; no quotes or line
     // breaks, which would end the header.
     let name: String = name
@@ -151,7 +157,7 @@ fn form(boundary: &str, name: &str, content_type: &str, data: &[u8]) -> Vec<u8> 
         .collect();
     let head = format!(
         "--{boundary}\r\n\
-         Content-Disposition: form-data; name=\"files[]\"; filename=\"{name}\"\r\n\
+         Content-Disposition: form-data; name=\"{field}\"; filename=\"{name}\"\r\n\
          Content-Type: {content_type}\r\n\r\n"
     );
     let tail = format!("\r\n--{boundary}--\r\n");
@@ -163,7 +169,7 @@ fn form(boundary: &str, name: &str, content_type: &str, data: &[u8]) -> Vec<u8> 
 }
 
 /// The host of an address, for messages.
-fn host(url: &str) -> &str {
+pub(crate) fn host(url: &str) -> &str {
     url.split("://")
         .nth(1)
         .unwrap_or(url)
@@ -196,7 +202,7 @@ mod tests {
 
     #[test]
     fn form_names_the_file() {
-        let form = form("XYZ", "2026-10/a\"b.png", "image/png", b"PNG");
+        let form = form("XYZ", "files[]", "2026-10/a\"b.png", "image/png", b"PNG");
         let text = String::from_utf8(form).unwrap();
         assert_eq!(
             text,
