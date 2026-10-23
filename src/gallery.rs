@@ -3,7 +3,8 @@
 //! (see `thumbnail`); files without a picture get a file icon. Videos play
 //! in the large preview (see `player`).
 //!
-//! Images can be combined: Ctrl-click several and right-click one, or drag one
+//! Images can be combined: Ctrl-click several (or Shift-click to pick a run
+//! of them) and right-click one, or drag one
 //! onto another and drop it on *Horizontal* or *Vertical*. Dragging a card
 //! (or the preview) out of the window drops its file in another app.
 
@@ -639,7 +640,30 @@ impl Gallery {
             resp.on_hover_text(format!("{name}\n{}", details(path, None)))
         };
         if resp.clicked() {
-            if ui.input(|i| i.modifiers.command) {
+            if ui.input(|i| i.modifiers.shift) {
+                // Shift-click: add every card from the last one picked (or
+                // the one shown) up to this one, numbered in the direction
+                // they run.
+                let anchor = self.picked.last().map_or(shown, |p| p.as_path()).to_owned();
+                if self.picked.is_empty() {
+                    self.picked.push(anchor.clone());
+                }
+                let index = |p: &Path| self.items.iter().position(|e| e.path == p);
+                if let (Some(from), Some(to)) = (index(&anchor), index(path)) {
+                    let range: Vec<usize> = if from <= to {
+                        (from..=to).collect()
+                    } else {
+                        (to..=from).rev().collect()
+                    };
+                    for i in range {
+                        let p = &self.items[i].path;
+                        if !self.picked.contains(p) {
+                            self.picked.push(p.clone());
+                        }
+                    }
+                }
+                self.selected = Some(path.to_owned());
+            } else if ui.input(|i| i.modifiers.command) {
                 // Ctrl-click: add to (or take out of) the selection, which
                 // keeps the order the images were clicked in. The one already
                 // shown starts the selection.
@@ -1074,15 +1098,20 @@ mod tests {
 
     /// One frame's worth of input for each step of Ctrl-clicking each point.
     fn ctrl_clicks(points: &[egui::Pos2]) -> Vec<Vec<egui::Event>> {
+        clicks(points, egui::Modifiers::COMMAND | egui::Modifiers::CTRL)
+    }
+
+    /// One frame's worth of input for each step of clicking each point with
+    /// `modifiers` held.
+    fn clicks(points: &[egui::Pos2], modifiers: egui::Modifiers) -> Vec<Vec<egui::Event>> {
         use egui::{Event, Modifiers, PointerButton};
-        let ctrl = Modifiers::COMMAND | Modifiers::CTRL;
-        let mut steps = vec![vec![Event::ModifiersChanged(ctrl)]];
+        let mut steps = vec![vec![Event::ModifiersChanged(modifiers)]];
         for &pos in points {
             let button = |pressed| Event::PointerButton {
                 pos,
                 button: PointerButton::Primary,
                 pressed,
-                modifiers: ctrl,
+                modifiers,
             };
             steps.push(vec![Event::PointerMoved(pos)]);
             steps.push(vec![button(true)]);
@@ -1112,7 +1141,17 @@ mod tests {
         let (green, blue) = (pos2(282.0, 477.0), pos2(468.0, 477.0));
         // The newest (red) is shown, so it's first; then blue and green in
         // the order they're clicked, not grid order.
-        for events in std::iter::once(vec![]).chain(ctrl_clicks(&[blue, green])) {
+        run(&ctx, &mut ui, ctrl_clicks(&[blue, green]));
+        drop(ui);
+        assert_eq!(
+            g.picked,
+            vec![names[0].clone(), names[2].clone(), names[1].clone()]
+        );
+    }
+
+    /// Runs a first frame to lay the gallery out, then one per step.
+    fn run(ctx: &egui::Context, ui: &mut impl FnMut(&mut egui::Ui), steps: Vec<Vec<egui::Event>>) {
+        for events in std::iter::once(vec![]).chain(steps) {
             let input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -1121,13 +1160,30 @@ mod tests {
                 events,
                 ..Default::default()
             };
-            ctx.run_ui(input, &mut ui).textures_delta.clear();
+            ctx.run_ui(input, &mut *ui).textures_delta.clear();
         }
+    }
+
+    #[test]
+    fn shift_click_picks_the_run_in_order() {
+        let (red, blue) = (pos2(96.0, 477.0), pos2(468.0, 477.0));
+        // Forwards from the shown one (red) to blue.
+        let mut g = test_gallery();
+        let names = g.items.iter().map(|e| e.path.clone()).collect::<Vec<_>>();
+        let ctx = egui::Context::default();
+        let mut ui = gallery_ui(&mut g);
+        run(&ctx, &mut ui, clicks(&[blue], egui::Modifiers::SHIFT));
         drop(ui);
-        assert_eq!(
-            g.picked,
-            vec![names[0].clone(), names[2].clone(), names[1].clone()]
-        );
+        assert_eq!(g.picked, names);
+        // Backwards: blue clicked, then Shift-click red.
+        let mut g = test_gallery();
+        let ctx = egui::Context::default();
+        let mut ui = gallery_ui(&mut g);
+        let mut steps = clicks(&[blue], egui::Modifiers::NONE);
+        steps.extend(clicks(&[red], egui::Modifiers::SHIFT));
+        run(&ctx, &mut ui, steps);
+        drop(ui);
+        assert_eq!(g.picked, names.into_iter().rev().collect::<Vec<_>>());
     }
 
     /// Ctrl-clicks cards, saving the last frame as `target/ctrl-click.png`.
