@@ -63,6 +63,11 @@ impl Form {
                                 "A Pomf-compatible file host, e.g. pomf.lain.la or uguu.se",
                                 Upload::pomf,
                             ),
+                            (
+                                "+ Add img.fish upload",
+                                "img.fish, anonymously or into your account with an API key",
+                                Upload::img_fish,
+                            ),
                         ] {
                             if ui.button(label).on_hover_text(hover).clicked() {
                                 let u = new();
@@ -167,6 +172,8 @@ impl Form {
                         .unwrap_or("");
                     let what = match u.kind {
                         UploadKind::Pomf => "Pomf",
+                        UploadKind::ImgFish if stored => "API key",
+                        UploadKind::ImgFish => "anonymous",
                         UploadKind::S3 if u.bucket.is_empty() => "no bucket",
                         UploadKind::S3 => &u.bucket,
                     };
@@ -181,7 +188,9 @@ impl Form {
                         let running = matches!(self.tests.get(&id), Some(Test::Running));
                         if ui
                             .add_enabled(!running, egui::Button::new("Test"))
-                            .on_hover_text(if u.deletable() {
+                            .on_hover_text(if u.kind == UploadKind::ImgFish {
+                                "Upload snapr's icon and delete it again"
+                            } else if u.deletable() {
                                 "Upload a tiny file and delete it again"
                             } else {
                                 "Upload snapr's icon and show its link (it stays there: Pomf \
@@ -238,6 +247,24 @@ impl Form {
                     &mut u.public_url,
                     "https://\u{2026}",
                 );
+            } else if u.kind == UploadKind::ImgFish {
+                field(ui, "Address", None, &mut u.endpoint, "https://img.fish");
+                let secret = self.secrets.entry(id.clone()).or_default();
+                let hint = if stored { "saved \u{2014} type to replace" } else { "optional" };
+                row(ui, "API key", "API key",
+                    Some("Optional: keeps uploads in your account. Kept in the credential store"),
+                    false, |ui| {
+                    ui.add(
+                        TextEdit::singleline(secret).margin(theme::FIELD_MARGIN)
+                            .password(true)
+                            .hint_text(hint)
+                            .desired_width(FIELD_WIDTH),
+                    );
+                });
+                row(ui, "File name", "File name", Some("img.fish gives the file a name of its own"), false, |ui| {
+                    template_field(ui, &format!("key-{id}"), &mut u.key_template, "%rna{10}");
+                    ui.label(".png");
+                });
             } else {
                 field(ui, "Endpoint", None, &mut u.endpoint, "https://<account>.r2.cloudflarestorage.com");
                 field(ui, "Region", None, &mut u.region, "auto (R2) or e.g. us-east-1");
@@ -275,6 +302,9 @@ impl Form {
             }
 
             let link = match u.validate() {
+                Ok(_) if u.kind == UploadKind::ImgFish => {
+                    RichText::new("Link: the one img.fish gives").monospace().weak()
+                }
                 Ok(_) if u.kind == UploadKind::Pomf => {
                     let public = u.public_url.trim().trim_end_matches('/');
                     let link = if public.is_empty() {
@@ -289,8 +319,12 @@ impl Form {
                         process: Some("firefox".into()),
                         ..Context::new(chrono::Local::now())
                     };
+                    // The same random part every frame, so it doesn't flicker;
+                    // the shared generator goes back to how it was after.
+                    let saved = fastrand::get_seed();
                     fastrand::seed(0x5eed);
                     let link = u.link(&key.render_key(&ctx, "png")).unwrap_or_default();
+                    fastrand::seed(saved);
                     RichText::new(format!("Link: {link}")).monospace().weak()
                 }
                 Err(e) => RichText::new(e).color(ERROR),
@@ -309,6 +343,35 @@ impl Form {
 mod tests {
     use crate::settings::{Settings, Upload};
     use crate::settings_ui::{Form, Test};
+
+    /// The link preview seeds the shared generator to draw the same name
+    /// each frame. It used to leave it seeded, so every destination added
+    /// afterwards got the same id, and with it another's stored key.
+    #[test]
+    fn link_preview_leaves_the_shared_rng_alone() {
+        let r2 = Upload {
+            endpoint: "https://acct.r2.cloudflarestorage.com".into(),
+            bucket: "shots".into(),
+            access_key_id: "AK".into(),
+            ..Upload::default()
+        };
+        let mut form = Form::new(&Settings {
+            uploads: vec![r2.clone()],
+            ..Settings::default()
+        });
+        form.expanded = Some(r2.id.clone());
+        fastrand::seed(42);
+        let before = fastrand::get_seed();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 900.0))),
+            ..Default::default()
+        };
+        egui::Context::default()
+            .run_ui(input, |ui| form.destinations_ui(ui, &mut Vec::new()))
+            .textures_delta
+            .clear();
+        assert_eq!(fastrand::get_seed(), before);
+    }
 
     /// Renders the Destinations page with an R2 destination being edited to
     /// `target/destinations-preview.png`: `cargo test destinations_preview -- --ignored`.

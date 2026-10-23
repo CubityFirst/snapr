@@ -417,12 +417,19 @@ fn upload_all(
                 .lock()
                 .unwrap()
                 .retain(|t| !Arc::ptr_eq(t, &transfer));
+            let (result, remote) = match result {
+                Ok(u) => (
+                    Ok(u.link),
+                    u.remote_key.map(|key| Remote {
+                        upload_id: upload.id.clone(),
+                        key,
+                    }),
+                ),
+                Err(e) => (Err(e), None),
+            };
             let _ = tx.send(Job::Uploaded {
                 path,
-                remote: upload.deletable().then(|| Remote {
-                    upload_id: upload.id.clone(),
-                    key,
-                }),
+                remote,
                 name: upload.name,
                 id: upload.id,
                 batch,

@@ -5,10 +5,11 @@ use std::path::PathBuf;
 use livesplit_hotkey::Hotkey;
 use serde::{Deserialize, Serialize};
 
+use crate::imgfish::ImgFishTarget;
 use crate::naming::{Naming, Template, migrate_legacy};
 use crate::pomf::PomfTarget;
 use crate::atomic;
-use crate::upload::{Body, Progress, S3Target, Target, encode_path};
+use crate::upload::{Body, Progress, S3Target, Target, Uploaded, encode_path};
 
 pub const DEFAULT_HOTKEY: &str = "Alt + Shift + KeyS";
 pub const DEFAULT_RECORD_HOTKEY: &str = "Alt + Shift + KeyV";
@@ -449,6 +450,13 @@ impl Settings {
             Ok(text) => match toml::from_str::<Self>(&text) {
                 Ok(mut s) => {
                     s.migrate_templates();
+                    // Saved, or the new ids would change every launch and
+                    // lose track of what was uploaded under them.
+                    if s.fix_duplicate_ids() > 0
+                        && let Err(e) = s.save()
+                    {
+                        eprintln!("{e}");
+                    }
                     (s, Loaded::Existing)
                 }
                 Err(e) => {
@@ -462,6 +470,23 @@ impl Settings {
                 }
             },
         }
+    }
+
+    /// Gives a new id to each upload destination whose id an earlier one
+    /// already has (the first keeps it), so no two share a stored key.
+    /// Returns how many changed.
+    pub(crate) fn fix_duplicate_ids(&mut self) -> usize {
+        let mut seen = std::collections::HashSet::new();
+        let mut fixed = 0;
+        for u in &mut self.uploads {
+            if !seen.insert(u.id.clone()) {
+                eprintln!("upload destination {} had a duplicate id; it gets a new one", u.name);
+                u.id = new_upload_id();
+                seen.insert(u.id.clone());
+                fixed += 1;
+            }
+        }
+        fixed
     }
 
     /// Rewrites templates from the old `{random}` syntax to ShareX's `%rna{10}`.
@@ -518,10 +543,38 @@ pub enum UploadKind {
     S3,
     /// A Pomf-compatible file host (version 1 of its API).
     Pomf,
+    /// img.fish, anonymously or into an account with an API key.
+    #[serde(rename = "imgfish")]
+    ImgFish,
+}
+
+impl UploadKind {
+    /// How it's written in the config file and credential names.
+    pub fn slug(self) -> &'static str {
+        match self {
+            UploadKind::S3 => "s3",
+            UploadKind::Pomf => "pomf",
+            UploadKind::ImgFish => "imgfish",
+        }
+    }
+}
+
+/// A new destination's id: 12 lower-case letters and digits, drawn from a
+/// generator of its own seeded by the OS, as the shared one is reseeded to
+/// draw previews the same each frame.
+fn new_upload_id() -> String {
+    use std::hash::BuildHasher;
+    let seed = std::collections::hash_map::RandomState::new().hash_one(0u8);
+    let mut rng = fastrand::Rng::with_seed(seed);
+    (0..12)
+        .map(|_| rng.alphanumeric())
+        .collect::<String>()
+        .to_lowercase()
 }
 
 /// Where screenshots are uploaded to: an S3-compatible bucket, whose secret
-/// key is kept in the OS credential store under `id`, or a Pomf host.
+/// key is kept in the OS credential store under `id`, a Pomf host, or
+/// img.fish (whose optional API key is kept the same way).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Upload {
@@ -529,8 +582,8 @@ pub struct Upload {
     pub name: String,
     pub enabled: bool,
     pub kind: UploadKind,
-    /// The storage endpoint, or for Pomf the upload address (e.g.
-    /// `https://pomf.lain.la/upload.php`).
+    /// The storage endpoint, for Pomf the upload address (e.g.
+    /// `https://pomf.lain.la/upload.php`), or img.fish's address.
     pub endpoint: String,
     pub region: String,
     pub bucket: String,
@@ -553,10 +606,7 @@ pub struct Upload {
 impl Default for Upload {
     fn default() -> Self {
         Self {
-            id: (0..12)
-                .map(|_| fastrand::alphanumeric())
-                .collect::<String>()
-                .to_lowercase(),
+            id: new_upload_id(),
             name: "S3".into(),
             enabled: true,
             kind: UploadKind::S3,
@@ -584,14 +634,30 @@ impl Upload {
         }
     }
 
+    /// A new img.fish destination.
+    pub fn img_fish() -> Self {
+        Self {
+            name: "img.fish".into(),
+            kind: UploadKind::ImgFish,
+            endpoint: "https://img.fish".into(),
+            key_template: "%rna{10}".into(),
+            ..Self::default()
+        }
+    }
+
     /// Whether it needs a secret key from the credential store.
     pub fn needs_secret(&self) -> bool {
         self.kind == UploadKind::S3
     }
 
+    /// Whether it can have a key in the credential store, needed or not.
+    pub fn keeps_secret(&self) -> bool {
+        matches!(self.kind, UploadKind::S3 | UploadKind::ImgFish)
+    }
+
     /// Whether what's uploaded there can be deleted again.
     pub fn deletable(&self) -> bool {
-        self.kind == UploadKind::S3
+        matches!(self.kind, UploadKind::S3 | UploadKind::ImgFish)
     }
 
     /// Checks the fields; returns the parsed key template.
@@ -601,6 +667,7 @@ impl Upload {
             return Err(match self.kind {
                 UploadKind::S3 => "Endpoint should start with https://",
                 UploadKind::Pomf => "Upload URL should start with https://",
+                UploadKind::ImgFish => "Address should start with https://",
             }
             .into());
         }
@@ -618,23 +685,28 @@ impl Upload {
         }
         self.key_template.parse::<Template>().map_err(|e| match self.kind {
             UploadKind::S3 => format!("Object key: {e}"),
-            UploadKind::Pomf => format!("File name: {e}"),
+            UploadKind::Pomf | UploadKind::ImgFish => format!("File name: {e}"),
         })
     }
 
-    /// Where its files go; the secret key is only used for S3.
-    pub fn target(&self, secret_access_key: String) -> Target {
+    /// Where its files go, with the key from the credential store: S3's
+    /// secret access key, or img.fish's API key (empty for none).
+    pub fn target(&self, secret: String) -> Target {
         match self.kind {
-            UploadKind::S3 => Target::S3(self.s3_target(secret_access_key)),
+            UploadKind::S3 => Target::S3(self.s3_target(secret)),
             UploadKind::Pomf => Target::Pomf(PomfTarget {
                 url: self.endpoint.trim().to_string(),
                 public_url: self.public_url.trim().to_string(),
+            }),
+            UploadKind::ImgFish => Target::ImgFish(ImgFishTarget {
+                url: self.endpoint.trim().to_string(),
+                api_key: secret,
             }),
         }
     }
 
     /// Uploads `body` to `target` (from [`Self::target`]) as `key`, following
-    /// along in `progress`. Returns its link.
+    /// along in `progress`. Returns its link, and how to delete it.
     pub fn put(
         &self,
         target: &Target,
@@ -642,16 +714,38 @@ impl Upload {
         body: &Body,
         content_type: &str,
         progress: &Progress,
-    ) -> Result<String, String> {
+    ) -> Result<Uploaded, String> {
         if crate::policy::uploads_disabled() {
             return Err(crate::policy::UPLOADS_OFF.into());
         }
         match target {
             Target::S3(t) => {
                 t.put_object(key, body, content_type, progress)?;
-                self.link(key)
+                Ok(Uploaded {
+                    link: self.link(key)?,
+                    remote_key: Some(key.to_string()),
+                })
             }
-            Target::Pomf(t) => t.upload(key, body, content_type, progress),
+            Target::Pomf(t) => Ok(Uploaded {
+                link: t.upload(key, body, content_type, progress)?,
+                remote_key: None,
+            }),
+            Target::ImgFish(t) => {
+                let (link, destroy) = t.upload(key, body, content_type, progress)?;
+                Ok(Uploaded {
+                    link,
+                    remote_key: Some(destroy),
+                })
+            }
+        }
+    }
+
+    /// Deletes what [`Self::put`] uploaded, given its `remote_key`.
+    pub fn delete(&self, target: &Target, remote_key: &str) -> Result<(), String> {
+        match target {
+            Target::S3(t) => t.delete_object(remote_key),
+            Target::Pomf(_) => Err("Pomf uploads can't be deleted".into()),
+            Target::ImgFish(t) => t.destroy(remote_key),
         }
     }
 
@@ -699,6 +793,36 @@ pub fn default_folder() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_ids_ignore_the_shared_rng() {
+        // Previews seed it to draw the same every frame.
+        fastrand::seed(7);
+        let a = Upload::default();
+        fastrand::seed(7);
+        let b = Upload::img_fish();
+        assert_ne!(a.id, b.id);
+        assert_eq!(a.id.len(), 12);
+    }
+
+    #[test]
+    fn duplicate_ids_get_new_ones() {
+        let r2 = Upload::default();
+        let mut settings = Settings {
+            uploads: vec![
+                r2.clone(),
+                Upload { id: r2.id.clone(), ..Upload::img_fish() },
+                Upload::pomf(),
+            ],
+            ..Settings::default()
+        };
+        let pomf = settings.uploads[2].id.clone();
+        assert_eq!(settings.fix_duplicate_ids(), 1);
+        assert_eq!(settings.uploads[0].id, r2.id, "the first keeps its id");
+        assert_ne!(settings.uploads[1].id, r2.id);
+        assert_eq!(settings.uploads[2].id, pomf);
+        assert_eq!(settings.fix_duplicate_ids(), 0);
+    }
 
     #[test]
     fn tool_hotkeys_round_trip() {

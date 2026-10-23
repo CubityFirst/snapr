@@ -136,6 +136,12 @@ URL** to put links under a domain of your own). Pomf can't delete uploads,
 so **Test** uploads snapr's icon and leaves it there, and those screenshots
 don't offer *Delete remotely*.
 
+*+ Add img.fish upload* sends screenshots to [img.fish](https://img.fish/api).
+Without an **API key** they go up anonymously; paste the key from *Profile &
+settings* on img.fish to keep them in your account. img.fish picks the file's
+name and link, and keeps a private delete address for each upload, so
+*Delete remotely* works. **Test** uploads snapr's icon and deletes it again.
+
 Secret access keys are kept in the system credential store (Windows Credential
 Manager, macOS Keychain, Secret Service on Linux), never in `config.toml`.
 Requests are signed with AWS Signature V4, checked against AWS's published
@@ -167,7 +173,9 @@ Changes on the Settings pages save as you make them (once a change is valid).
 Settings are stored in `<config dir>/snapr/config.toml`
 (`%APPDATA%\snapr` on Windows, `~/Library/Application Support/snapr` on macOS,
 `~/.config/snapr` on Linux). Set `SNAPR_CONFIG_DIR` to use another folder, e.g.
-for a portable copy or a second, independent instance. Files are saved by
+for a portable copy or a second, independent instance; its upload keys are
+kept apart from the usual copy's in the credential store too, so they're
+entered again there. Files are saved by
 writing a new copy and swapping it in, so a crash mid-save leaves the old one
 intact. If `config.toml` can't be read, snapr starts with the defaults and
 keeps the unreadable file as `config.toml.broken`.
