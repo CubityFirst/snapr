@@ -694,14 +694,59 @@ pub fn drag_out(window: &winit::window::Window, paths: &[PathBuf]) {
         for id in ids {
             ILFree(Some(id));
         }
-        if let Err(e) = result {
-            eprintln!("couldn't drag files out: {}", e.message());
+        match result {
+            Ok(_) => *OWN_DROP.lock().unwrap() = own_window_at_cursor(),
+            Err(e) => eprintln!("couldn't drag files out: {}", e.message()),
         }
+    }
+}
+
+/// The snapr window (by handle) that files dragged out of snapr were just
+/// dropped back on. The drop reaches it as an ordinary file drop, once the
+/// drag returns.
+#[cfg(windows)]
+static OWN_DROP: Mutex<Option<isize>> = Mutex::new(None);
+
+/// The top-level window under the cursor, if it's one of snapr's.
+#[cfg(windows)]
+fn own_window_at_cursor() -> Option<isize> {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GA_ROOT, GetAncestor, GetCursorPos, GetWindowThreadProcessId, WindowFromPoint,
+    };
+    // SAFETY: plain Win32 queries with valid out-pointers.
+    unsafe {
+        let mut p = POINT { x: 0, y: 0 };
+        if GetCursorPos(&mut p) == 0 {
+            return None;
+        }
+        let root = GetAncestor(WindowFromPoint(p), GA_ROOT);
+        let mut pid = 0;
+        GetWindowThreadProcessId(root, &mut pid);
+        (!root.is_null() && pid == GetCurrentProcessId()).then_some(root as isize)
+    }
+}
+
+/// Whether the files just dropped on `window` were dragged there from snapr
+/// itself, rather than from outside.
+#[cfg(windows)]
+pub fn own_drop(window: &winit::window::Window) -> bool {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let own = OWN_DROP.lock().unwrap().take();
+    match window.window_handle().map(|h| h.as_raw()) {
+        Ok(RawWindowHandle::Win32(h)) => own == Some(h.hwnd.get()),
+        _ => false,
     }
 }
 
 #[cfg(not(windows))]
 pub fn drag_out(_window: &winit::window::Window, _paths: &[PathBuf]) {}
+
+#[cfg(not(windows))]
+pub fn own_drop(_window: &winit::window::Window) -> bool {
+    false
+}
 
 /// Opens a folder (created if missing) or file in the system file manager.
 pub fn reveal(path: &Path) {

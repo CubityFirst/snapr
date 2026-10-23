@@ -597,7 +597,9 @@ impl MainWindow {
             });
     }
 
-    /// Uploads files dropped on the window, with a hint while they're dragged over it.
+    /// Uploads files dropped on the window, with a hint while they're dragged
+    /// over it. Files dragged here from snapr itself (the gallery, a toast)
+    /// are left alone.
     fn drop_ui(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         let (hovering, dropped) = ui.input(|i| {
             (
@@ -609,7 +611,7 @@ impl MainWindow {
                     .collect::<Vec<_>>(),
             )
         });
-        if !dropped.is_empty() {
+        if !dropped.is_empty() && !crate::output::own_drop(&self.window) {
             actions.push(Action::UploadFiles(dropped));
         }
         if crate::policy::uploads_disabled() {
