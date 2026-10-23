@@ -119,16 +119,6 @@ pub const MAX_CONCURRENCY: u32 = 32;
 pub enum Target {
     S3(S3Target),
     Pomf(crate::pomf::PomfTarget),
-    ImgFish(crate::imgfish::ImgFishTarget),
-}
-
-/// What an upload gives back.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Uploaded {
-    pub link: String,
-    /// What deleting it needs (the object key, or img.fish's destroy
-    /// address); missing where uploads can't be deleted.
-    pub remote_key: Option<String>,
 }
 
 /// Where and how to upload.

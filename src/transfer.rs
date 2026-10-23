@@ -39,7 +39,7 @@ pub fn export(path: &Path, settings: &Settings, with_secrets: bool) -> Result<us
         settings
             .uploads
             .iter()
-            .filter(|u| u.keeps_secret())
+            .filter(|u| u.needs_secret())
             .filter_map(|u| Some((u.id.clone(), secrets::get(u)?)))
             .collect()
     } else {

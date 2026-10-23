@@ -25,8 +25,8 @@ support. To build it yourself: `cargo build --release`.
   undo/redo.
 - **Record** a region to MP4 or WebM, with HDR, AV1 and optional FFmpeg
   encoding, and pause, restart or abort from the bar beneath it.
-- **Upload** to Cloudflare R2, Amazon S3, MinIO, Backblaze B2, img.fish or
-  any Pomf host, with the link copied for you. Keys live in the system credential
+- **Upload** to Cloudflare R2, Amazon S3, MinIO, Backblaze B2 or any Pomf
+  host, with the link copied for you. Keys live in the system credential
   store, and administrators can turn uploads off.
 - **Tools**: scan QR codes from the screen, pick colours with a magnifier,
   pin a region on top of everything, and combine screenshots side by side.

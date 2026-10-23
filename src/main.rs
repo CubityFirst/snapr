@@ -23,7 +23,6 @@ mod gpu;
 mod hdr;
 mod history;
 mod hotkey;
-mod imgfish;
 mod locale;
 #[cfg(target_os = "macos")]
 mod macos;
@@ -980,7 +979,7 @@ impl App {
         }
     }
 
-    /// Deletes an uploaded copy of a screenshot from where it went.
+    /// Deletes an uploaded copy of a screenshot from its bucket.
     fn delete_remote(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -1000,12 +999,12 @@ impl App {
         };
         let proxy = Mutex::new(self.proxy.clone());
         std::thread::spawn(move || {
-            let secret = match secrets::get(&upload) {
-                Some(s) => Ok(s),
-                None if upload.needs_secret() => Err("its secret access key isn't saved".to_string()),
-                None => Ok(String::new()),
-            };
-            let result = secret.and_then(|s| upload.delete(&upload.target(s), &remote.key));
+            let result = secrets::get(&upload)
+                .ok_or_else(|| "its secret access key isn't saved".to_string())
+                .and_then(|secret| match upload.target(secret) {
+                    crate::upload::Target::S3(t) => t.delete_object(&remote.key),
+                    crate::upload::Target::Pomf(_) => Err("Pomf uploads can't be deleted".into()),
+                });
             let _ = proxy.lock().unwrap().send_event(UserEvent::RemoteDeleted(
                 path,
                 upload.name,
@@ -1026,8 +1025,7 @@ impl App {
 
     /// Uploads a tiny file to the destination and deletes it again, or with
     /// `icon` (or where uploads can't be deleted), uploads snapr's icon where
-    /// a screenshot would go and leaves it there to look at. img.fish only
-    /// takes images and the like, so it's sent the icon either way.
+    /// a screenshot would go and leaves it there to look at.
     fn test_upload(&self, upload: Upload, secret: Option<String>, icon: bool) {
         let proxy = Mutex::new(self.proxy.clone());
         let id = upload.id.clone();
@@ -1038,13 +1036,11 @@ impl App {
                     secret
                         .or_else(|| secrets::get(&upload))
                         .ok_or("enter the secret access key")?
-                } else if upload.keeps_secret() {
-                    secret.or_else(|| secrets::get(&upload)).unwrap_or_default()
                 } else {
                     String::new()
                 };
                 let target = upload.target(secret);
-                if icon || !matches!(target, crate::upload::Target::S3(_)) {
+                if icon || !upload.deletable() {
                     const SIZE: u32 = 256;
                     let image = image::RgbaImage::from_raw(SIZE, SIZE, crate::tray::icon_rgba(SIZE))
                         .ok_or("couldn't draw the icon")?;
@@ -1061,17 +1057,8 @@ impl App {
                     let key = template.render_key(&ctx, "png");
                     let body = crate::upload::Body::Bytes(Arc::new(png));
                     let progress = crate::upload::Progress::default();
-                    let uploaded = upload.put(&target, &key, &body, "image/png", &progress)?;
-                    let link = uploaded.link;
-                    let Some(remote_key) = uploaded.remote_key.filter(|_| !icon) else {
-                        return Ok(format!("Uploaded the icon: {link}"));
-                    };
-                    return Ok(match upload.delete(&target, &remote_key) {
-                        Ok(()) => format!("Upload works. Links will look like {link}"),
-                        Err(e) => {
-                            format!("Upload works, but deleting the test file failed ({e}): {link}")
-                        }
-                    });
+                    let link = upload.put(&target, &key, &body, "image/png", &progress)?;
+                    return Ok(format!("Uploaded the icon: {link}"));
                 }
                 let crate::upload::Target::S3(target) = target else {
                     unreachable!("only S3 uploads can be deleted");
@@ -1597,8 +1584,6 @@ fn output_config(settings: &Settings) -> Result<output::Config, String> {
                 continue;
             };
             secret
-        } else if u.keeps_secret() {
-            secrets::get(u).unwrap_or_default()
         } else {
             String::new()
         };

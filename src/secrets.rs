@@ -122,7 +122,6 @@ mod tests {
     #[test]
     fn names_carry_the_kind() {
         assert_eq!(name(UploadKind::S3, "pt5uva7kmher"), "upload-s3-pt5uva7kmher");
-        assert_eq!(name(UploadKind::ImgFish, "pt5uva7kmher"), "upload-imgfish-pt5uva7kmher");
         assert_eq!(name(UploadKind::Pomf, "x"), "upload-pomf-x");
     }
 
@@ -166,7 +165,7 @@ mod tests {
             })
         );
         // Other kinds never had the old name, so never take an S3 key.
-        assert_eq!(find(UploadKind::ImgFish, "abc", lookup(&old)), None);
+        assert_eq!(find(UploadKind::Pomf, "abc", lookup(&old)), None);
         assert_eq!(find(UploadKind::S3, "abc", lookup(&store(&[]))), None);
     }
 

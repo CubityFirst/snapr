@@ -63,11 +63,6 @@ impl Form {
                                 "A Pomf-compatible file host, e.g. pomf.lain.la or uguu.se",
                                 Upload::pomf,
                             ),
-                            (
-                                "+ Add img.fish upload",
-                                "img.fish, anonymously or into your account with an API key",
-                                Upload::img_fish,
-                            ),
                         ] {
                             if ui.button(label).on_hover_text(hover).clicked() {
                                 let u = new();
@@ -172,8 +167,6 @@ impl Form {
                         .unwrap_or("");
                     let what = match u.kind {
                         UploadKind::Pomf => "Pomf",
-                        UploadKind::ImgFish if stored => "API key",
-                        UploadKind::ImgFish => "anonymous",
                         UploadKind::S3 if u.bucket.is_empty() => "no bucket",
                         UploadKind::S3 => &u.bucket,
                     };
@@ -188,9 +181,7 @@ impl Form {
                         let running = matches!(self.tests.get(&id), Some(Test::Running));
                         if ui
                             .add_enabled(!running, egui::Button::new("Test"))
-                            .on_hover_text(if u.kind == UploadKind::ImgFish {
-                                "Upload snapr's icon and delete it again"
-                            } else if u.deletable() {
+                            .on_hover_text(if u.deletable() {
                                 "Upload a tiny file and delete it again"
                             } else {
                                 "Upload snapr's icon and show its link (it stays there: Pomf \
@@ -247,24 +238,6 @@ impl Form {
                     &mut u.public_url,
                     "https://\u{2026}",
                 );
-            } else if u.kind == UploadKind::ImgFish {
-                field(ui, "Address", None, &mut u.endpoint, "https://img.fish");
-                let secret = self.secrets.entry(id.clone()).or_default();
-                let hint = if stored { "saved \u{2014} type to replace" } else { "optional" };
-                row(ui, "API key", "API key",
-                    Some("Optional: keeps uploads in your account. Kept in the credential store"),
-                    false, |ui| {
-                    ui.add(
-                        TextEdit::singleline(secret).margin(theme::FIELD_MARGIN)
-                            .password(true)
-                            .hint_text(hint)
-                            .desired_width(FIELD_WIDTH),
-                    );
-                });
-                row(ui, "File name", "File name", Some("img.fish gives the file a name of its own"), false, |ui| {
-                    template_field(ui, &format!("key-{id}"), &mut u.key_template, "%rna{10}");
-                    ui.label(".png");
-                });
             } else {
                 field(ui, "Endpoint", None, &mut u.endpoint, "https://<account>.r2.cloudflarestorage.com");
                 field(ui, "Region", None, &mut u.region, "auto (R2) or e.g. us-east-1");
@@ -302,9 +275,6 @@ impl Form {
             }
 
             let link = match u.validate() {
-                Ok(_) if u.kind == UploadKind::ImgFish => {
-                    RichText::new("Link: the one img.fish gives").monospace().weak()
-                }
                 Ok(_) if u.kind == UploadKind::Pomf => {
                     let public = u.public_url.trim().trim_end_matches('/');
                     let link = if public.is_empty() {
