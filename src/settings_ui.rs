@@ -1275,7 +1275,7 @@ fn tray_icon_choice(ui: &mut egui::Ui, picked: &mut TrayIconStyle, style: TrayIc
 
 /// The viewfinder logo filling `rect`, as in assets/icon.svg: its 32-unit
 /// grid scaled to fit.
-fn paint_logo(painter: &egui::Painter, rect: egui::Rect, color: Color32) {
+pub(crate) fn paint_logo(painter: &egui::Painter, rect: egui::Rect, color: Color32) {
     const PARTS: [[f32; 4]; 9] = [
         [2.0, 2.0, 13.0, 6.0],
         [2.0, 6.0, 6.0, 13.0],

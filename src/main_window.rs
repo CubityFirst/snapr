@@ -433,6 +433,8 @@ impl MainWindow {
                     self.gallery.ui(ui, &self.hotkey, &mut gallery_actions);
                     actions.extend(gallery_actions.into_iter().map(|a| match a {
                         gallery::Action::Capture => Action::Capture,
+                        gallery::Action::CaptureTarget(t) => Action::CaptureTarget(t),
+                        gallery::Action::Record => Action::Record,
                         gallery::Action::Open(p) => Action::OpenFile(p),
                         gallery::Action::ShowInFolder(p) => Action::ShowInFolder(p),
                         gallery::Action::Copy(p) => Action::Copy(p),
@@ -541,22 +543,10 @@ impl MainWindow {
                 ui.separator();
                 ui.menu_button("Window", |ui| {
                     theme::compact_menu(ui);
-                    if windows.is_empty() {
-                        ui.weak("No windows");
+                    if let Some(id) = window_items(ui, windows) {
+                        actions.push(Action::CaptureTarget(capture::Target::Window(id)));
+                        ui.close();
                     }
-                    egui::ScrollArea::vertical()
-                        .max_height(420.0)
-                        .show(ui, |ui| {
-                            for w in windows {
-                                let button = egui::Button::new(ellipsize(&w.title, 60))
-                                    .shortcut_text(w.app.as_str());
-                                if ui.add(button).on_hover_text(&w.title).clicked() {
-                                    let target = capture::Target::Window(w.id);
-                                    actions.push(Action::CaptureTarget(target));
-                                    ui.close();
-                                }
-                            }
-                        });
                 });
                 ui.menu_button("Display", |ui| {
                     theme::compact_menu(ui);
@@ -734,8 +724,12 @@ fn nav_button(ui: &mut egui::Ui, icon: NavIcon, selected: bool, tip: &str) -> eg
     let palette = theme::palette(ui);
     let capture = matches!(icon, NavIcon::Capture);
     let (fill, fg) = if capture {
-        let fill = if resp.hovered() { theme::ACCENT_HOVER } else { ACCENT };
-        (fill, theme::ON_ACCENT)
+        // snapr's logo, in its blue.
+        if resp.hovered() {
+            (palette.control_hover, theme::ACCENT_HOVER)
+        } else {
+            (Color32::TRANSPARENT, ACCENT)
+        }
     } else if selected {
         (palette.selected, ACCENT)
     } else if resp.hovered() {
@@ -745,7 +739,9 @@ fn nav_button(ui: &mut egui::Ui, icon: NavIcon, selected: bool, tip: &str) -> eg
     };
     let p = ui.painter();
     p.rect_filled(rect, 9.0, fill);
-    draw_icon(p, rect.shrink(10.0), icon, fg);
+    // The logo on its 32-unit grid comes out crisp at 24 px.
+    let inset = if capture { 8.0 } else { 10.0 };
+    draw_icon(p, rect.shrink(inset), icon, fg);
     resp.on_hover_text(tip)
         .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
@@ -772,6 +768,27 @@ fn chevron_button(ui: &mut egui::Ui) -> egui::Response {
         .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+/// The windows of a capture menu, one item each; returns the id of the one
+/// clicked.
+pub(crate) fn window_items(ui: &mut egui::Ui, windows: &[capture::WindowInfo]) -> Option<u32> {
+    if windows.is_empty() {
+        ui.weak("No windows");
+    }
+    let mut clicked = None;
+    egui::ScrollArea::vertical()
+        .max_height(420.0)
+        .show(ui, |ui| {
+            for w in windows {
+                let button =
+                    egui::Button::new(ellipsize(&w.title, 60)).shortcut_text(w.app.as_str());
+                if ui.add(button).on_hover_text(&w.title).clicked() {
+                    clicked = Some(w.id);
+                }
+            }
+        });
+    clicked
+}
+
 /// `s` cut to `max` characters, with an ellipsis if it was longer.
 fn ellipsize(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
@@ -786,22 +803,7 @@ fn draw_icon(p: &egui::Painter, r: Rect, icon: NavIcon, color: Color32) {
     let s = Stroke::new(1.8, color);
     let at = |x: f32, y: f32| pos2(r.left() + r.width() * x, r.top() + r.height() * y);
     match icon {
-        NavIcon::Capture => {
-            // Viewfinder corners around a dot, like the app icon.
-            let arm = r.width() * 0.32;
-            for (c, dx, dy) in [
-                (r.left_top(), 1.0, 1.0),
-                (r.right_top(), -1.0, 1.0),
-                (r.right_bottom(), -1.0, -1.0),
-                (r.left_bottom(), 1.0, -1.0),
-            ] {
-                p.add(Shape::line(
-                    vec![c + vec2(0.0, dy * arm), c, c + vec2(dx * arm, 0.0)],
-                    Stroke::new(2.0, color),
-                ));
-            }
-            p.circle_filled(r.center(), r.width() * 0.13, color);
-        }
+        NavIcon::Capture => crate::settings_ui::paint_logo(p, r, color),
         NavIcon::Recent => {
             // A 2×2 grid of pictures.
             let gap = r.width() * 0.12;

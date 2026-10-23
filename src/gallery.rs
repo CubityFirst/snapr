@@ -15,8 +15,10 @@ use std::time::SystemTime;
 
 use egui::{Color32, CornerRadius, RichText, Sense, Stroke, StrokeKind, Vec2, vec2};
 
+use crate::capture;
 use crate::combine::Direction;
 use crate::history::{self, Entry, Remote};
+use crate::main_window;
 use crate::player::Player;
 use crate::thumbnail::{self, Kind};
 
@@ -30,6 +32,10 @@ const MAX_ITEMS: usize = 200;
 
 pub enum Action {
     Capture,
+    /// Capture a window or every display, without picking a region first.
+    CaptureTarget(capture::Target),
+    /// Pick a region to record.
+    Record,
     Open(PathBuf),
     ShowInFolder(PathBuf),
     Copy(PathBuf),
@@ -78,6 +84,8 @@ pub struct Gallery {
     show_preview: bool,
     /// Files to drag out to another app, once this frame is painted.
     pub drag_out: Option<Vec<PathBuf>>,
+    /// The open windows, read when the empty page's Window menu opens.
+    windows: Vec<capture::WindowInfo>,
 }
 
 impl Gallery {
@@ -125,6 +133,7 @@ impl Gallery {
             scrub: None,
             show_preview: !preview_hidden_file().is_some_and(|f| f.exists()),
             drag_out: None,
+            windows: Vec::new(),
         }
     }
 
@@ -260,7 +269,7 @@ impl Gallery {
             .or_else(|| self.items.first().map(|e| e.path.clone()))
         else {
             self.stop_playback();
-            empty_state(ui, hotkey, actions);
+            self.empty_state(ui, hotkey, actions);
             return;
         };
         if self.player.as_ref().is_some_and(|p| p.path != selected) {
@@ -810,6 +819,65 @@ impl Gallery {
             }
         }
     }
+
+    /// The page before the first screenshot: the hotkey, and a button for
+    /// each way to take one.
+    fn empty_state(&mut self, ui: &mut egui::Ui, hotkey: &str, actions: &mut Vec<Action>) {
+        ui.add_space((ui.available_height() / 2.0 - 140.0).max(0.0));
+        ui.vertical_centered(|ui| {
+            let (logo, _) = ui.allocate_exact_size(Vec2::splat(64.0), Sense::hover());
+            crate::settings_ui::paint_logo(ui.painter(), logo, ACCENT);
+            ui.add_space(14.0);
+            ui.label(RichText::new("No screenshots yet").heading());
+            if !hotkey.is_empty() {
+                centered_row(ui, "empty-hotkey", |ui| {
+                    ui.spacing_mut().item_spacing.x = 5.0;
+                    ui.weak("Press");
+                    for key in hotkey.split('+').map(str::trim) {
+                        key_cap(ui, key);
+                    }
+                    ui.weak("anywhere to capture a region.");
+                });
+            }
+            ui.add_space(14.0);
+            centered_row(ui, "empty-buttons", |ui| {
+                if ui.add(theme::primary("Capture region")).clicked() {
+                    actions.push(Action::Capture);
+                }
+                let window = ui.button("Window").on_hover_text("Capture one window");
+                if window.clicked() {
+                    // Read fresh each time it opens: windows come and go.
+                    self.windows = capture::windows();
+                }
+                egui::Popup::menu(&window).gap(4.0).show(|ui| {
+                    theme::compact_menu(ui);
+                    if let Some(id) = main_window::window_items(ui, &self.windows) {
+                        actions.push(Action::CaptureTarget(capture::Target::Window(id)));
+                        ui.close();
+                    }
+                });
+                if ui
+                    .button("Fullscreen")
+                    .on_hover_text("Capture everything on screen")
+                    .clicked()
+                {
+                    actions.push(Action::CaptureTarget(capture::Target::Everything));
+                }
+                if ui
+                    .button("Record")
+                    .on_hover_text("Pick a region to record")
+                    .clicked()
+                {
+                    actions.push(Action::Record);
+                }
+            });
+            // Dropped files are uploaded (see `MainWindow::drop_ui`).
+            if !crate::policy::uploads_disabled() {
+                ui.add_space(18.0);
+                ui.weak("or drop files here to upload them");
+            }
+        });
+    }
 }
 
 /// Exists while the large preview is hidden.
@@ -880,20 +948,47 @@ fn drop_zone(ui: &egui::Ui, card: egui::Rect, pointer: egui::Pos2) -> Option<Dir
     hit
 }
 
-fn empty_state(ui: &mut egui::Ui, hotkey: &str, actions: &mut Vec<Action>) {
-    ui.add_space(ui.available_height() * 0.25);
-    ui.vertical_centered(|ui| {
-        ui.label(RichText::new("No screenshots yet").heading());
-        ui.add_space(4.0);
-        ui.label(RichText::new(format!("Press {hotkey} to capture a region.")).weak());
-        ui.add_space(12.0);
-        if ui
-            .add(theme::primary("Capture now"))
-            .clicked()
-        {
-            actions.push(Action::Capture);
-        }
+/// Lays out a row of widgets centred across `ui`, by the width it took last
+/// frame: a row that changed width is laid out again before it's shown.
+fn centered_row(ui: &mut egui::Ui, id_salt: &str, add: impl FnOnce(&mut egui::Ui)) {
+    let id = ui.id().with(id_salt);
+    let measured: Option<f32> = ui.data(|d| d.get_temp(id));
+    let indent = measured.map_or(0.0, |w| ((ui.available_width() - w) / 2.0).max(0.0));
+    let row = ui.horizontal(|ui| {
+        ui.add_space(indent);
+        add(ui);
     });
+    let width = row.response.rect.width() - indent;
+    if measured.is_none_or(|m| (m - width).abs() > 0.5) {
+        ui.data_mut(|d| d.insert_temp(id, width));
+        ui.ctx().request_discard("centred row measured");
+    }
+}
+
+/// One key of a hotkey, drawn as a key cap: `KeyS` as *S*.
+fn key_cap(ui: &mut egui::Ui, key: &str) {
+    let name = key
+        .strip_prefix("Key")
+        .or_else(|| key.strip_prefix("Digit"))
+        .filter(|k| k.len() == 1)
+        .unwrap_or(key);
+    let palette = theme::palette(ui);
+    let text = ui.painter().layout_no_wrap(
+        name.to_owned(),
+        egui::FontId::proportional(12.0),
+        palette.text_strong,
+    );
+    let size = vec2((text.size().x + 14.0).max(24.0), 22.0);
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let p = ui.painter();
+    // A thicker edge along the bottom, like a key.
+    p.rect_filled(rect, 5.0, palette.stroke);
+    p.rect_filled(rect.with_max_y(rect.bottom() - 2.0).shrink(1.0), 4.0, palette.control);
+    p.galley(
+        rect.center() - vec2(0.0, 1.0) - text.size() / 2.0,
+        text,
+        palette.text_strong,
+    );
 }
 
 /// The size of a `size` picture shrunk to fit `max`, as the loader does.
@@ -1208,5 +1303,23 @@ mod tests {
             screen.run(events, &mut ui);
         }
         screen.save("ctrl-click");
+    }
+
+    /// Renders the page with nothing in it to `target/recent-empty-preview.png`:
+    /// `cargo test empty_state_preview -- --ignored`.
+    #[test]
+    #[ignore]
+    fn empty_state_preview() {
+        let mut g = test_gallery();
+        g.items.clear();
+        crate::preview::render("recent-empty-preview", [920, 628], 1.0, |root| {
+            crate::theme::apply(root.ctx());
+            egui::CentralPanel::default()
+                .frame(
+                    egui::Frame::central_panel(root.style())
+                        .inner_margin(egui::Margin::symmetric(20, 16)),
+                )
+                .show(root, |ui| g.ui(ui, crate::settings::DEFAULT_HOTKEY, &mut Vec::new()));
+        });
     }
 }
