@@ -97,9 +97,14 @@ of the tools. A right-click (or Control-click on macOS) always shows the menu. T
   add them under *Settings → Hotkeys → Tool hotkeys* (pick the tool, press
   *Record*, type the combination), or with *Add a hotkey…* on the
   tool's tab. A tool can have more than one, and *Remove* deletes one.
-- **Stats** counts captures: screenshots vs recordings, charted by time of
-  day and day of the week, plus *Tool Use* (QR scans, codes read, colours
-  picked, images pinned). It's kept in `stats.toml` next to the settings.
+- **Stats** counts captures: screenshots vs recordings; today, this week
+  against the same days last week, your streak of days in a row and your
+  busiest day; a square for each
+  day of the last year shaded by how many were taken (or of any year, or every
+  year at once, from the menu beside it), charts by time of day
+  (all captures, or just screenshots or recordings) and day of the week, plus
+  *Tool use* (QR scans, codes read, colours picked, images pinned). It's kept
+  in `stats.toml` next to the settings.
 - **First-time setup** greets you on first run: where screenshots are saved,
   whether snapr starts with Windows, and whether it plays sounds. *Skip
   setup* keeps the defaults; everything can be changed later in Settings,

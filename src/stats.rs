@@ -1,8 +1,11 @@
 //! Usage statistics for the Stats page: how many screenshots and recordings
-//! were taken and at what time of day, and how often the tools were used.
+//! were taken, on which days and at what time of day, and how often the
+//! tools were used.
 //! Kept in the config folder as `stats.toml`.
 
-use chrono::{DateTime, Datelike, Local, Timelike};
+use std::collections::BTreeMap;
+
+use chrono::{DateTime, Datelike, Local, NaiveDate, Timelike};
 use serde::{Deserialize, Serialize};
 
 use crate::settings::Settings;
@@ -87,6 +90,10 @@ pub struct Stats {
     pub colors_picked: u64,
     /// Images pinned to the screen.
     pub pins: u64,
+    /// Captures on each local date, from the first day counted. Older stats
+    /// have none from before snapr started keeping them.
+    #[serde(with = "daily_format")]
+    pub daily: BTreeMap<NaiveDate, Tally>,
 }
 
 impl Default for Stats {
@@ -98,6 +105,7 @@ impl Default for Stats {
             qr_codes: 0,
             colors_picked: 0,
             pins: 0,
+            daily: BTreeMap::new(),
         }
     }
 }
@@ -141,6 +149,39 @@ impl Stats {
         c.total.bump(kind);
         c.hours[time.hour() as usize].bump(kind);
         c.days[time.weekday().num_days_from_monday() as usize].bump(kind);
+        self.daily.entry(time.date_naive()).or_default().bump(kind);
+    }
+}
+
+/// `daily` as one line a day, `2026-10-23 = [screenshots, recordings]`, with
+/// other files third when there are any. A date that doesn't read is dropped
+/// rather than losing the whole file.
+mod daily_format {
+    use super::*;
+    use serde::{Deserializer, Serializer};
+
+    const FORMAT: &str = "%Y-%m-%d";
+
+    pub fn serialize<S: Serializer>(daily: &BTreeMap<NaiveDate, Tally>, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_map(daily.iter().map(|(date, t)| {
+            let mut counts = vec![t.screenshots, t.recordings];
+            if t.other > 0 {
+                counts.push(t.other);
+            }
+            (date.format(FORMAT).to_string(), counts)
+        }))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<NaiveDate, Tally>, D::Error> {
+        let raw = BTreeMap::<String, Vec<u64>>::deserialize(d)?;
+        Ok(raw
+            .into_iter()
+            .filter_map(|(date, counts)| {
+                let date = NaiveDate::parse_from_str(&date, FORMAT).ok()?;
+                let n = |i: usize| counts.get(i).copied().unwrap_or(0);
+                Some((date, Tally { screenshots: n(0), recordings: n(1), other: n(2) }))
+            })
+            .collect())
     }
 }
 
@@ -161,6 +202,8 @@ mod tests {
         assert_eq!(s.captures.total.recordings, 1);
         assert_eq!(s.captures.hours[14].total(), 3);
         assert_eq!(s.captures.days[0].total(), 3);
+        let day = s.daily[&t.date_naive()];
+        assert_eq!((day.screenshots, day.recordings), (2, 1));
     }
 
     #[test]
@@ -170,5 +213,23 @@ mod tests {
         s.count(Kind::Recording, Local::now());
         let text = toml::to_string(&s).unwrap();
         assert_eq!(toml::from_str::<Stats>(&text).unwrap(), s);
+    }
+
+    #[test]
+    fn reads_days_and_skips_bad_ones() {
+        let s: Stats = toml::from_str(
+            "[daily]
+\"2026-10-22\" = [4, 1]
+\"2026-10-23\" = [2, 0, 7]
+\"someday\" = [9, 9]
+",
+        )
+        .unwrap();
+        assert_eq!(s.daily.len(), 2);
+        let d = NaiveDate::from_ymd_opt(2026, 10, 23).unwrap();
+        assert_eq!(s.daily[&d], Tally { screenshots: 2, recordings: 0, other: 7 });
+        // Stats from before days were counted.
+        assert!(toml::from_str::<Stats>("qr_scans = 3
+").unwrap().daily.is_empty());
     }
 }
