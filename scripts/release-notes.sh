@@ -25,7 +25,25 @@ range=${prev:+$prev..}$tag
 titles=("New" "Fixes" "Faster" "Other changes")
 sections=("" "" "" "")
 
+# A change reverted in the same release never shipped: both it and its
+# revert ("This reverts commit <hash>" or "... of <hash>" in the message)
+# are left out.
+skip=" "
 while IFS= read -r hash; do
+  subject=$(git log -1 --format=%s "$hash")
+  [[ $subject =~ ^[Rr]evert ]] || continue
+  reverted=$(git log -1 --format=%b "$hash" |
+    sed -nE 's/.*This reverts .*\b([0-9a-f]{7,40})\b.*/\1/p' | head -1)
+  [ -n "$reverted" ] || continue
+  full=$(git rev-parse --verify --quiet "$reverted^{commit}") || continue
+  if git merge-base --is-ancestor "$full" "$tag" &&
+    { [ -z "$prev" ] || ! git merge-base --is-ancestor "$full" "$prev"; }; then
+    skip+="$hash $full "
+  fi
+done < <(git rev-list --no-merges "$range")
+
+while IFS= read -r hash; do
+  [[ $skip == *" $hash "* ]] && continue
   subject=$(git log -1 --format=%s "$hash")
   # The version bump: chore(release), or a bare "snapr X.Y.Z" before
   # Conventional Commits.
