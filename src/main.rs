@@ -381,7 +381,19 @@ impl App {
                 };
                 self.set_status(format!("Recording{stop}"));
             }
-            Err(e) => self.report_on(event_loop, format!("recording failed: {e}"), true, Page::Recording),
+            Err(e) => {
+                self.show_main_window_again();
+                self.report_on(event_loop, format!("recording failed: {e}"), true, Page::Recording)
+            }
+        }
+    }
+
+    /// Shows the main window again if a capture started from it hid it.
+    fn show_main_window_again(&mut self) {
+        if std::mem::take(&mut self.restore_main_window)
+            && let Some(w) = &self.main_window
+        {
+            w.window.set_visible(true);
         }
     }
 
@@ -395,6 +407,9 @@ impl App {
         // Still showing: it couldn't start, or failed partway.
         if self.recording.as_ref().is_some_and(|r| r.id == id) {
             self.recording = None;
+        }
+        if self.recording.is_none() {
+            self.show_main_window_again();
         }
         let (path, first_frame, warning) = match result {
             Ok(Some(r)) => (r.path, r.first_frame, r.warning),
@@ -583,10 +598,9 @@ impl App {
             below.resume();
             return;
         }
-        if std::mem::take(&mut self.restore_main_window)
-            && let Some(w) = &self.main_window
-        {
-            w.window.set_visible(true);
+        // A recording keeps it hidden until it's done, so it isn't in the video.
+        if self.recording.is_none() && self.record_at.is_none() {
+            self.show_main_window_again();
         }
         #[cfg(target_os = "macos")]
         if let Some(app) = self.focus_back.take()
@@ -750,6 +764,7 @@ impl App {
         if let Some(w) = &mut self.main_window {
             w.form.saved(&self.settings);
             w.hotkey = self.settings.hotkey.clone();
+            w.record_hotkey = self.settings.record_hotkey.clone();
             w.folder = PathBuf::from(&self.settings.folder);
             w.speed_unit = self.settings.speed_unit;
         }
@@ -835,6 +850,10 @@ impl App {
         match action {
             Action::Capture => self.capture_from_main_window(Start::Pick(Purpose::Screenshot)),
             Action::CaptureTarget(t) => self.capture_from_main_window(Start::Grab(t)),
+            Action::Record if self.recording.is_some() => {
+                self.recording_action(event_loop, record_ui::Action::Stop)
+            }
+            Action::Record => self.capture_from_main_window(Start::Pick(Purpose::Record)),
             Action::ScanQr => self.capture_from_main_window(Start::Pick(Purpose::Scan)),
             Action::PickColor => self.capture_from_main_window(Start::Pick(Purpose::PickColor)),
             Action::PinRegion => self.capture_from_main_window(Start::Pick(Purpose::Pin)),
@@ -1437,11 +1456,8 @@ impl ApplicationHandler<UserEvent> for App {
                 Start::Pick(purpose) => self.open_session(event_loop, purpose),
                 Start::Grab(target) => self.grab(event_loop, target),
             }
-            if self.sessions.is_empty()
-                && std::mem::take(&mut self.restore_main_window)
-                && let Some(w) = &self.main_window
-            {
-                w.window.set_visible(true);
+            if self.sessions.is_empty() {
+                self.show_main_window_again();
             }
         }
         if self.record_at.as_ref().is_some_and(|(at, ..)| *at <= now)

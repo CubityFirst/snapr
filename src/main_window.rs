@@ -51,6 +51,8 @@ pub enum Action {
     /// Capture a window, display, everything or the last region, without
     /// picking a region first.
     CaptureTarget(capture::Target),
+    /// Pick a region to record, or stop the recording in progress.
+    Record,
     /// New settings, and new secret keys to store (upload id → key).
     SaveSettings(Settings, HashMap<String, String>),
     TestUpload(Upload, Option<String>),
@@ -233,6 +235,8 @@ pub struct MainWindow {
     search: crate::settings_search::Search,
     /// The capture hotkey, for hints.
     pub hotkey: String,
+    /// The record hotkey, for the capture menu.
+    pub record_hotkey: String,
     /// Where screenshots are saved, for the folder button.
     pub folder: PathBuf,
     /// When egui asked to be repainted next (e.g. for a blinking cursor).
@@ -297,6 +301,7 @@ impl MainWindow {
             setup: Default::default(),
             search: Default::default(),
             hotkey: settings.hotkey.clone(),
+            record_hotkey: settings.record_hotkey.clone(),
             folder: PathBuf::from(&settings.folder),
             repaint_at: None,
             transfers,
@@ -505,7 +510,8 @@ impl MainWindow {
     }
 
     /// The arrow under the capture button, and its menu of other things to
-    /// capture: the last region, a window, a display or everything.
+    /// capture: the last region, a window, a display, everything or a
+    /// recording.
     fn capture_menu_ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         let chevron = chevron_button(ui);
         if chevron.clicked() {
@@ -579,6 +585,13 @@ impl MainWindow {
                 };
                 if ui.button(everything).clicked() {
                     actions.push(Action::CaptureTarget(capture::Target::Everything));
+                    ui.close();
+                }
+                ui.separator();
+                let record = egui::Button::new("Record region\u{2026}")
+                    .shortcut_text(self.record_hotkey.as_str());
+                if ui.add(record).clicked() {
+                    actions.push(Action::Record);
                     ui.close();
                 }
             });
