@@ -1009,12 +1009,17 @@ fn icon_button(
     } else {
         ICON
     };
-    if selected {
+    let hover = Color32::from_white_alpha(22);
+    let bg = if selected {
         p.rect_filled(rect, 7.0, ACCENT);
+        ACCENT
     } else if enabled && resp.hovered() {
-        p.rect_filled(rect, 7.0, Color32::from_white_alpha(22));
-    }
-    draw_icon(p, rect.shrink(8.0), icon, color);
+        p.rect_filled(rect, 7.0, hover);
+        PANEL.blend(hover)
+    } else {
+        PANEL
+    };
+    draw_icon(p, rect.shrink(8.0), icon, color, bg);
     let resp = resp.on_hover_text(tip);
     if enabled {
         resp.on_hover_cursor(CursorIcon::PointingHand)
@@ -1023,7 +1028,8 @@ fn icon_button(
     }
 }
 
-fn draw_icon(p: &egui::Painter, r: Rect, icon: Icon, color: Color32) {
+/// `bg` is the colour behind the icon, for parts that cut into others.
+fn draw_icon(p: &egui::Painter, r: Rect, icon: Icon, color: Color32, bg: Color32) {
     let s = Stroke::new(1.7, color);
     let at = |x: f32, y: f32| pos2(r.left() + r.width() * x, r.top() + r.height() * y);
     match icon {
@@ -1134,11 +1140,63 @@ fn draw_icon(p: &egui::Painter, r: Rect, icon: Icon, color: Color32) {
             );
         }
         Icon::Tool(Tool::Eraser) => {
-            // An eyedropper over a filled box.
-            let bx = Rect::from_min_max(at(0.0, 0.42), at(0.78, 1.0));
-            p.rect_filled(bx, 2.0, color.gamma_multiply(0.55));
-            p.line_segment([at(0.3, 0.7), at(0.82, 0.18)], Stroke::new(2.2, color));
-            p.circle_filled(at(0.86, 0.14), r.width() * 0.13, color);
+            // A tilted eraser, rubber end down-left, with a sparkle cut into it.
+            // Measured in sixteenths of the icon.
+            let u = r.width() / 16.0;
+            let centre = at(0.6, 0.5875);
+            let (along, across) = (vec2(1.0, -1.0).normalized(), vec2(1.0, 1.0).normalized());
+            let place = |x: f32, y: f32| centre + (along * x + across * y) * u;
+            // The eraser from `x0` to `x1` along its length, corners rounded by `rad`.
+            let body = |x0: f32, x1: f32, rad: f32| -> Vec<Pos2> {
+                let h = 3.3;
+                let mut pts = Vec::new();
+                for (cx, cy, start) in [
+                    (x1 - rad, h - rad, 0.0f32),
+                    (x0 + rad, h - rad, 90.0),
+                    (x0 + rad, -h + rad, 180.0),
+                    (x1 - rad, -h + rad, 270.0),
+                ] {
+                    for i in 0..=4 {
+                        let a = (start + 22.5 * i as f32).to_radians();
+                        pts.push(place(cx + rad * a.cos(), cy + rad * a.sin()));
+                    }
+                }
+                pts
+            };
+            p.add(Shape::convex_polygon(body(-6.25, -1.25, 1.0), color, Stroke::NONE));
+            p.add(Shape::closed_line(body(-6.25, 6.25, 1.2), Stroke::new(1.5, color)));
+
+            // Four points joined by curves that bow in towards the middle.
+            let mid = at(0.325, 0.325);
+            let rad = 5.2 * u;
+            let tips = [vec2(0.0, -rad), vec2(rad, 0.0), vec2(0.0, rad), vec2(-rad, 0.0)];
+            let q = rad * 0.12;
+            let bends = [vec2(q, -q), vec2(q, q), vec2(-q, q), vec2(-q, -q)];
+            let mut sparkle = Vec::new();
+            for i in 0..4 {
+                let (a, b, bend) = (tips[i], tips[(i + 1) % 4], bends[i]);
+                for s in 0..8 {
+                    let t = s as f32 / 8.0;
+                    let off = a * (1.0 - t) * (1.0 - t) + bend * 2.0 * t * (1.0 - t) + b * t * t;
+                    sparkle.push(mid + off);
+                }
+            }
+            // Not convex, so filled as a fan from the middle, with an edge
+            // stroke to smooth it. The first pass, wider and in the
+            // background colour, cuts the gap into the eraser.
+            for (fill, edge) in [(bg, 2.6), (color, 0.8)] {
+                let mut mesh = egui::Mesh::default();
+                mesh.colored_vertex(mid, fill);
+                for &pt in &sparkle {
+                    mesh.colored_vertex(pt, fill);
+                }
+                let n = sparkle.len() as u32;
+                for i in 0..n {
+                    mesh.add_triangle(0, 1 + i, 1 + (i + 1) % n);
+                }
+                p.add(mesh);
+                p.add(Shape::closed_line(sparkle.clone(), Stroke::new(edge, fill)));
+            }
         }
         Icon::Tool(Tool::Clip) => {
             // A dashed area with a copy of it lifted off, down and right.
