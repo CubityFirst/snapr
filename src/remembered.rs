@@ -13,6 +13,7 @@ use crate::settings::Settings;
 #[serde(default)]
 pub struct Remembered {
     color: [u8; 3],
+    highlighter_color: [u8; 3],
     /// "small", "medium" or "large".
     size: String,
     pixelate_block: u32,
@@ -77,6 +78,7 @@ impl Remembered {
     pub fn new(style: Style, magnifier: u32) -> Self {
         Self {
             color: style.color,
+            highlighter_color: style.highlighter_color,
             size: match style.size {
                 Size::Small => "small",
                 Size::Medium => "medium",
@@ -145,6 +147,7 @@ impl Remembered {
     pub fn style(&self) -> Style {
         let mut style = Style::default();
         style.color = self.color;
+        style.highlighter_color = self.highlighter_color;
         style.size = match self.size.as_str() {
             "small" => Size::Small,
             "large" => Size::Large,
@@ -200,6 +203,7 @@ mod tests {
     fn round_trips_through_toml() {
         let mut style = Style::default();
         style.color = [1, 2, 3];
+        style.highlighter_color = [4, 5, 6];
         style.size = Size::Large;
         style.pixelate.secure = true;
         style.arrow.double = true;
@@ -233,6 +237,7 @@ mod tests {
         let style = loaded.style();
         assert_eq!(style.size, Size::Medium);
         assert_eq!(style.color, Style::default().color);
+        assert_eq!(style.highlighter_color, Style::default().highlighter_color);
         assert_eq!(style.text.size, *TEXT_SIZES.start());
         assert!(style.text.outline);
         assert_eq!(style.step, Style::default().step);

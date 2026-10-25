@@ -414,10 +414,11 @@ fn show_popup(
                     ui.spacing_mut().item_spacing = vec2(2.0, 2.0);
                     match popup {
                         Popup::Color => {
+                            let current = view.style.color_for(view.tool);
                             for row in COLORS.chunks(PALETTE_COLUMNS) {
                                 ui.horizontal(|ui| {
                                     for &color in row {
-                                        let selected = view.style.color == color;
+                                        let selected = current == color;
                                         if color_dot(ui, color, selected).clicked() {
                                             actions.push(Action::Color(color));
                                             picked = true;
@@ -427,7 +428,7 @@ fn show_popup(
                             }
                             // Any colour; stays open while it's being chosen.
                             ui.add_space(4.0);
-                            if let Some(color) = custom_color(ui, view.style.color) {
+                            if let Some(color) = custom_color(ui, current) {
                                 actions.push(Action::Color(color));
                             }
                         }
@@ -645,7 +646,7 @@ fn toolbar_contents(ui: &mut egui::Ui, view: &View, actions: &mut Vec<Action>) -
     }
     divider(ui);
     let palette = theme::palette(ui);
-    let [r, g, b] = view.style.color;
+    let [r, g, b] = view.style.color_for(view.tool);
     let color = popup_button(ui, Popup::Color, true, crate::locale::spelled!("Colour"), |p, at, _| {
         p.circle_filled(at, 8.0, Color32::from_rgb(r, g, b));
         p.circle_stroke(at, 8.0, Stroke::new(1.0, palette.wash(60)));

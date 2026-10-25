@@ -284,6 +284,9 @@ pub const COLORS: [[u8; 3]; 8] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Style {
     pub color: [u8; 3],
+    /// The highlighter's own colour, so marking text doesn't change the
+    /// other tools' (or theirs it).
+    pub highlighter_color: [u8; 3],
     pub size: Size,
     pub pixelate: PixelateOptions,
     pub arrow: ArrowOptions,
@@ -298,10 +301,27 @@ pub struct Style {
     pub highlighter_ink: HighlighterInk,
 }
 
+impl Style {
+    /// The colour `tool` draws in.
+    pub fn color_for(&self, tool: Tool) -> [u8; 3] {
+        if tool == Tool::Highlighter { self.highlighter_color } else { self.color }
+    }
+
+    /// Changes the colour `tool` draws in.
+    pub fn set_color(&mut self, tool: Tool, color: [u8; 3]) {
+        if tool == Tool::Highlighter {
+            self.highlighter_color = color;
+        } else {
+            self.color = color;
+        }
+    }
+}
+
 impl Default for Style {
     fn default() -> Self {
         Self {
             color: COLORS[0],
+            highlighter_color: COLORS[2],
             size: Size::Medium,
             pixelate: PixelateOptions {
                 block: 14,
@@ -404,7 +424,8 @@ pub struct Annotation {
 
 impl Annotation {
     /// Starts an annotation at `p`; `None` for tools that don't draw.
-    pub fn new(tool: Tool, style: Style, p: Point) -> Option<Self> {
+    pub fn new(tool: Tool, mut style: Style, p: Point) -> Option<Self> {
+        style.color = style.color_for(tool);
         let shape = match tool {
             Tool::Select => return None,
             Tool::Pen => Shape::Pen(vec![p]),
@@ -2464,6 +2485,18 @@ mod tests {
     }
 
     #[test]
+    fn highlighter_has_its_own_colour() {
+        let mut style = Style::default();
+        style.set_color(Tool::Highlighter, COLORS[3]);
+        style.set_color(Tool::Pen, COLORS[4]);
+        assert_eq!(style.color_for(Tool::Highlighter), COLORS[3]);
+        assert_eq!(style.color_for(Tool::Arrow), COLORS[4]);
+        let drawn = |tool| Annotation::new(tool, style, (0.0, 0.0)).unwrap().style.color;
+        assert_eq!(drawn(Tool::Highlighter), COLORS[3]);
+        assert_eq!(drawn(Tool::Pen), COLORS[4]);
+    }
+
+    #[test]
     fn highlighter_draws_straight_or_as_a_box() {
         let style = |highlighter| Style {
             highlighter,
@@ -2492,9 +2525,10 @@ mod tests {
         c.drag_to((1060.0, 540.0), false);
         c.commit();
         let inside = c.image().get_pixel(30, 20).0;
-        let darker: Vec<u8> = (0..3).map(|i| before[i].min(COLORS[0][i])).collect();
+        let ink = Style::default().highlighter_color;
+        let darker: Vec<u8> = (0..3).map(|i| before[i].min(ink[i])).collect();
         assert_eq!(inside[..3], darker[..], "the darker of each channel");
-        assert_ne!(inside[..3], COLORS[0][..], "see-through, not solid");
+        assert_ne!(inside[..3], ink[..], "see-through, not solid");
         // A tint washes the colour over it instead.
         let mut t = canvas();
         let tint = Style {

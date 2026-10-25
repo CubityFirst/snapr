@@ -836,7 +836,7 @@ impl Session {
                 }
                 self.tool = t;
             }
-            Action::Color(c) => self.style.color = c,
+            Action::Color(c) => self.style.set_color(self.tool, c),
             Action::Size(s) => self.style.size = s,
             Action::Pixelate(o) => self.style.pixelate = o,
             Action::Arrow(o) => self.style.arrow = o,

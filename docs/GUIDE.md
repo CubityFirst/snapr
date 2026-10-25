@@ -30,7 +30,7 @@ region; the screenshot includes your annotations.
 | Text | `T` | click and type, or drag out a box first and the text wraps to its width; **Enter** finishes, **Shift+Enter** starts a new line, **Ctrl+V** pastes. Its settings pick the font (any installed one, with a search), the size and whether it has an outline; they and the colour apply as you type. Drag text to move it, click it to change it |
 | Box | `R` | Shift makes a square |
 | Ellipse | `E` | Shift makes a circle |
-| Highlighter | `H` | marker, drawn freehand, straight (Shift snaps to 45°) or as a filled box (Shift makes a square), with realistic ink (light areas take the colour, dark ones stay dark) or a see-through tint, chosen in its settings; drag a stroke or box to move it |
+| Highlighter | `H` | marker, drawn freehand, straight (Shift snaps to 45°) or as a filled box (Shift makes a square), with realistic ink (light areas take the colour, dark ones stay dark) or a see-through tint, chosen in its settings; drag a stroke or box to move it. It has a colour of its own (yellow at first): choosing one while it's the tool doesn't change the other tools' |
 | Blur | `B` | blurs the dragged area |
 | Pixelate | `X` | pixelates the dragged area |
 | Image redaction | `I` | covers the dragged area with an image chosen in Settings (stretched to fit, or cropped to keep its proportions); black boxes if none is set |
