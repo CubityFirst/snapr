@@ -57,6 +57,7 @@ mod theme;
 mod thumbnail;
 mod toast;
 mod toolbar;
+mod touch;
 mod tools;
 mod transfer;
 mod tray;

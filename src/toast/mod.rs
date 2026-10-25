@@ -16,6 +16,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowLevel};
 
 use crate::gpu::Gpu;
+use crate::touch::Finger;
 
 #[cfg(target_os = "linux")]
 use crate::x11::{self, X11Event};
@@ -79,6 +80,8 @@ pub struct Toast {
     cursor: PhysicalPosition<f64>,
     /// Where the left button went down, until it's released or a drag starts.
     pressed_at: Option<PhysicalPosition<f64>>,
+    /// A touchscreen finger, played as the mouse.
+    finger: Finger,
 }
 
 impl Toast {
@@ -133,6 +136,7 @@ impl Toast {
             expires_at: Some(Instant::now() + SHOWN_FOR),
             cursor: PhysicalPosition::new(0.0, 0.0),
             pressed_at: None,
+            finger: Finger::default(),
         };
         // Paint before showing it, so it doesn't flash white.
         toast.paint();
@@ -230,6 +234,14 @@ impl Toast {
     }
 
     pub fn on_event(&mut self, event: &WindowEvent) -> Option<Action> {
+        // In place of the touch, so egui doesn't get both.
+        if let WindowEvent::Touch(touch) = event {
+            return self
+                .finger
+                .mouse_events(touch)
+                .iter()
+                .find_map(|e| self.on_event(e));
+        }
         let pointer = match event {
             WindowEvent::MouseInput { state, button, .. } => Some(match state {
                 ElementState::Pressed => Pointer::Pressed(*button),

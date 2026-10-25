@@ -19,6 +19,7 @@ use crate::naming::Context;
 use crate::overlay::{Frame, Overlay};
 use crate::settings::{CrosshairInfo, MagnifierScroll};
 use crate::toolbar::{Action, CursorInfo};
+use crate::touch::Finger;
 
 pub enum Outcome {
     Continue,
@@ -165,6 +166,8 @@ pub struct Session {
     /// so the release doesn't reach the window underneath (and, say, open
     /// its context menu).
     close_on_right_release: bool,
+    /// A touchscreen finger, played as the mouse.
+    finger: Finger,
     /// Keys pressed inside the overlay, so their auto-repeat isn't mistaken
     /// for a key held from before it opened.
     keys_down: HashSet<PhysicalKey>,
@@ -260,6 +263,7 @@ impl Session {
             redact_image: None,
             modifiers: ModifiersState::empty(),
             close_on_right_release: false,
+            finger: Finger::default(),
             keys_down: HashSet::new(),
             stale_keys: HashSet::new(),
         };
@@ -693,6 +697,16 @@ impl Session {
     }
 
     pub fn window_event(&mut self, gpu: &Gpu, id: WindowId, event: &WindowEvent) -> Outcome {
+        // In place of the touch, so egui doesn't get both.
+        if let WindowEvent::Touch(touch) = event {
+            for event in self.finger.mouse_events(touch) {
+                match self.window_event(gpu, id, &event) {
+                    Outcome::Continue => {}
+                    done => return done,
+                }
+            }
+            return Outcome::Continue;
+        }
         let Some(overlay) = self.overlays.get_mut(&id) else {
             return Outcome::Continue;
         };

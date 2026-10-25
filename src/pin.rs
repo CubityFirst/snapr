@@ -13,13 +13,14 @@ use egui::{Color32, FontId, Pos2, Rect, Stroke, pos2, vec2};
 use egui_wgpu::winit::Painter;
 use image::RgbaImage;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, Touch, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::monitor::MonitorHandle;
 use winit::window::{CursorIcon, Window, WindowLevel};
 
 use crate::gpu::Gpu;
+use crate::touch::Finger;
 
 const ACCENT: Color32 = Color32::from_rgb(0x3d, 0x9b, 0xff);
 /// The smallest a pin gets: its longer side, in pixels.
@@ -117,6 +118,10 @@ pub struct Pin {
     cursor: Option<PhysicalPosition<f64>>,
     modifiers: ModifiersState,
     resize: Option<Resize>,
+    /// A touchscreen finger, played as the mouse.
+    finger: Finger,
+    /// Where a finger took hold of the pin (window pixels) while it moves it.
+    moving: Option<PhysicalPosition<f64>>,
     /// The hover button pressed, clicked if it's released over it.
     pressed: Option<Button>,
     /// For telling a double-click.
@@ -218,6 +223,8 @@ impl Pin {
             cursor: None,
             modifiers: ModifiersState::default(),
             resize: None,
+            finger: Finger::default(),
+            moving: None,
             pressed: None,
             last_press: None,
             buttons: Vec::new(),
@@ -258,6 +265,7 @@ impl Pin {
                 let _ = writer.request_inner_size(self.window.inner_size());
             }
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
+            WindowEvent::Touch(touch) => return self.on_touch(touch),
             WindowEvent::CursorMoved { position, .. } => {
                 let before = self.button_at();
                 self.cursor = Some(*position);
@@ -282,13 +290,14 @@ impl Pin {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => self.on_press(),
+            } => self.on_press(false),
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
             } => {
                 self.resize = None;
+                self.moving = None;
                 if let Some(b) = self.pressed.take()
                     && self.button_at() == Some(b)
                 {
@@ -349,7 +358,32 @@ impl Pin {
         }
     }
 
-    fn on_press(&mut self) {
+    /// A finger works the pin like the mouse, but moves it itself: the
+    /// system's moving follows only the mouse. Lifting it leaves the hover
+    /// buttons up, for tapping next.
+    fn on_touch(&mut self, touch: &Touch) -> Option<Action> {
+        let mut action = None;
+        for event in self.finger.mouse_events(touch) {
+            match event {
+                WindowEvent::CursorLeft { .. } => {}
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    ..
+                } => self.on_press(true),
+                WindowEvent::CursorMoved { position, .. } if let Some(hold) = self.moving => {
+                    if let Ok(pos) = self.window.outer_position() {
+                        let x = pos.x + (position.x - hold.x).round() as i32;
+                        let y = pos.y + (position.y - hold.y).round() as i32;
+                        self.window.set_outer_position(PhysicalPosition::new(x, y));
+                    }
+                }
+                event => action = action.or(self.on_event(&event)),
+            }
+        }
+        action
+    }
+
+    fn on_press(&mut self, touch: bool) {
         let now = Instant::now();
         let double = self
             .last_press
@@ -370,6 +404,8 @@ impl Pin {
         } else if double {
             self.last_press = None;
             self.set_zoom(1.0, self.cursor.map(|c| (c.x, c.y)));
+        } else if touch {
+            self.moving = self.cursor;
         } else {
             // The system moves it, so it follows the mouse smoothly and
             // snaps like any other window.
