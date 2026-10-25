@@ -1,5 +1,5 @@
 // Draws one monitor's frozen frame: dimmed outside the selection, with a
-// border around the selection and crosshair guides before a drag starts.
+// border around the selection.
 
 struct Params {
     // Selection in window pixels: x0, y0, x1, y1 (exclusive).
@@ -7,17 +7,16 @@ struct Params {
     border_color: vec4<f32>,
     // Where the annotation layer sits, in window pixels (same layout as sel).
     layer_rect: vec4<f32>,
-    // Cursor position in window pixels.
-    cursor: vec2<f32>,
     // Window pixel -> image pixel scale (1.0 unless the window was resized).
     img_scale: vec2<f32>,
     dim: f32,
     border: f32,
-    // Bit 0: has selection. Bit 1: draw crosshair. Bit 2: show the annotation
-    // layer over the frozen frame. Bit 3: dim everything when there's no
-    // selection.
+    // Bit 0: has selection. Bit 2: show the annotation layer over the frozen
+    // frame. Bit 3: dim everything when there's no selection.
     flags: u32,
-    _pad: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 }
 
 @group(0) @binding(0) var frame: texture_2d<f32>;
@@ -57,9 +56,6 @@ fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
         }
     } else if (p.flags & 8u) != 0u {
         c = c * p.dim;
-    }
-    if (p.flags & 2u) != 0u && (px.x == p.cursor.x || px.y == p.cursor.y) {
-        c = mix(c, vec3<f32>(1.0), 0.35);
     }
     return vec4<f32>(c, 1.0);
 }

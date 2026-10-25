@@ -426,14 +426,6 @@ impl Session {
             .is_some_and(|(c, o)| o.global_rect().contains(c));
         Frame {
             selection,
-            // Not over the toolbar, where the cursor is a normal pointer.
-            // Picking a colour shows the loupe instead.
-            crosshair: if region_tool && !picking && self.grab == Grab::None && !self.over_toolbar()
-            {
-                self.cursor
-            } else {
-                None
-            },
             layer: self.canvas.as_ref().map(|c| c.rect),
             // Dim while choosing a region; draw, or pick a colour, on an
             // undimmed screen.

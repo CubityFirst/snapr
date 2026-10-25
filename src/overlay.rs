@@ -21,8 +21,6 @@ const DIM: f32 = 0.43;
 /// What to draw in one frame. Coordinates are global pixels.
 pub struct Frame {
     pub selection: Option<Rect>,
-    /// Crosshair guides through this point.
-    pub crosshair: Option<(f64, f64)>,
     /// Where the annotation layer covers the screen, if anything's drawn.
     pub layer: Option<Rect>,
     /// Dim everything when there's no selection (while choosing a region).
@@ -387,15 +385,6 @@ impl Overlay {
         if frame.dim_all {
             flags |= 8;
         }
-        let mut cur = [0.0f32; 2];
-        // Crosshair guides only on the monitor the cursor is on.
-        if let Some(c) = frame.crosshair.filter(|&c| win.contains(c)) {
-            flags |= 2;
-            cur = [
-                (c.0.floor() as i32 - win.x) as f32,
-                (c.1.floor() as i32 - win.y) as f32,
-            ];
-        }
         let words: [u32; 20] = [
             sel[0].to_bits(),
             sel[1].to_bits(),
@@ -409,13 +398,13 @@ impl Overlay {
             layer[1].to_bits(),
             layer[2].to_bits(),
             layer[3].to_bits(),
-            cur[0].to_bits(),
-            cur[1].to_bits(),
             (iw as f32 / win.w.max(1) as f32).to_bits(),
             (ih as f32 / win.h.max(1) as f32).to_bits(),
             DIM.to_bits(),
             BORDER_WIDTH.to_bits(),
             flags,
+            0,
+            0,
             0,
         ];
         let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_ne_bytes()).collect();
@@ -747,7 +736,6 @@ mod close_timing {
         let mut overlay = Overlay::new(event_loop, gpu, shot, &monitors, true, None).unwrap();
         let frame = Frame {
             selection: None,
-            crosshair: None,
             layer: None,
             dim_all: false,
             decorate: false,
