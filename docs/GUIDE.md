@@ -317,10 +317,16 @@ snapr --settings   # open the settings window on start
   Elsewhere, run the bare `snapr-linux-x86_64` (`chmod +x` it first). The
   tray uses StatusNotifierItem (KDE and most desktops; GNOME needs the
   AppIndicator extension, which Ubuntu has). Without a tray the settings
-  window is shown instead. On Wayland, global hotkeys need the user in the
+  window is shown instead. On Wayland, global hotkeys go through the
+  desktop's global shortcuts portal (GNOME 48 or later, KDE Plasma), so they
+  also work over remote desktop. The first time, the desktop asks you to
+  confirm snapr's hotkeys; after that their keys are changed in the
+  desktop's own settings (GNOME: Settings → Apps → snapr → Global
+  Shortcuts), not snapr's. Without the portal they need the user in the
   `input` group, or bind `snapr --once` to a compositor shortcut. GNOME also
   asks before snapr can take screenshots, but only while snapr's window is
   focused, so until it's allowed snapr opens its window with an **Allow
-  screenshots** button. Screen recording and video previews need [FFmpeg](https://ffmpeg.org) (on `PATH`,
-  or set its path in Settings; the .deb installs it); Windows and macOS
-  encode and play videos with the system's own codecs.
+  screenshots** button. Screen recording and video previews need
+  [FFmpeg](https://ffmpeg.org) (on `PATH`, or set its path in Settings; the
+  .deb installs it); Windows and macOS encode and play videos with the
+  system's own codecs.

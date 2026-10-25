@@ -262,6 +262,19 @@ pub struct ToolHotkey {
     pub hotkey: String,
 }
 
+impl ToolHotkey {
+    /// The id of the `i`th of `list`'s hotkeys (see `GlobalHotkey::new`),
+    /// the same each run: e.g. `tool-pick-color`, `tool-pick-color-2`.
+    pub fn id(list: &[ToolHotkey], i: usize) -> String {
+        let action = list[i].action;
+        let nth = list[..=i].iter().filter(|t| t.action == action).count();
+        match nth {
+            1 => format!("tool-{}", action.id()),
+            n => format!("tool-{}-{n}", action.id()),
+        }
+    }
+}
+
 /// A tool that can be given a hotkey.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -277,6 +290,15 @@ impl ToolAction {
         ToolAction::ScanQr,
         ToolAction::PinRegion,
     ];
+
+    /// Names the tool in its hotkey's id, which has to stay the same.
+    pub fn id(self) -> &'static str {
+        match self {
+            ToolAction::PickColor => "pick-color",
+            ToolAction::ScanQr => "scan-qr",
+            ToolAction::PinRegion => "pin-region",
+        }
+    }
 
     pub fn label(self) -> &'static str {
         match self {
@@ -806,6 +828,16 @@ mod tests {
         assert_ne!(settings.uploads[1].id, r2.id);
         assert_eq!(settings.uploads[2].id, pomf);
         assert_eq!(settings.fix_duplicate_ids(), 0);
+    }
+
+    #[test]
+    fn tool_hotkey_ids_number_repeats() {
+        let list: Vec<ToolHotkey> = [ToolAction::PickColor, ToolAction::ScanQr, ToolAction::PickColor]
+            .into_iter()
+            .map(|action| ToolHotkey { action, hotkey: String::new() })
+            .collect();
+        let ids: Vec<_> = (0..list.len()).map(|i| ToolHotkey::id(&list, i)).collect();
+        assert_eq!(ids, ["tool-pick-color", "tool-scan-qr", "tool-pick-color-2"]);
     }
 
     #[test]

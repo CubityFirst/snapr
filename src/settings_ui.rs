@@ -698,7 +698,8 @@ impl Form {
 
     fn record_hotkey_problem(&self) -> Option<String> {
         let spec = self.draft.record_hotkey.trim();
-        if spec.is_empty() {
+        // The desktop picks the keys, and checks them.
+        if spec.is_empty() || crate::hotkey::desktop_picks_keys() {
             return None;
         }
         match (parse_hotkey(spec), parse_hotkey(&self.draft.hotkey)) {
@@ -711,6 +712,9 @@ impl Form {
     /// Why a tool hotkey can't be used: it's missing, invalid, or taken by
     /// another hotkey (only the later of two equal tool hotkeys complains).
     fn tool_hotkey_problem(&self, i: usize) -> Option<String> {
+        if crate::hotkey::desktop_picks_keys() {
+            return None;
+        }
         let spec = self.draft.tool_hotkeys[i].hotkey.trim();
         if spec.is_empty() {
             return Some("press Record, then the key combination".into());
@@ -732,12 +736,16 @@ impl Form {
         }
     }
 
-    /// Adds a tool hotkey and starts recording its key combination.
+    /// Adds a tool hotkey and starts recording its key combination (unless
+    /// the desktop asks for it once it's saved).
     pub fn add_tool_hotkey(&mut self, action: ToolAction) {
         self.draft.tool_hotkeys.push(ToolHotkey {
             action,
             hotkey: String::new(),
         });
+        if crate::hotkey::desktop_picks_keys() {
+            return;
+        }
         self.recording = true;
         self.recording_field = HotkeyField::Tool(self.draft.tool_hotkeys.len() - 1);
     }
@@ -745,6 +753,24 @@ impl Form {
     /// A hotkey text box with a Record button that captures the next key
     /// combination.
     fn hotkey_editor(&mut self, ui: &mut egui::Ui, field: HotkeyField) {
+        if crate::hotkey::desktop_picks_keys() {
+            let id = match field {
+                HotkeyField::Capture => crate::hotkey::CAPTURE.to_string(),
+                HotkeyField::Record => crate::hotkey::RECORD.to_string(),
+                HotkeyField::Tool(i) => ToolHotkey::id(&self.draft.tool_hotkeys, i),
+            };
+            match crate::hotkey::desktop_keys(&id) {
+                Some(keys) => match crate::hotkey::key_combinations(&keys) {
+                    Some(combinations) => keycaps(ui, &combinations),
+                    None => ui.label(keys),
+                },
+                None if crate::hotkey::desktop_asking() => {
+                    ui.label(RichText::new("Waiting for the desktop\u{2026}").weak())
+                }
+                None => ui.label(RichText::new("No keys yet").weak()),
+            };
+            return;
+        }
         if self.recording && self.recording_field == field {
             ui.add(egui::Button::new("Press a key combination\u{2026}").selected(true));
             if ui.button("Cancel").clicked() {
@@ -801,12 +827,44 @@ impl Form {
                     RichText::new("Global hotkeys work from any app while snapr is running.")
                         .weak(),
                 );
+                if crate::hotkey::desktop_picks_keys() {
+                    ui.label(
+                        RichText::new(if crate::portal::gnome() {
+                            "Your desktop keeps the keys. To change them, open its settings \
+                             and click Global Shortcuts. A new hotkey gets its keys when you \
+                             save: the desktop asks for them."
+                        } else {
+                            "Your desktop keeps the keys: change them in its settings. A new \
+                             hotkey gets its keys when you save: the desktop asks for them."
+                        })
+                        .weak(),
+                    );
+                    if crate::hotkey::desktop_asking() {
+                        ui.label(
+                            RichText::new(
+                                "Your desktop is asking about snapr's hotkeys: answer its \
+                                 dialog, which may be behind this window. Until then they \
+                                 don't work.",
+                            )
+                            .color(ERROR),
+                        );
+                    }
+                    if ui.button("Open system settings\u{2026}").clicked()
+                        && let Err(e) = crate::hotkey::open_desktop_settings()
+                    {
+                        self.status = Some((e, true));
+                    }
+                }
 
                 group(ui, "Capture and record", |ui| {
                     self.hotkey_row(ui, "capture-hotkey", "Capture region",
                         "Then drag a region, or click for a whole screen", HotkeyField::Capture);
-                    self.hotkey_row(ui, "record-hotkey", "Record region",
-                        "Press it again to stop. Leave it empty for no hotkey", HotkeyField::Record);
+                    let note = if crate::hotkey::desktop_picks_keys() {
+                        "Press it again to stop"
+                    } else {
+                        "Press it again to stop. Leave it empty for no hotkey"
+                    };
+                    self.hotkey_row(ui, "record-hotkey", "Record region", note, HotkeyField::Record);
                 });
 
                 heading(ui, "Tools", Some(&crate::locale::spell(
@@ -1285,6 +1343,32 @@ pub(crate) fn row(
 }
 
 /// Why the setting in the row above can't be used, if it can't.
+/// Key combinations drawn as keys, e.g. [Ctrl] + [J], with "or" between
+/// combinations.
+fn keycaps(ui: &mut egui::Ui, combinations: &[Vec<String>]) -> egui::Response {
+    let p = theme::palette(ui);
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for (i, keys) in combinations.iter().enumerate() {
+            if i > 0 {
+                ui.label(RichText::new("or").weak());
+            }
+            for (j, key) in keys.iter().enumerate() {
+                if j > 0 {
+                    ui.label(RichText::new("+").weak());
+                }
+                egui::Frame::new()
+                    .fill(p.control)
+                    .stroke(egui::Stroke::new(1.0, p.stroke))
+                    .corner_radius(4)
+                    .inner_margin(egui::Margin::symmetric(6, 1))
+                    .show(ui, |ui| ui.label(RichText::new(key).size(12.0).color(p.text)));
+            }
+        }
+    })
+    .response
+}
+
 fn error_row(ui: &mut egui::Ui, key: &str, err: Option<&str>) {
     if let Some(e) = err {
         row(ui, key, RichText::new(e).color(ERROR), None, true, |_| {});

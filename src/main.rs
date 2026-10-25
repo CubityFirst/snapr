@@ -121,6 +121,10 @@ enum UserEvent {
     UpdateDue,
     /// Checking for or installing an update got further.
     Update(update::Status),
+    /// The desktop couldn't bind the hotkeys (Wayland binds them later).
+    HotkeyProblem(String),
+    /// The keys the desktop has bound to the hotkeys changed.
+    HotkeyKeysChanged,
     /// The desktop answered snapr's request to take screenshots.
     #[cfg(target_os = "linux")]
     ScreenshotsAllowed(Result<(), String>),
@@ -131,12 +135,15 @@ struct Hotkeys(Result<GlobalHotkey, String>);
 
 impl Hotkeys {
     /// A hotkey that sends `event` (made fresh each time) when pressed.
+    /// `id` and `description` name it to the desktop (see `GlobalHotkey::new`).
     fn new(
         proxy: EventLoopProxy<UserEvent>,
+        id: &str,
+        description: &str,
         event: impl Fn() -> UserEvent + Send + 'static,
     ) -> Self {
         let proxy = Mutex::new(proxy);
-        Self(GlobalHotkey::new(Box::new(move || {
+        Self(GlobalHotkey::new(id, description, Box::new(move || {
             let _ = proxy.lock().unwrap().send_event(event());
         })))
     }
@@ -145,12 +152,22 @@ impl Hotkeys {
         self.0.as_mut().map_err(|e| e.clone())?.set(spec)
     }
 
-    /// Like `set`, but an empty spec removes the hotkey.
+    /// Like `set`, but an empty spec removes the hotkey (or, where the
+    /// desktop picks the keys, lets it ask for some).
     fn set_optional(&mut self, spec: &str) -> Result<(), String> {
-        let h = self.0.as_mut().map_err(|e| e.clone())?;
-        if spec.trim().is_empty() {
-            h.clear();
+        if spec.trim().is_empty() && !hotkey::desktop_picks_keys() {
+            self.clear();
             return Ok(());
+        }
+        self.set_or_offer(spec)
+    }
+
+    /// Like `set`, but where the desktop picks the keys an empty spec lets
+    /// it ask for some.
+    fn set_or_offer(&mut self, spec: &str) -> Result<(), String> {
+        let h = self.0.as_mut().map_err(|e| e.clone())?;
+        if spec.trim().is_empty() && hotkey::desktop_picks_keys() {
+            return h.offer();
         }
         h.set(spec)
     }
@@ -768,7 +785,7 @@ impl App {
             }
         }
         if let Some(t) = &self.tray {
-            t.set_hotkey(Some(&new.hotkey));
+            t.set_hotkey(tray_hotkey(&new.hotkey));
             t.set_click(new.tray_click);
             t.set_style(new.tray_icon);
         }
@@ -1280,8 +1297,9 @@ impl ApplicationHandler<UserEvent> for App {
             .hotkeys
             .as_ref()
             .is_some_and(Hotkeys::is_registered)
-            .then(|| self.settings.hotkey.clone());
-        match Tray::new(hotkey.as_deref(), callback) {
+            .then(|| tray_hotkey(&self.settings.hotkey))
+            .flatten();
+        match Tray::new(hotkey, callback) {
             Ok(t) => {
                 t.set_click(self.settings.tray_click);
                 t.set_style(self.settings.tray_icon);
@@ -1491,6 +1509,12 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 self.update = status;
             }
+            UserEvent::HotkeyProblem(e) => self.report_on(event_loop, e, true, Page::Hotkeys),
+            UserEvent::HotkeyKeysChanged => {
+                if let Some(w) = &self.main_window {
+                    w.window.request_redraw();
+                }
+            }
             #[cfg(target_os = "linux")]
             UserEvent::ScreenshotsAllowed(result) => {
                 let (msg, is_error) = match result {
@@ -1669,10 +1693,13 @@ fn tool_hotkeys(
 ) -> (Vec<Hotkeys>, Result<(), String>) {
     let mut result = Ok(());
     let mut hotkeys = Vec::new();
-    for t in list {
+    for (i, t) in list.iter().enumerate() {
         let action = t.action;
-        let mut h = Hotkeys::new(proxy.clone(), move || UserEvent::ToolHotkey(action));
-        match h.set(&t.hotkey) {
+        let id = ToolHotkey::id(list, i);
+        let mut h = Hotkeys::new(proxy.clone(), &id, action.label(), move || {
+            UserEvent::ToolHotkey(action)
+        });
+        match h.set_or_offer(&t.hotkey) {
             Ok(()) => hotkeys.push(h),
             Err(e) => {
                 if result.is_ok() {
@@ -1682,6 +1709,12 @@ fn tool_hotkeys(
         }
     }
     (hotkeys, result)
+}
+
+/// The capture hotkey for the tray's menu: none where the desktop picks the
+/// keys, as it may have picked others.
+fn tray_hotkey(spec: &str) -> Option<&str> {
+    (!hotkey::desktop_picks_keys()).then_some(spec)
 }
 
 /// How many captures can be stacked by pressing the hotkey during a capture.
@@ -1786,8 +1819,18 @@ fn main() {
         });
     }
 
+    if !once {
+        let problems = Mutex::new(proxy.clone());
+        hotkey::on_problem(move |e| {
+            let _ = problems.lock().unwrap().send_event(UserEvent::HotkeyProblem(e));
+        });
+        let keys = Mutex::new(proxy.clone());
+        hotkey::on_keys_changed(move || {
+            let _ = keys.lock().unwrap().send_event(UserEvent::HotkeyKeysChanged);
+        });
+    }
     let hotkeys = (!once).then(|| {
-        let mut h = Hotkeys::new(proxy.clone(), || UserEvent::Hotkey);
+        let mut h = Hotkeys::new(proxy.clone(), hotkey::CAPTURE, "Capture region", || UserEvent::Hotkey);
         if let Err(e) = h.set(&settings.hotkey) {
             status = Some((e, true));
             open_settings = true;
@@ -1795,7 +1838,9 @@ fn main() {
         h
     });
     let record_hotkeys = (!once).then(|| {
-        let mut h = Hotkeys::new(proxy.clone(), || UserEvent::RecordHotkey);
+        let mut h = Hotkeys::new(proxy.clone(), hotkey::RECORD, "Record region", || {
+            UserEvent::RecordHotkey
+        });
         if let Err(e) = h.set_optional(&settings.record_hotkey) {
             status.get_or_insert((format!("Record hotkey: {e}"), true));
             open_settings = true;

@@ -2,24 +2,236 @@
 //!
 //! Windows uses the OS hotkey API (`RegisterHotKey`): the OS tracks the
 //! modifier keys and swallows the combination so it doesn't also reach the
-//! focused app. Other platforms use livesplit-hotkey.
+//! focused app. Wayland uses the desktop's global shortcuts portal. Other
+//! platforms use livesplit-hotkey.
+
+use std::sync::OnceLock;
 
 use livesplit_hotkey::Hotkey;
 
 use crate::settings::parse_hotkey;
 
+#[cfg(target_os = "linux")]
+mod portal;
+
 pub type Callback = Box<dyn Fn() + Send + 'static>;
+
+/// The capture and record hotkeys' ids (see `GlobalHotkey::new`).
+pub const CAPTURE: &str = "capture";
+pub const RECORD: &str = "record";
+
+type Reporter = Box<dyn Fn(String) + Send + Sync + 'static>;
+
+static REPORTER: OnceLock<Reporter> = OnceLock::new();
+static KEYS_CHANGED: OnceLock<Box<dyn Fn() + Send + Sync + 'static>> = OnceLock::new();
+
+/// Sets where problems found after `GlobalHotkey::set` returned go: on
+/// Wayland the desktop binds hotkeys later, maybe after asking the user.
+pub fn on_problem(report: impl Fn(String) + Send + Sync + 'static) {
+    let _ = REPORTER.set(Box::new(report));
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn report(problem: String) {
+    eprintln!("{problem}");
+    if let Some(report) = REPORTER.get() {
+        report(problem);
+    }
+}
+
+/// Sets what's called when the keys `desktop_keys` reports change.
+pub fn on_keys_changed(changed: impl Fn() + Send + Sync + 'static) {
+    let _ = KEYS_CHANGED.set(Box::new(changed));
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn keys_changed() {
+    if let Some(changed) = KEYS_CHANGED.get() {
+        changed();
+    }
+}
+
+/// Whether the desktop decides the hotkeys' keys: snapr's are only
+/// suggested the first time, then changed in the desktop's settings.
+pub fn desktop_picks_keys() -> bool {
+    #[cfg(target_os = "linux")]
+    return platform::wayland() && portal::Portal::get().is_some();
+    #[cfg(not(target_os = "linux"))]
+    false
+}
+
+/// How the desktop describes the keys it has bound to the hotkey `id`, in
+/// its own words, e.g. "Press <Control>j", where it picks them (see
+/// `desktop_picks_keys`). `None` if it has none.
+pub fn desktop_keys(id: &str) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    return portal::Portal::get()?.keys(id);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = id;
+        None
+    }
+}
+
+/// The key combinations in a desktop's description of a hotkey's keys (see
+/// `desktop_keys`), each as its keys' names: GNOME's "Press <Control>j"
+/// and KDE's "Ctrl+J" both give `[["Ctrl", "J"]]`. `None` if it can't tell.
+pub fn key_combinations(description: &str) -> Option<Vec<Vec<String>>> {
+    // GNOME: GTK accelerators in a sentence, e.g. "Press %s or %s".
+    let gtk: Vec<_> = description.split_whitespace().filter_map(gtk_accelerator).collect();
+    if !gtk.is_empty() {
+        return Some(gtk);
+    }
+    let words: Vec<_> = description.split_whitespace().collect();
+    match words[..] {
+        // KDE: Qt's form, e.g. "Ctrl+Shift+S" ("Ctrl++" for the plus key).
+        [keys] if keys.len() > 1 && keys.contains('+') => {
+            let mut names: Vec<String> =
+                keys.split('+').filter(|k| !k.is_empty()).map(String::from).collect();
+            if keys.ends_with("++") {
+                names.push("+".into());
+            }
+            Some(vec![names])
+        }
+        // GNOME, a key on its own: "Press Print".
+        [.., last] if words.len() > 1 => known_key(last).map(|k| vec![vec![k]]),
+        _ => None,
+    }
+}
+
+/// A GTK accelerator's keys, e.g. `<Control><Shift>s` → Ctrl, Shift, S.
+/// Only with modifiers: a bare word could be any word.
+fn gtk_accelerator(word: &str) -> Option<Vec<String>> {
+    let mut rest = word.strip_suffix([',', '.']).unwrap_or(word);
+    if !rest.starts_with('<') {
+        return None;
+    }
+    let mut keys = Vec::new();
+    while let Some(after) = rest.strip_prefix('<') {
+        let (modifier, tail) = after.split_once('>')?;
+        keys.push(
+            match modifier {
+                "Control" | "Ctrl" | "Primary" => "Ctrl",
+                "Alt" | "Mod1" => "Alt",
+                "Super" | "Mod4" => "Super",
+                "Mod2" => "Num Lock",
+                m => m,
+            }
+            .to_string(),
+        );
+        rest = tail;
+    }
+    if rest.is_empty() {
+        return None;
+    }
+    keys.push(known_key(rest).unwrap_or_else(|| rest.replace('_', " ")));
+    Some(keys)
+}
+
+/// A key's name to show for an XKB keysym name (`Page_Up` → Page Up, `j`
+/// → J), if it's one snapr knows.
+fn known_key(keysym: &str) -> Option<String> {
+    let mut chars = keysym.chars();
+    if let (Some(c), None) = (chars.next(), chars.next()) {
+        return Some(c.to_uppercase().collect());
+    }
+    if keysym.strip_prefix('F').and_then(|n| n.parse::<u8>().ok()).is_some_and(|n| (1..=24).contains(&n)) {
+        return Some(keysym.into());
+    }
+    if let Some(d) = keysym.strip_prefix("KP_").filter(|d| d.len() == 1) {
+        return Some(format!("Num {d}"));
+    }
+    let name = match keysym {
+        "Print" => "Print Screen",
+        "Pause" => "Pause",
+        "Scroll_Lock" => "Scroll Lock",
+        "space" => "Space",
+        "Return" => "Enter",
+        "Tab" => "Tab",
+        "Escape" => "Esc",
+        "BackSpace" => "Backspace",
+        "Insert" => "Insert",
+        "Delete" => "Delete",
+        "Home" => "Home",
+        "End" => "End",
+        "Page_Up" => "Page Up",
+        "Page_Down" => "Page Down",
+        "Up" => "Up",
+        "Down" => "Down",
+        "Left" => "Left",
+        "Right" => "Right",
+        "minus" => "-",
+        "equal" => "=",
+        "bracketleft" => "[",
+        "bracketright" => "]",
+        "backslash" => "\\",
+        "semicolon" => ";",
+        "apostrophe" => "'",
+        "grave" => "`",
+        "comma" => ",",
+        "period" => ".",
+        "slash" => "/",
+        "KP_Add" => "Num +",
+        "KP_Subtract" => "Num -",
+        "KP_Multiply" => "Num *",
+        "KP_Divide" => "Num /",
+        "KP_Decimal" => "Num .",
+        _ => return None,
+    };
+    Some(name.into())
+}
+
+/// Whether the desktop is still binding the hotkeys, where it picks their
+/// keys: GNOME asks the user about new ones first, and none work meanwhile.
+pub fn desktop_asking() -> bool {
+    #[cfg(target_os = "linux")]
+    return portal::Portal::get().is_some_and(|p| p.binding());
+    #[cfg(not(target_os = "linux"))]
+    false
+}
+
+/// Opens the desktop's settings where snapr's hotkeys' keys are changed.
+pub fn open_desktop_settings() -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let portal = portal::Portal::get().ok_or("the desktop doesn't keep snapr's hotkeys")?;
+        if portal.configure().is_ok() {
+            return Ok(());
+        }
+        // GNOME's portal can't open them itself: Settings' Apps page on
+        // snapr has a Global Shortcuts button.
+        if crate::portal::gnome() {
+            return std::process::Command::new("gnome-control-center")
+                .args(["applications", "snapr.desktop"])
+                .spawn()
+                .map(|mut settings| {
+                    // Collected when it exits, so it doesn't linger as a
+                    // zombie. If Settings is already open this one hands
+                    // over to it and exits straight away.
+                    std::thread::spawn(move || settings.wait());
+                })
+                .map_err(|e| format!("couldn't open Settings: {e}"));
+        }
+    }
+    Err("open your desktop's keyboard shortcut settings to change them".into())
+}
 
 pub struct GlobalHotkey {
     inner: platform::Registrar,
     current: Option<Hotkey>,
+    /// Registered, with `current` or (offered to the desktop) without keys.
+    active: bool,
 }
 
 impl GlobalHotkey {
-    pub fn new(callback: Callback) -> Result<Self, String> {
+    /// `id` and `description` name the hotkey to desktops that keep a list
+    /// of each app's shortcuts (Wayland); the id has to stay the same from
+    /// run to run.
+    pub fn new(id: &str, description: &str, callback: Callback) -> Result<Self, String> {
         Ok(Self {
-            inner: platform::Registrar::new(callback)?,
+            inner: platform::Registrar::new(id, description, callback)?,
             current: None,
+            active: false,
         })
     }
 
@@ -29,7 +241,8 @@ impl GlobalHotkey {
 
     /// Unregisters the hotkey, if any.
     pub fn clear(&mut self) {
-        if self.current.take().is_some() {
+        self.current = None;
+        if std::mem::take(&mut self.active) {
             self.inner.unregister();
         }
     }
@@ -37,12 +250,61 @@ impl GlobalHotkey {
     /// Replaces the registered hotkey.
     pub fn set(&mut self, spec: &str) -> Result<(), String> {
         let hotkey = parse_hotkey(spec)?;
-        if self.current == Some(hotkey) {
+        if self.active && self.current == Some(hotkey) {
             return Ok(());
         }
         let result = self.inner.register(hotkey);
         self.current = result.is_ok().then_some(hotkey);
+        self.active = result.is_ok();
         result
+    }
+
+    /// Registers the hotkey without keys, for the desktop to ask for some.
+    /// Only where it picks them (see `desktop_picks_keys`).
+    pub fn offer(&mut self) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        if let platform::Registrar::Portal(s) = &self.inner {
+            s.offer();
+            self.current = None;
+            self.active = true;
+            return Ok(());
+        }
+        Err("press Record, then the key combination".into())
+    }
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::key_combinations;
+
+    fn keys(description: &str) -> Option<Vec<Vec<String>>> {
+        key_combinations(description)
+    }
+
+    #[test]
+    fn reads_gnome_descriptions() {
+        assert_eq!(keys("Press <Control>j"), Some(vec![vec!["Ctrl".into(), "J".into()]]));
+        assert_eq!(
+            keys("Press <Shift><Alt>v or <Super>Page_Up"),
+            Some(vec![
+                vec!["Shift".into(), "Alt".into(), "V".into()],
+                vec!["Super".into(), "Page Up".into()],
+            ])
+        );
+        assert_eq!(keys("Press Print"), Some(vec![vec!["Print Screen".into()]]));
+        assert_eq!(keys("Drücken Sie <Control>KP_7"), Some(vec![vec!["Ctrl".into(), "Num 7".into()]]));
+    }
+
+    #[test]
+    fn reads_kde_descriptions() {
+        assert_eq!(keys("Ctrl+Shift+S"), Some(vec![vec!["Ctrl".into(), "Shift".into(), "S".into()]]));
+        assert_eq!(keys("Ctrl++"), Some(vec![vec!["Ctrl".into(), "+".into()]]));
+    }
+
+    #[test]
+    fn leaves_other_text_alone() {
+        assert_eq!(keys("Press something"), None);
+        assert_eq!(keys(""), None);
     }
 }
 
@@ -77,7 +339,7 @@ mod platform {
     }
 
     impl Registrar {
-        pub fn new(callback: super::Callback) -> Result<Self, String> {
+        pub fn new(_id: &str, _description: &str, callback: super::Callback) -> Result<Self, String> {
             let request: Arc<Mutex<Request>> = Arc::default();
             let (reply_tx, replies) = mpsc::channel();
             let (id_tx, id_rx) = mpsc::channel();
@@ -322,15 +584,66 @@ mod platform {
     use livesplit_hotkey::{ConsumePreference, Hook, Hotkey};
     use std::sync::Arc;
 
-    pub struct Registrar {
+    pub enum Registrar {
+        Hook(HookRegistrar),
+        #[cfg(target_os = "linux")]
+        Portal(super::portal::Shortcut),
+    }
+
+    impl Registrar {
+        pub fn new(id: &str, description: &str, callback: super::Callback) -> Result<Self, String> {
+            // An X11 grab would work under Wayland too, through XWayland,
+            // but only while an X11 app has the focus. Reading the keyboard
+            // devices (evdev) works, but needs the input group and doesn't
+            // see remote desktop input.
+            #[cfg(target_os = "linux")]
+            if wayland() {
+                if let Some(portal) = super::portal::Portal::get() {
+                    return Ok(Self::Portal(portal.add(id, description, callback)));
+                }
+                return HookRegistrar::new(ConsumePreference::MustNotConsume, callback)
+                    .map(Self::Hook)
+                    .map_err(|_| {
+                        "global hotkeys on Wayland need the desktop's global shortcuts \
+                         portal (GNOME 48 or later, KDE Plasma) or the input group"
+                            .to_string()
+                    });
+            }
+            let _ = (id, description);
+            HookRegistrar::new(ConsumePreference::PreferConsume, callback).map(Self::Hook)
+        }
+
+        pub fn register(&self, hotkey: Hotkey) -> Result<(), String> {
+            match self {
+                Self::Hook(h) => h.register(hotkey),
+                #[cfg(target_os = "linux")]
+                Self::Portal(s) => s.register(hotkey),
+            }
+        }
+
+        pub fn unregister(&self) {
+            match self {
+                Self::Hook(h) => h.unregister(),
+                #[cfg(target_os = "linux")]
+                Self::Portal(s) => s.unregister(),
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn wayland() -> bool {
+        std::env::var_os("WAYLAND_DISPLAY").is_some()
+    }
+
+    pub struct HookRegistrar {
         hook: Hook,
         callback: Arc<dyn Fn() + Send + Sync>,
         current: std::cell::Cell<Option<Hotkey>>,
     }
 
-    impl Registrar {
-        pub fn new(callback: super::Callback) -> Result<Self, String> {
-            let hook = Hook::with_consume_preference(ConsumePreference::PreferConsume)
+    impl HookRegistrar {
+        fn new(consume: ConsumePreference, callback: super::Callback) -> Result<Self, String> {
+            let hook = Hook::with_consume_preference(consume)
                 .map_err(|e| unavailable(&e.to_string()))?;
             let callback = std::sync::Mutex::new(callback);
             Ok(Self {
@@ -340,7 +653,7 @@ mod platform {
             })
         }
 
-        pub fn register(&self, hotkey: Hotkey) -> Result<(), String> {
+        fn register(&self, hotkey: Hotkey) -> Result<(), String> {
             if let Some(old) = self.current.take() {
                 let _ = self.hook.unregister(old);
             }
@@ -352,7 +665,7 @@ mod platform {
             Ok(())
         }
 
-        pub fn unregister(&self) {
+        fn unregister(&self) {
             if let Some(old) = self.current.take() {
                 let _ = self.hook.unregister(old);
             }
