@@ -503,7 +503,7 @@ impl ScreenFrames {
                     let shot = piece
                         .monitor
                         .capture_region(region.x as u32, region.y as u32, region.w, region.h)
-                        .map_err(|e| format!("screen capture failed: {e}"))?;
+                        .map_err(crate::capture::failure)?;
                     crop_into(&shot, (region.w, region.h), whole, &mut first, size.0, at);
                     let id = piece.monitor.id().map_err(|e| e.to_string())?;
                     let (recorder, frames) = take_recorder(&piece.monitor, id)?;

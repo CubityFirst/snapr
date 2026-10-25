@@ -31,6 +31,9 @@ pub enum Action {
     /// a secret key typed but not yet saved.
     UploadIcon(Upload, Option<String>),
     CheckForUpdates,
+    /// Have the desktop ask the user to let snapr take screenshots.
+    #[cfg(target_os = "linux")]
+    AllowScreenshots,
     /// Quit and start snapr again: the updated program, if one's installed.
     RestartToUpdate,
     OpenUrl(String),
@@ -243,9 +246,8 @@ impl Form {
         if let Some(p) = self.problem().filter(|_| self.dirty()) {
             ui.add(egui::Label::new(RichText::new(format!("Not saved \u{2014} {p}")).color(ERROR)).wrap());
         } else if let Some((msg, is_err)) = &self.status {
-            #[cfg(target_os = "macos")]
-            if let Some(missing) = crate::macos::missing_permission(msg) {
-                permission_card(ui, &missing, actions);
+            // Shown at the top of the page instead.
+            if is_missing_permission(msg) {
                 return;
             }
             let color = if *is_err {
@@ -1031,11 +1033,70 @@ fn insert_at_cursor(ctx: &egui::Context, id: egui::Id, text: &mut String, token:
     ctx.memory_mut(|m| m.request_focus(id));
 }
 
-/// A missing permission: what's off, where to turn it on, and buttons to go
-/// there and to restart snapr afterwards (macOS only tells a program that
-/// started without the permission once it's started again).
-#[cfg(target_os = "macos")]
-fn permission_card(ui: &mut egui::Ui, missing: &crate::macos::MissingPermission, actions: &mut Vec<Action>) {
+/// Whether `msg` is about a permission snapr is missing, which
+/// [`permission_card`] explains.
+pub(crate) fn is_missing_permission(msg: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    if crate::macos::missing_permission(msg).is_some() {
+        return true;
+    }
+    #[cfg(target_os = "linux")]
+    if msg.ends_with(crate::portal::SCREENSHOTS_OFF) {
+        return true;
+    }
+    #[cfg(windows)]
+    let _ = msg;
+    false
+}
+
+/// A card for `msg` if it's about a permission snapr is missing: what's
+/// off and buttons to turn it on. Returns whether it showed one.
+#[cfg_attr(windows, allow(unused_variables))]
+pub(crate) fn permission_card(ui: &mut egui::Ui, msg: &str, actions: &mut Vec<Action>) -> bool {
+    // macOS only tells a program that started without the permission once
+    // it's started again.
+    #[cfg(target_os = "macos")]
+    if let Some(missing) = crate::macos::missing_permission(msg) {
+        missing_card(ui, missing.title, missing.steps, None, |ui| {
+            if ui.add(theme::primary("Open System Settings")).clicked() {
+                actions.push(Action::OpenUrl(missing.pane.into()));
+            }
+            if ui.button("Restart snapr").clicked() {
+                actions.push(Action::RestartToUpdate);
+            }
+        });
+        return true;
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(why) = msg.strip_suffix(crate::portal::SCREENSHOTS_OFF) {
+        let why = why.trim_end_matches([' ', '\u{2014}']);
+        missing_card(
+            ui,
+            "snapr can't take screenshots",
+            "The desktop asks before letting an app take screenshots, and GNOME only asks \
+                the app you're using. Click Allow screenshots, then Allow when the desktop asks.",
+            (!why.is_empty()).then(|| format!("Last time, {why}.")).as_deref(),
+            |ui| {
+                if ui.add(theme::primary("Allow screenshots")).clicked() {
+                    actions.push(Action::AllowScreenshots);
+                }
+            },
+        );
+        return true;
+    }
+    false
+}
+
+/// A missing permission's card: what's off (`title`), how to turn it on,
+/// what went wrong last time if anything, and `buttons`.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn missing_card(
+    ui: &mut egui::Ui,
+    title: &str,
+    steps: &str,
+    detail: Option<&str>,
+    buttons: impl FnOnce(&mut egui::Ui),
+) {
     let p = theme::palette(ui);
     egui::Frame::new()
         .fill(p.surface)
@@ -1044,18 +1105,15 @@ fn permission_card(ui: &mut egui::Ui, missing: &crate::macos::MissingPermission,
         .inner_margin(12)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(RichText::new(missing.title).color(p.danger).strong());
+            ui.label(RichText::new(title).color(p.danger).strong());
             ui.add_space(2.0);
-            ui.add(egui::Label::new(RichText::new(missing.steps).color(p.text)).wrap());
+            ui.add(egui::Label::new(RichText::new(steps).color(p.text)).wrap());
+            if let Some(detail) = detail {
+                ui.add_space(2.0);
+                ui.add(egui::Label::new(RichText::new(detail).weak()).wrap());
+            }
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui.add(theme::primary("Open System Settings")).clicked() {
-                    actions.push(Action::OpenUrl(missing.pane.into()));
-                }
-                if ui.button("Restart snapr").clicked() {
-                    actions.push(Action::RestartToUpdate);
-                }
-            });
+            ui.horizontal(buttons);
         });
 }
 

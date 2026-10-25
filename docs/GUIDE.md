@@ -318,7 +318,9 @@ snapr --settings   # open the settings window on start
   tray uses StatusNotifierItem (KDE and most desktops; GNOME needs the
   AppIndicator extension, which Ubuntu has). Without a tray the settings
   window is shown instead. On Wayland, global hotkeys need the user in the
-  `input` group, or bind `snapr --once` to a compositor shortcut. Screen
-  recording and video previews need [FFmpeg](https://ffmpeg.org) (on `PATH`,
+  `input` group, or bind `snapr --once` to a compositor shortcut. GNOME also
+  asks before snapr can take screenshots, but only while snapr's window is
+  focused, so until it's allowed snapr opens its window with an **Allow
+  screenshots** button. Screen recording and video previews need [FFmpeg](https://ffmpeg.org) (on `PATH`,
   or set its path in Settings; the .deb installs it); Windows and macOS
   encode and play videos with the system's own codecs.

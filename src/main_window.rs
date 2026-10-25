@@ -59,6 +59,9 @@ pub enum Action {
     /// Upload snapr's icon to a destination, as a screenshot would be.
     UploadIcon(Upload, Option<String>),
     CheckForUpdates,
+    /// Have the desktop ask the user to let snapr take screenshots.
+    #[cfg(target_os = "linux")]
+    AllowScreenshots,
     /// Quit and start the updated program.
     RestartToUpdate,
     /// Copy a link, or other text, to the clipboard.
@@ -98,6 +101,8 @@ impl From<settings_ui::Action> for Action {
             settings_ui::Action::TestUpload(u, secret) => Action::TestUpload(u, secret),
             settings_ui::Action::UploadIcon(u, secret) => Action::UploadIcon(u, secret),
             settings_ui::Action::CheckForUpdates => Action::CheckForUpdates,
+            #[cfg(target_os = "linux")]
+            settings_ui::Action::AllowScreenshots => Action::AllowScreenshots,
             settings_ui::Action::RestartToUpdate => Action::RestartToUpdate,
             settings_ui::Action::OpenUrl(u) => Action::OpenUrl(u),
             settings_ui::Action::ImportTools(t) => Action::ImportTools(t),
@@ -270,6 +275,11 @@ impl MainWindow {
             .with_inner_size(LogicalSize::new(980.0, 660.0))
             .with_min_inner_size(LogicalSize::new(800.0, 440.0))
             .with_window_icon(icon);
+        // Names it as `snapr.desktop`'s, so GNOME knows it's snapr's: it
+        // only shows the dialog for a permission to the focused app's
+        // request (see `portal`). On X11 it's the window class.
+        #[cfg(target_os = "linux")]
+        let attrs = winit::platform::wayland::WindowAttributesExtWayland::with_name(attrs, "snapr", "snapr");
         let window = Arc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
 
         let ctx = egui::Context::default();
@@ -498,17 +508,17 @@ impl MainWindow {
 
     /// First-time setup, filling the window.
     fn setup_ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        let mut form_actions = Vec::new();
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::central_panel(ui.style())
                     .inner_margin(egui::Margin::symmetric(32, 24)),
             )
-            .show(ui, |ui| match self.setup.ui(ui, &mut self.form) {
+            .show(ui, |ui| match self.setup.ui(ui, &mut self.form, &mut form_actions) {
                 Some(crate::setup::Finish::Done) => self.page = Page::Recent,
                 Some(crate::setup::Finish::OpenSettings) => self.page = Page::Settings,
                 None => {}
             });
-        let mut form_actions = Vec::new();
         self.form.autosave(ui.ctx(), &mut form_actions);
         actions.extend(form_actions.into_iter().map(Action::from));
     }
@@ -728,6 +738,13 @@ fn settings_page(
     egui::Frame::new()
         .inner_margin(egui::Margin { left: 20, ..Default::default() })
         .show(ui, |ui| {
+            // Above the section, rather than in the status line at the end of
+            // it, where a short window hides it: nothing works without it.
+            if let Some((msg, _)) = &form.status
+                && settings_ui::permission_card(ui, msg, actions)
+            {
+                ui.add_space(16.0);
+            }
             ui.heading(crate::settings_search::section_name(showing));
             ui.add_space(10.0);
             match showing {
