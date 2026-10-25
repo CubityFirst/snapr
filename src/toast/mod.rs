@@ -18,9 +18,7 @@ use winit::window::{Window, WindowLevel};
 use crate::gpu::Gpu;
 
 #[cfg(target_os = "linux")]
-mod x11;
-#[cfg(target_os = "linux")]
-pub use x11::X11Event;
+use crate::x11::{self, X11Event};
 
 /// Largest preview, in points; the window fits the image's shape.
 const MAX_PREVIEW: (f32, f32) = (320.0, 200.0);
@@ -44,9 +42,9 @@ pub enum Action {
     Dismiss,
 }
 
-/// What the mouse did over the toast.
+/// What the mouse did over the toast (or another X11 window).
 #[derive(Debug)]
-enum Pointer {
+pub enum Pointer {
     Pressed(MouseButton),
     Released(MouseButton),
     Moved(PhysicalPosition<f64>),
@@ -109,7 +107,7 @@ impl Toast {
 
         #[cfg(target_os = "linux")]
         let backend = if x11::wanted(event_loop) {
-            x11::X11Window::open(gpu, size, send_x11)
+            Self::open_x11(gpu, &ctx, size, send_x11)
                 .map(Backend::X11)
                 .inspect_err(|e| eprintln!("couldn't show the preview through XWayland: {e}"))
                 .ok()
@@ -142,6 +140,31 @@ impl Toast {
             window.set_visible(true);
         }
         Ok(toast)
+    }
+
+    /// In the primary screen's bottom-right corner, above any panel or dock.
+    #[cfg(target_os = "linux")]
+    fn open_x11(
+        gpu: &Gpu,
+        ctx: &egui::Context,
+        size: LogicalSize<f64>,
+        send: impl Fn(X11Event) + Send + 'static,
+    ) -> Result<x11::X11Window, String> {
+        let screen = x11::Screen::connect()?;
+        let size = size.to_physical::<u32>(screen.scale_factor);
+        let (right, bottom) = screen.corner();
+        let gap = (SCREEN_GAP * screen.scale_factor) as i32;
+        let rect = crate::capture::Rect {
+            x: right - size.width as i32 - gap,
+            y: bottom - size.height as i32 - gap,
+            w: size.width,
+            h: size.height,
+        };
+        // The toast's colour, until it's first drawn.
+        crate::theme::follow(ctx);
+        let surface = crate::theme::palette_of(ctx.theme() == egui::Theme::Dark).surface;
+        let background = u32::from_be_bytes([0, surface.r(), surface.g(), surface.b()]);
+        x11::X11Window::open(screen, gpu, rect, background, b"_NET_WM_WINDOW_TYPE_NOTIFICATION", send)
     }
 
     fn open_winit(

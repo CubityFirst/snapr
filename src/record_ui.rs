@@ -17,6 +17,12 @@ use winit::window::{Window, WindowAttributes, WindowId, WindowLevel};
 
 use crate::capture;
 use crate::gpu::Gpu;
+#[cfg(target_os = "linux")]
+use crate::toast::Pointer;
+#[cfg(target_os = "linux")]
+use winit::event::MouseButton;
+#[cfg(target_os = "linux")]
+use crate::x11::{self, X11Event};
 
 /// Border thickness and dash length, in physical pixels.
 const BORDER: u32 = 2;
@@ -44,7 +50,7 @@ pub enum Action {
 }
 
 pub struct RecordingUi {
-    edges: Vec<Edge>,
+    edges: Edges,
     bar: Bar,
     started: Instant,
     paused_at: Option<Instant>,
@@ -53,26 +59,98 @@ pub struct RecordingUi {
     live: bool,
 }
 
+/// The border's four sides.
+enum Edges {
+    Winit(Vec<Edge>),
+    /// Under Wayland, which won't let a window choose where it goes.
+    #[cfg(target_os = "linux")]
+    X11(Vec<x11::Dashes>),
+}
+
 impl RecordingUi {
     /// Shows the border and bar around `rect` (global physical pixels).
+    /// `send_x11` passes on the bar's input when it's an X11 window, from
+    /// its own thread.
     pub fn open(
         event_loop: &ActiveEventLoop,
         gpu: &Gpu,
         rect: capture::Rect,
+        #[cfg(target_os = "linux")] send_x11: impl Fn(X11Event) + Send + 'static,
     ) -> Result<Self, String> {
-        let b = BORDER as i32;
-        let (w, h) = (rect.w + 2 * BORDER, rect.h);
-        let sides = [
-            (rect.x - b, rect.y - b, w, BORDER, true),
-            (rect.x - b, rect.bottom(), w, BORDER, true),
-            (rect.x - b, rect.y, BORDER, h, false),
-            (rect.right(), rect.y, BORDER, h, false),
-        ];
+        #[cfg(target_os = "linux")]
+        if x11::wanted(event_loop) {
+            match Self::open_x11(gpu, rect, send_x11) {
+                Ok(ui) => return Ok(ui),
+                Err(e) => eprintln!("couldn't show the recording border through XWayland: {e}"),
+            }
+        }
         let mut edges = Vec::new();
-        for (x, y, w, h, horizontal) in sides {
-            edges.push(Edge::open(event_loop, gpu, (x, y), (w, h), horizontal)?);
+        for (side, horizontal) in sides(rect) {
+            edges.push(Edge::open(event_loop, gpu, side, horizontal)?);
         }
         let bar = Bar::open(event_loop, gpu, rect)?;
+        let ui = Self::new(gpu, Edges::Winit(edges), bar);
+        if let Edges::Winit(edges) = &ui.edges {
+            for e in edges {
+                e.window.set_visible(true);
+            }
+        }
+        if let BarWindow::Winit { window, .. } = &ui.bar.window {
+            window.set_visible(true);
+        }
+        Ok(ui)
+    }
+
+    /// The border and bar as X11 windows, which XWayland puts where they're
+    /// asked to go.
+    #[cfg(target_os = "linux")]
+    fn open_x11(
+        gpu: &Gpu,
+        rect: capture::Rect,
+        send: impl Fn(X11Event) + Send + 'static,
+    ) -> Result<Self, String> {
+        let screen = x11::Screen::connect()?;
+        let rect = to_x11(rect);
+        let edges = sides(rect)
+            .into_iter()
+            .map(|(side, horizontal)| x11::Dashes::open(&screen, side, horizontal, rgb(RED), rgb(GAP_COLOR), DASH))
+            .collect::<Result<Vec<_>, _>>()?;
+        let scale = screen.scale_factor;
+        let size = LogicalSize::new(BAR_WIDTH as f64, BAR_HEIGHT as f64).to_physical::<u32>(scale);
+        let gap = (BAR_GAP * scale) as i32 + BORDER as i32;
+        let (x, y) = place_bar(rect, (size.width as i32, size.height as i32), gap, &screen.monitors());
+        let bar = capture::Rect {
+            x,
+            y,
+            w: size.width,
+            h: size.height,
+        };
+        let ctx = bar_context();
+        crate::theme::follow(&ctx);
+        // The bar's colour, until it's first drawn.
+        let card = crate::theme::palette_of(ctx.theme() == egui::Theme::Dark).card;
+        let background = u32::from_be_bytes([0, card.r(), card.g(), card.b()]);
+        let window = x11::X11Window::open(
+            screen,
+            gpu,
+            bar,
+            background,
+            b"_NET_WM_WINDOW_TYPE_NOTIFICATION",
+            send,
+        )?;
+        let bar = Bar {
+            window: BarWindow::X11 {
+                window,
+                events: Vec::new(),
+                cursor: Pos2::ZERO,
+            },
+            ctx,
+            repaint_at: None,
+        };
+        Ok(Self::new(gpu, Edges::X11(edges), bar))
+    }
+
+    fn new(gpu: &Gpu, edges: Edges, bar: Bar) -> Self {
         let mut ui = Self {
             edges,
             bar,
@@ -83,15 +161,12 @@ impl RecordingUi {
         };
         ui.redraw_edges(gpu);
         ui.paint_bar();
-        for e in &ui.edges {
-            e.window.set_visible(true);
-        }
-        ui.bar.window.set_visible(true);
-        Ok(ui)
+        ui
     }
 
     pub fn owns(&self, id: WindowId) -> bool {
-        self.bar.window.id() == id || self.edges.iter().any(|e| e.window.id() == id)
+        let bar = matches!(&self.bar.window, BarWindow::Winit { window, .. } if window.id() == id);
+        bar || matches!(&self.edges, Edges::Winit(edges) if edges.iter().any(|e| e.window.id() == id))
     }
 
     pub fn paused(&self) -> bool {
@@ -112,7 +187,7 @@ impl RecordingUi {
             self.paused_at = Some(now);
         }
         self.redraw_edges(gpu);
-        self.bar.window.request_redraw();
+        self.redraw_bar();
     }
 
     /// The border's (and the bar's dot's) colour.
@@ -136,7 +211,7 @@ impl RecordingUi {
             _ => return,
         }
         self.redraw_edges(gpu);
-        self.bar.window.request_redraw();
+        self.redraw_bar();
     }
 
     /// Recorded time so far, not counting pauses.
@@ -151,7 +226,9 @@ impl RecordingUi {
 
     pub fn on_event(&mut self, gpu: &Gpu, id: WindowId, event: &WindowEvent) -> Option<Action> {
         let color = self.color();
-        if let Some(edge) = self.edges.iter_mut().find(|e| e.window.id() == id) {
+        if let Edges::Winit(edges) = &mut self.edges
+            && let Some(edge) = edges.iter_mut().find(|e| e.window.id() == id)
+        {
             if matches!(
                 event,
                 WindowEvent::RedrawRequested | WindowEvent::Resized(_)
@@ -160,29 +237,66 @@ impl RecordingUi {
             }
             return None;
         }
-        match event {
-            WindowEvent::RedrawRequested => return self.paint_bar(),
-            WindowEvent::Resized(size) => {
-                if let (Some(w), Some(h)) = (
-                    std::num::NonZeroU32::new(size.width),
-                    std::num::NonZeroU32::new(size.height),
-                ) {
-                    self.bar
-                        .painter
-                        .on_window_resized(egui::ViewportId::ROOT, w, h);
-                }
-            }
-            _ => {}
+        if let WindowEvent::RedrawRequested = event {
+            return self.paint_bar();
         }
-        if self
-            .bar
-            .state
-            .on_window_event(&self.bar.window, event)
-            .repaint
+        let BarWindow::Winit {
+            window,
+            state,
+            painter,
+        } = &mut self.bar.window
+        else {
+            return None;
+        };
+        if let WindowEvent::Resized(size) = event
+            && let (Some(w), Some(h)) = (
+                std::num::NonZeroU32::new(size.width),
+                std::num::NonZeroU32::new(size.height),
+            )
         {
-            self.bar.window.request_redraw();
+            painter.on_window_resized(egui::ViewportId::ROOT, w, h);
+        }
+        if state.on_window_event(window, event).repaint {
+            window.request_redraw();
         }
         None
+    }
+
+    /// Input for an X11 bar; ignored if it's for an earlier one.
+    #[cfg(target_os = "linux")]
+    pub fn on_x11_event(&mut self, event: X11Event) -> Option<Action> {
+        let BarWindow::X11 {
+            window,
+            events,
+            cursor,
+        } = &mut self.bar.window
+        else {
+            return None;
+        };
+        if window.id() != event.window {
+            return None;
+        }
+        let ppp = window.scale_factor as f32;
+        match event.pointer {
+            Some(Pointer::Moved(p)) => {
+                *cursor = pos2(p.x as f32 / ppp, p.y as f32 / ppp);
+                events.push(egui::Event::PointerMoved(*cursor));
+            }
+            Some(Pointer::Pressed(b) | Pointer::Released(b)) => {
+                let pressed = matches!(event.pointer, Some(Pointer::Pressed(_)));
+                if let Some(button) = egui_button(b) {
+                    events.push(egui::Event::PointerButton {
+                        pos: *cursor,
+                        button,
+                        pressed,
+                        modifiers: Default::default(),
+                    });
+                }
+            }
+            Some(Pointer::Left) => events.push(egui::Event::PointerGone),
+            Some(Pointer::Entered) | None => {}
+        }
+        self.paint_bar()
     }
 
     /// When the timer next needs repainting.
@@ -193,14 +307,38 @@ impl RecordingUi {
     pub fn tick(&mut self, now: Instant) {
         if self.bar.repaint_at.is_some_and(|t| t <= now) {
             self.bar.repaint_at = None;
-            self.bar.window.request_redraw();
+            self.redraw_bar();
         }
     }
 
     fn redraw_edges(&mut self, gpu: &Gpu) {
         let color = self.color();
-        for e in &mut self.edges {
-            e.draw(gpu, color);
+        match &mut self.edges {
+            Edges::Winit(edges) => {
+                for e in edges {
+                    e.draw(gpu, color);
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Edges::X11(edges) => {
+                for e in edges.iter() {
+                    if let Err(e) = e.set_colors(rgb(color), rgb(GAP_COLOR), DASH) {
+                        eprintln!("recording border: {e}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Repaints the bar: soon for a winit window, now for an X11 one, which
+    /// gets no redraw events.
+    fn redraw_bar(&mut self) {
+        match &self.bar.window {
+            BarWindow::Winit { window, .. } => window.request_redraw(),
+            #[cfg(target_os = "linux")]
+            BarWindow::X11 { .. } => {
+                self.paint_bar();
+            }
         }
     }
 
@@ -209,25 +347,18 @@ impl RecordingUi {
         let paused = self.paused_at.is_some();
         let color = self.color();
         let bar = &mut self.bar;
-        let input = bar.state.take_egui_input(&bar.window);
-        let ctx = bar.state.egui_ctx().clone();
+        let input = match &mut bar.window {
+            BarWindow::Winit { window, state, .. } => state.take_egui_input(window),
+            #[cfg(target_os = "linux")]
+            BarWindow::X11 { window, events, .. } => egui::RawInput {
+                events: std::mem::take(events),
+                ..window.egui_input()
+            },
+        };
+        let ctx = bar.ctx.clone();
         crate::theme::follow(&ctx);
         let mut action = None;
         let mut output = ctx.run_ui(input, |ui| action = bar_contents(ui, elapsed, paused, color));
-        bar.state
-            .handle_platform_output(&bar.window, std::mem::take(&mut output.platform_output));
-        let primitives =
-            ctx.tessellate(std::mem::take(&mut output.shapes), output.pixels_per_point);
-        bar.painter.paint_and_update_textures(
-            egui::ViewportId::ROOT,
-            output.pixels_per_point,
-            crate::theme::backdrop(&ctx),
-            &primitives,
-            &mut output.textures_delta,
-            Vec::new(),
-            &bar.window,
-        );
-        output.textures_delta.clear();
         // Keep the milliseconds running while recording; hover effects
         // repaint straight away.
         let tick = if paused { Duration::MAX } else { TIMER_TICK };
@@ -236,7 +367,75 @@ impl RecordingUi {
             .get(&egui::ViewportId::ROOT)
             .map_or(tick, |v| v.repaint_delay.min(tick));
         bar.repaint_at = (delay < tick || !paused).then(|| Instant::now() + delay);
+        match &mut bar.window {
+            BarWindow::Winit {
+                window,
+                state,
+                painter,
+            } => {
+                state.handle_platform_output(window, std::mem::take(&mut output.platform_output));
+                let primitives =
+                    ctx.tessellate(std::mem::take(&mut output.shapes), output.pixels_per_point);
+                painter.paint_and_update_textures(
+                    egui::ViewportId::ROOT,
+                    output.pixels_per_point,
+                    crate::theme::backdrop(&ctx),
+                    &primitives,
+                    &mut output.textures_delta,
+                    Vec::new(),
+                    window,
+                );
+                output.textures_delta.clear();
+            }
+            #[cfg(target_os = "linux")]
+            BarWindow::X11 { window, .. } => window.paint(&ctx, output),
+        }
         action
+    }
+}
+
+/// The border's sides around `rect`, just outside it: each one's place, and
+/// whether it's horizontal.
+fn sides(rect: capture::Rect) -> [(capture::Rect, bool); 4] {
+    let b = BORDER as i32;
+    let (w, h) = (rect.w + 2 * BORDER, rect.h);
+    let side = |x, y, w, h| capture::Rect { x, y, w, h };
+    [
+        (side(rect.x - b, rect.y - b, w, BORDER), true),
+        (side(rect.x - b, rect.bottom(), w, BORDER), true),
+        (side(rect.x - b, rect.y, BORDER, h), false),
+        (side(rect.right(), rect.y, BORDER, h), false),
+    ]
+}
+
+/// `rect` (global physical pixels, as xcap gives them) in XWayland's pixels.
+/// xcap takes monitors from XWayland and divides their places and sizes by
+/// one scale for all of them, so this multiplies them by it again.
+#[cfg(target_os = "linux")]
+fn to_x11(rect: capture::Rect) -> capture::Rect {
+    let scale = xcap::Monitor::all()
+        .ok()
+        .and_then(|m| m.first()?.scale_factor().ok())
+        .filter(|s| *s > 0.0)
+        .unwrap_or(1.0) as f64;
+    capture::Rect::from_points(
+        (rect.x as f64 * scale, rect.y as f64 * scale),
+        (rect.right() as f64 * scale, rect.bottom() as f64 * scale),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn rgb([r, g, b]: [u8; 3]) -> u32 {
+    u32::from_be_bytes([0, r, g, b])
+}
+
+#[cfg(target_os = "linux")]
+fn egui_button(button: MouseButton) -> Option<egui::PointerButton> {
+    match button {
+        MouseButton::Left => Some(egui::PointerButton::Primary),
+        MouseButton::Right => Some(egui::PointerButton::Secondary),
+        MouseButton::Middle => Some(egui::PointerButton::Middle),
+        _ => None,
     }
 }
 
@@ -269,13 +468,12 @@ impl Edge {
     fn open(
         event_loop: &ActiveEventLoop,
         gpu: &Gpu,
-        pos: (i32, i32),
-        size: (u32, u32),
+        rect: capture::Rect,
         horizontal: bool,
     ) -> Result<Self, String> {
         let attrs = base_attributes()
-            .with_position(PhysicalPosition::new(pos.0, pos.1))
-            .with_inner_size(PhysicalSize::new(size.0.max(1), size.1.max(1)));
+            .with_position(PhysicalPosition::new(rect.x, rect.y))
+            .with_inner_size(PhysicalSize::new(rect.w.max(1), rect.h.max(1)));
         let window = Arc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
         let _ = window.set_cursor_hittest(false);
         exclude_from_capture(&window);
@@ -402,10 +600,32 @@ impl Edge {
 
 /// The timer and buttons.
 struct Bar {
-    window: Arc<Window>,
-    state: egui_winit::State,
-    painter: Painter,
+    window: BarWindow,
+    ctx: egui::Context,
     repaint_at: Option<Instant>,
+}
+
+#[allow(clippy::large_enum_variant)]
+enum BarWindow {
+    Winit {
+        window: Arc<Window>,
+        state: egui_winit::State,
+        painter: Painter,
+    },
+    /// Under Wayland, which won't let a window choose where it goes.
+    #[cfg(target_os = "linux")]
+    X11 {
+        window: x11::X11Window,
+        /// Input since the last frame.
+        events: Vec<egui::Event>,
+        cursor: Pos2,
+    },
+}
+
+fn bar_context() -> egui::Context {
+    let ctx = egui::Context::default();
+    crate::theme::apply(&ctx);
+    ctx
 }
 
 impl Bar {
@@ -419,8 +639,7 @@ impl Bar {
         exclude_from_capture(&window);
         window.set_outer_position(bar_position(event_loop, &window, rect));
 
-        let ctx = egui::Context::default();
-        crate::theme::apply(&ctx);
+        let ctx = bar_context();
         let config = egui_wgpu::WgpuConfiguration {
             wgpu_setup: gpu.egui_setup(),
             ..Default::default()
@@ -430,7 +649,7 @@ impl Bar {
         pollster::block_on(painter.set_window(egui::ViewportId::ROOT, Some(window.clone())))
             .map_err(|e| format!("couldn't set up the recording bar: {e}"))?;
         let state = egui_winit::State::new(
-            ctx,
+            ctx.clone(),
             egui::ViewportId::ROOT,
             &window,
             Some(window.scale_factor() as f32),
@@ -438,9 +657,12 @@ impl Bar {
             painter.max_texture_side(),
         );
         Ok(Self {
-            window,
-            state,
-            painter,
+            window: BarWindow::Winit {
+                window,
+                state,
+                painter,
+            },
+            ctx,
             repaint_at: None,
         })
     }
@@ -448,18 +670,14 @@ impl Bar {
 
 const BAR_WIDTH: f32 = 470.0;
 
-/// Centred under the region, or above it (or inside its bottom edge) when
-/// there's no room below on that monitor.
 fn bar_position(
     event_loop: &ActiveEventLoop,
     window: &Window,
     rect: capture::Rect,
 ) -> PhysicalPosition<i32> {
-    let scale = window.scale_factor();
     let size = window.outer_size();
-    let (w, h) = (size.width as i32, size.height as i32);
-    let gap = (BAR_GAP * scale) as i32 + BORDER as i32;
-    let monitor = event_loop
+    let gap = (BAR_GAP * window.scale_factor()) as i32 + BORDER as i32;
+    let monitors: Vec<capture::Rect> = event_loop
         .available_monitors()
         .map(|m| {
             let (p, s) = (m.position(), m.size());
@@ -470,17 +688,31 @@ fn bar_position(
                 h: s.height,
             }
         })
-        .find(|m| {
-            m.contains((
-                rect.x as f64 + rect.w as f64 / 2.0,
-                rect.y as f64 + rect.h as f64 / 2.0,
-            ))
-        });
+        .collect();
+    let (x, y) = place_bar(rect, (size.width as i32, size.height as i32), gap, &monitors);
+    PhysicalPosition::new(x, y)
+}
+
+/// Where a bar of `(w, h)` goes: centred under the region, or above it (or
+/// inside its bottom edge) when there's no room below on that monitor, `gap`
+/// from it.
+fn place_bar(
+    rect: capture::Rect,
+    (w, h): (i32, i32),
+    gap: i32,
+    monitors: &[capture::Rect],
+) -> (i32, i32) {
+    let monitor = monitors.iter().find(|m| {
+        m.contains((
+            rect.x as f64 + rect.w as f64 / 2.0,
+            rect.y as f64 + rect.h as f64 / 2.0,
+        ))
+    });
     let x = rect.x + rect.w as i32 / 2 - w / 2;
     let below = rect.bottom() + gap;
     let above = rect.y - gap - h;
     let Some(m) = monitor else {
-        return PhysicalPosition::new(x, below);
+        return (x, below);
     };
     let y = if below + h <= m.bottom() {
         below
@@ -489,7 +721,7 @@ fn bar_position(
     } else {
         rect.bottom() - gap - h
     };
-    PhysicalPosition::new(x.clamp(m.x, (m.right() - w).max(m.x)), y)
+    (x.clamp(m.x, (m.right() - w).max(m.x)), y)
 }
 
 /// Keeps a window out of screenshots and recordings (Windows 10 2004+).
@@ -659,6 +891,22 @@ fn draw_icon(painter: &egui::Painter, icon: Icon, c: Pos2, color: Color32) {
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
+
+    use crate::capture::Rect;
+
+    #[test]
+    fn bar_goes_under_the_region_or_above_it() {
+        let monitors = [Rect { x: 0, y: 0, w: 2560, h: 1440 }, Rect { x: 2560, y: 0, w: 1920, h: 1080 }];
+        let r = |x, y, w, h| Rect { x, y, w, h };
+        // Below, centred.
+        assert_eq!(super::place_bar(r(100, 100, 600, 400), (470, 40), 8, &monitors), (165, 508));
+        // No room below: above.
+        assert_eq!(super::place_bar(r(100, 1000, 600, 420), (470, 40), 8, &monitors), (165, 952));
+        // The whole monitor: inside its bottom edge.
+        assert_eq!(super::place_bar(r(0, 0, 2560, 1440), (470, 40), 8, &monitors), (1045, 1392));
+        // Kept on the region's monitor.
+        assert_eq!(super::place_bar(r(2600, 100, 100, 100), (470, 40), 8, &monitors), (2560, 208));
+    }
 
     /// Renders the bar to `target/recording-bar-preview.png`:
     /// `cargo test recording_bar_preview -- --ignored`.

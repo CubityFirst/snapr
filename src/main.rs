@@ -62,6 +62,8 @@ mod transfer;
 mod tray;
 mod update;
 mod upload;
+#[cfg(target_os = "linux")]
+mod x11;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -108,7 +110,10 @@ enum UserEvent {
     ToastReady(PathBuf, Option<egui::ColorImage>),
     /// Mouse input for the corner preview, when it's an X11 window.
     #[cfg(target_os = "linux")]
-    ToastX11(toast::X11Event),
+    ToastX11(x11::X11Event),
+    /// Mouse input for the recording bar, when it's an X11 window.
+    #[cfg(target_os = "linux")]
+    RecordingX11(x11::X11Event),
     /// A region was read for QR codes: their text, and a preview of it.
     QrScanned(Vec<String>, egui::ColorImage),
     /// A tool's global hotkey was pressed.
@@ -388,9 +393,24 @@ impl App {
         ) {
             Ok(recording) => {
                 let ui = match &self.gpu {
-                    Ok(gpu) => record_ui::RecordingUi::open(event_loop, gpu, recording.rect)
+                    Ok(gpu) => {
+                        #[cfg(target_os = "linux")]
+                        let send_x11 = {
+                            let proxy = Mutex::new(self.proxy.clone());
+                            move |e| {
+                                let _ = proxy.lock().unwrap().send_event(UserEvent::RecordingX11(e));
+                            }
+                        };
+                        record_ui::RecordingUi::open(
+                            event_loop,
+                            gpu,
+                            recording.rect,
+                            #[cfg(target_os = "linux")]
+                            send_x11,
+                        )
                         .inspect_err(|e| eprintln!("recording border: {e}"))
-                        .ok(),
+                        .ok()
+                    }
                     Err(_) => None,
                 };
                 self.recording = Some(ActiveRecording {
@@ -1466,6 +1486,17 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::ToastX11(e) => {
                 let action = self.toast.as_mut().and_then(|t| t.on_x11_event(e));
                 self.toast_action(action);
+            }
+            #[cfg(target_os = "linux")]
+            UserEvent::RecordingX11(e) => {
+                let action = self
+                    .recording
+                    .as_mut()
+                    .and_then(|r| r.ui.as_mut())
+                    .and_then(|ui| ui.on_x11_event(e));
+                if let Some(action) = action {
+                    self.recording_action(event_loop, action);
+                }
             }
             UserEvent::ToolHotkey(action) | UserEvent::Tray(TrayAction::Tool(action)) => {
                 self.run_tool(event_loop, action)
