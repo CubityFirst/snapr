@@ -258,6 +258,27 @@ pub struct MainWindow {
     title_bar: Option<egui::ThemePreference>,
 }
 
+const SIZE: LogicalSize<f64> = LogicalSize::new(980.0, 660.0);
+const MIN_SIZE: LogicalSize<f64> = LogicalSize::new(800.0, 440.0);
+
+/// The window's size when it opens: `SIZE`, but no more than about 70% of
+/// the screen's width and 75% of its height (leaving room for the taskbar),
+/// so it doesn't fill a small or highly scaled screen; never under
+/// `MIN_SIZE`.
+fn opening_size(event_loop: &ActiveEventLoop) -> LogicalSize<f64> {
+    // Wayland doesn't say which screen is the primary one.
+    let Some(monitor) = event_loop.primary_monitor() else { return SIZE };
+    let screen: LogicalSize<f64> = monitor.size().to_logical(monitor.scale_factor());
+    fit(screen)
+}
+
+fn fit(screen: LogicalSize<f64>) -> LogicalSize<f64> {
+    LogicalSize::new(
+        SIZE.width.min(screen.width * 0.7).max(MIN_SIZE.width),
+        SIZE.height.min(screen.height * 0.75).max(MIN_SIZE.height),
+    )
+}
+
 impl MainWindow {
     pub fn open(
         event_loop: &ActiveEventLoop,
@@ -272,8 +293,8 @@ impl MainWindow {
         let icon = Icon::from_rgba(crate::tray::icon_rgba(64), 64, 64).ok();
         let attrs = Window::default_attributes()
             .with_title("snapr")
-            .with_inner_size(LogicalSize::new(980.0, 660.0))
-            .with_min_inner_size(LogicalSize::new(800.0, 440.0))
+            .with_inner_size(opening_size(event_loop))
+            .with_min_inner_size(MIN_SIZE)
             .with_window_icon(icon);
         // Names it as `snapr.desktop`'s, so GNOME knows it's snapr's: it
         // only shows the dialog for a permission to the focused app's
@@ -919,6 +940,17 @@ fn draw_icon(p: &egui::Painter, r: Rect, icon: NavIcon, color: Color32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opening_size_fits_the_screen() {
+        let size = |w, h| {
+            let s = fit(LogicalSize::new(w, h));
+            (s.width.round(), s.height.round())
+        };
+        assert_eq!(size(1920.0, 1080.0), (980.0, 660.0)); // 1080p at 100%
+        assert_eq!(size(1280.0, 800.0), (896.0, 600.0)); // 2560x1600 at 200%
+        assert_eq!(size(1024.0, 576.0), (800.0, 440.0)); // never under the minimum
+    }
 
     #[test]
     fn formats_sizes_and_times() {
