@@ -546,7 +546,7 @@ mod platform {
         fn hotkey_fires_only_with_modifiers() {
             use std::time::Duration;
             let (tx, rx) = mpsc::channel();
-            let reg = Registrar::new(Box::new(move || {
+            let reg = Registrar::new("test", "Test", Box::new(move || {
                 let _ = tx.send(());
             }))
             .unwrap();
