@@ -97,6 +97,8 @@ pub struct Settings {
     /// before Linux had it). On Linux the autostart entry is what counts:
     /// this is read back from it on starting.
     pub start_with_windows: bool,
+    /// Keep a shortcut to snapr in the Start menu (Windows).
+    pub start_menu: bool,
     /// First-time setup was finished or skipped. Config files from before
     /// it existed don't have it, which counts as done.
     pub setup_done: bool,
@@ -461,6 +463,7 @@ impl Default for Settings {
             theme: Theme::default(),
             check_for_updates: true,
             start_with_windows: false,
+            start_menu: true,
             setup_done: true,
         }
     }

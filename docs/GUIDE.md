@@ -204,6 +204,7 @@ key are turned off until one is entered.
 | Scrolling the magnifier | *Resizes it*: bigger, or smaller until it's hidden; or *Zooms it*: fewer, bigger pixels, or more, smaller ones |
 | Check for updates  | on (see [Updates](#updates)) |
 | Start when you sign in | Windows and Linux; off. On Windows it can also be turned off in Task Manager's *Startup apps*; on Linux it's `~/.config/autostart/snapr.desktop`, which the desktop's own startup settings (e.g. GNOME Settings' *Apps* › *Autostart*) also turn on and off, and snapr's switch follows them |
+| Show snapr in the Start menu | Windows; on. A shortcut to snapr's file in your Start menu's programs, `%APPDATA%\Microsoft\Windows\Start Menu\Programs\snapr.lnk`, pointed at the file again each time snapr starts in case it was moved. Turning it off removes the shortcut |
 
 ## Naming templates
 

@@ -51,6 +51,8 @@ mod settings_search;
 mod settings_ui;
 mod setup;
 mod sound;
+#[cfg(windows)]
+mod start_menu;
 mod stats;
 mod stats_ui;
 mod theme;
@@ -808,6 +810,12 @@ impl App {
         #[cfg(any(windows, target_os = "linux"))]
         if new.start_with_windows != self.settings.start_with_windows
             && let Err(e) = autostart::set(new.start_with_windows)
+        {
+            return self.report(event_loop, e, true);
+        }
+        #[cfg(windows)]
+        if new.start_menu != self.settings.start_menu
+            && let Err(e) = start_menu::set(new.start_menu)
         {
             return self.report(event_loop, e, true);
         }
@@ -1846,6 +1854,15 @@ fn main() {
     if settings.start_with_windows
         && !once
         && let Err(e) = autostart::refresh()
+    {
+        eprintln!("{e}");
+    }
+    // Development builds would point it at themselves.
+    #[cfg(windows)]
+    if settings.start_menu
+        && !once
+        && !cfg!(debug_assertions)
+        && let Err(e) = start_menu::refresh()
     {
         eprintln!("{e}");
     }

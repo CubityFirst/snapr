@@ -45,6 +45,9 @@ static INDEX: LazyLock<Vec<Entry>> = LazyLock::new(|| {
     if cfg!(any(windows, target_os = "linux")) {
         add(Settings, "start-with-windows", crate::settings_ui::START_WITH_OS, "startup boot login logon autostart launch windows linux");
     }
+    if cfg!(windows) {
+        add(Settings, "start-menu", "Show snapr in the Start menu", "shortcut start menu programs pin search launch open windows");
+    }
     add(Settings, "theme", "Theme", "light dark mode appearance colours colors system night");
     add(Settings, "play-sounds", "Play sounds", "shutter sound effects audio mute quiet");
     add(Settings, "sound-volume", "Sound volume", "loudness audio shutter");

@@ -276,6 +276,12 @@ impl Form {
                         Some("So the hotkeys work without starting it yourself"), false, |ui| {
                         theme::switch(ui, &mut self.draft.start_with_windows, "");
                     });
+                    if cfg!(windows) {
+                        row(ui, "start-menu", "Show snapr in the Start menu",
+                            Some("To open it by searching for it, or pin it"), false, |ui| {
+                            theme::switch(ui, &mut self.draft.start_menu, "");
+                        });
+                    }
                 });
             }
 
