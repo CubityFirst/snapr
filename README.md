@@ -10,7 +10,7 @@ drag a region, and the result is saved as a PNG and copied to the clipboard.
 
 | Windows | macOS (Apple silicon) | Linux |
 |---|---|---|
-| [snapr-windows-x86_64.exe](https://github.com/CubityFirst/snapr/releases/latest/download/snapr-windows-x86_64.exe) | [snapr-macos-aarch64.dmg](https://github.com/CubityFirst/snapr/releases/latest/download/snapr-macos-aarch64.dmg) | [snapr-linux-x86_64.deb](https://github.com/CubityFirst/snapr/releases/latest/download/snapr-linux-x86_64.deb) (Debian, Ubuntu) or [snapr-linux-x86_64](https://github.com/CubityFirst/snapr/releases/latest/download/snapr-linux-x86_64) |
+| [snapr-windows-x86_64.exe](https://github.com/CubityFirst/snapr/releases/latest/download/snapr-windows-x86_64.exe) or [snapr-windows-aarch64.exe](https://github.com/CubityFirst/snapr/releases/latest/download/snapr-windows-aarch64.exe) (ARM) | [snapr-macos-aarch64.dmg](https://github.com/CubityFirst/snapr/releases/latest/download/snapr-macos-aarch64.dmg) | [snapr-linux-x86_64.deb](https://github.com/CubityFirst/snapr/releases/latest/download/snapr-linux-x86_64.deb) (Debian, Ubuntu) or [snapr-linux-x86_64](https://github.com/CubityFirst/snapr/releases/latest/download/snapr-linux-x86_64) |
 
 snapr keeps itself up to date from GitHub releases. See [platform
 notes](docs/GUIDE.md#platform-notes) for macOS permissions and Linux tray

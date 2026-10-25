@@ -209,7 +209,8 @@ fn latest_release() -> Result<Release, String> {
 }
 
 /// This platform's build among a release's files, e.g.
-/// `snapr-windows-x86_64.exe`, `snapr-macos-aarch64`, `snapr-linux-x86_64`,
+/// `snapr-windows-x86_64.exe`, `snapr-windows-aarch64.exe`,
+/// `snapr-macos-aarch64`, `snapr-linux-x86_64`,
 /// or for an `app`, the zipped app: `snapr-macos-aarch64.app.zip`.
 fn asset_name(app: bool) -> String {
     use std::env::consts::{ARCH, EXE_SUFFIX, OS};

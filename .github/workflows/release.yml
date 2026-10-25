@@ -37,6 +37,12 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             asset: snapr-windows-x86_64.exe
+          # Cross-compiled on x64, whose image has the MSVC ARM64 tools and
+          # the clang that ring needs for ARM64 (.cargo/config.toml links
+          # the C runtime in).
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            asset: snapr-windows-aarch64.exe
           - os: macos-latest
             target: aarch64-apple-darwin
             asset: snapr-macos-aarch64

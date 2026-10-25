@@ -1,0 +1,5 @@
+# Windows on ARM machines often lack the Visual C++ runtime (a tester's
+# didn't, and snapr wouldn't start: "VCRUNTIME140.dll was not found"), so
+# the ARM build carries it inside the .exe.
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
