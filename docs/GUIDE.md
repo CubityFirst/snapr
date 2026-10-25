@@ -319,13 +319,16 @@ snapr --settings   # open the settings window on start
   AppIndicator extension, which Ubuntu has). Without a tray the settings
   window is shown instead. On Wayland, global hotkeys go through the
   desktop's global shortcuts portal (GNOME 48 or later, KDE Plasma), so they
-  also work over remote desktop. The first time, the desktop asks you to
-  confirm snapr's hotkeys; after that their keys are changed in the
-  desktop's own settings (GNOME: Settings → Apps → snapr → Global
-  Shortcuts), not snapr's. Hyprland's portal leaves the keys to its config,
-  so there snapr binds them itself (`global, snapr:capture` and so on) to
-  the keys set in snapr, again after each config reload, and unbinds them
-  when it quits. Keys Hyprland already binds to something else are left
+  also work over remote desktop. The desktop keeps their keys: it asks for
+  them the first time, and after that they're changed in its settings
+  (GNOME: Settings → Apps → snapr → Global Shortcuts; *Open system
+  settings…* on snapr's Hotkeys tab goes there). The portal knows snapr by
+  its `snapr.desktop`, which the .deb installs; for the bare binary, copy
+  [`assets/linux/snapr.desktop`](../assets/linux/snapr.desktop) to
+  `~/.local/share/applications/`. Hyprland's portal leaves the keys to its
+  config, so there snapr binds them itself (`global, snapr:capture` and so
+  on) to the keys set in snapr, again after each config reload, and unbinds
+  them when it quits. Keys Hyprland already binds to something else are left
   alone, and snapr says so. Without the portal they need the user in the
   `input` group, or bind `snapr --once` to a compositor shortcut. GNOME also
   asks before snapr can take screenshots, but only while snapr's window is
