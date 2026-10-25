@@ -1,5 +1,8 @@
 //! The annotation toolbar and on-screen selection decorations, drawn with egui
-//! over the overlay. Icons are painted as vector shapes.
+//! over the overlay. Icons are painted as vector shapes. The toolbar and its
+//! popups take the theme picked in Settings; what's drawn on the screen
+//! itself (the size label, hints, the loupe) is dark whatever the theme, to
+//! stand out on anything.
 
 use egui::{
     Align2, Color32, CornerRadius, CursorIcon, FontId, Pos2, Rect, Sense, Shape, Stroke,
@@ -10,12 +13,8 @@ use crate::annotate::{
     ArrowOptions, COLORS, HighlighterInk, HighlighterShape, PIXEL_BLOCKS, PixelateOptions, STEP_SIZES, Size, StepOptions, Style, TEXT_SIZES, TextOptions, Tool,
 };
 use crate::session::MAGNIFIER_PIXELS;
+use crate::theme::{self, ACCENT};
 
-const ACCENT: Color32 = Color32::from_rgb(0x3d, 0x9b, 0xff);
-const PANEL: Color32 = Color32::from_rgba_premultiplied(28, 29, 32, 245);
-const PANEL_STROKE: Color32 = Color32::from_rgb(58, 60, 66);
-const ICON: Color32 = Color32::from_rgb(222, 223, 228);
-const ICON_DISABLED: Color32 = Color32::from_rgb(96, 98, 104);
 const BUTTON: f32 = 32.0;
 /// Colours per row in the colour popup.
 const PALETTE_COLUMNS: usize = 4;
@@ -183,21 +182,22 @@ fn ui(ui: &mut egui::Ui, view: &View) -> (Vec<Action>, Option<Rect>) {
     if !view.show_toolbar {
         return (actions, None);
     }
+    let p = theme::palette(ui);
     let area = egui::Area::new(egui::Id::new("toolbar"))
         .anchor(Align2::CENTER_TOP, vec2(0.0, 14.0 + view.top_inset))
         .order(egui::Order::Foreground)
         .fade_in(false)
         .show(&ctx, |ui| {
             egui::Frame::new()
-                .fill(PANEL)
-                .stroke(Stroke::new(1.0, PANEL_STROKE))
+                .fill(p.floating)
+                .stroke(Stroke::new(1.0, p.stroke))
                 .corner_radius(CornerRadius::same(10))
                 .inner_margin(6)
                 .shadow(egui::Shadow {
                     offset: [0, 4],
                     blur: 16,
                     spread: 0,
-                    color: Color32::from_black_alpha(110),
+                    color: p.shadow,
                 })
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing = vec2(2.0, 0.0);
@@ -398,14 +398,15 @@ fn show_popup(
         Popup::Options => buttons.options,
     };
     let mut picked = false;
+    let p = theme::palette_of(ctx.theme() == egui::Theme::Dark);
     let area = egui::Area::new(egui::Id::new("toolbar-popup-area"))
         .fixed_pos(button.left_bottom() + vec2(-6.0, 10.0))
         .order(egui::Order::Foreground)
         .fade_in(false)
         .show(ctx, |ui| {
             egui::Frame::new()
-                .fill(PANEL)
-                .stroke(Stroke::new(1.0, PANEL_STROKE))
+                .fill(p.floating)
+                .stroke(Stroke::new(1.0, p.stroke))
                 .corner_radius(CornerRadius::same(10))
                 .inner_margin(6)
                 .show(ui, |ui| {
@@ -540,26 +541,19 @@ fn custom_color(ui: &mut egui::Ui, current: [u8; 3]) -> Option<[u8; 3]> {
 /// One colour to pick: a dot, ringed when selected or hovered.
 fn color_dot(ui: &mut egui::Ui, color: [u8; 3], selected: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::click());
+    let palette = theme::palette(ui);
     let p = ui.painter();
     if selected {
-        p.circle_stroke(rect.center(), 10.5, Stroke::new(2.0, Color32::WHITE));
+        p.circle_stroke(rect.center(), 10.5, Stroke::new(2.0, palette.text_strong));
     } else if resp.hovered() {
-        p.circle_stroke(
-            rect.center(),
-            10.5,
-            Stroke::new(1.0, Color32::from_white_alpha(90)),
-        );
+        p.circle_stroke(rect.center(), 10.5, Stroke::new(1.0, palette.wash(90)));
     }
     p.circle_filled(
         rect.center(),
         8.0,
         Color32::from_rgb(color[0], color[1], color[2]),
     );
-    p.circle_stroke(
-        rect.center(),
-        8.0,
-        Stroke::new(1.0, Color32::from_white_alpha(40)),
-    );
+    p.circle_stroke(rect.center(), 8.0, Stroke::new(1.0, palette.wash(40)));
     resp.on_hover_cursor(CursorIcon::PointingHand)
 }
 
@@ -576,22 +570,18 @@ fn size_look(size: Size) -> (f32, &'static str) {
 fn size_option(ui: &mut egui::Ui, size: Size, selected: bool) -> egui::Response {
     let (radius, label) = size_look(size);
     let (rect, resp) = ui.allocate_exact_size(vec2(96.0, 28.0), Sense::click());
+    let palette = theme::palette(ui);
     let p = ui.painter();
     if selected || resp.hovered() {
-        let bg = if selected {
-            Color32::from_white_alpha(28)
-        } else {
-            Color32::from_white_alpha(14)
-        };
-        p.rect_filled(rect, 6.0, bg);
+        p.rect_filled(rect, 6.0, palette.wash(if selected { 28 } else { 14 }));
     }
-    p.circle_filled(pos2(rect.left() + 16.0, rect.center().y), radius, ICON);
+    p.circle_filled(pos2(rect.left() + 16.0, rect.center().y), radius, palette.icon);
     p.text(
         pos2(rect.left() + 32.0, rect.center().y),
         Align2::LEFT_CENTER,
         label,
         FontId::proportional(13.0),
-        ICON,
+        palette.icon,
     );
     resp.on_hover_cursor(CursorIcon::PointingHand)
 }
@@ -617,14 +607,11 @@ fn popup_button(
         set_popup(ui.ctx(), None);
         open = false;
     }
-    let color = if enabled { ICON } else { ICON_DISABLED };
+    let palette = theme::palette(ui);
+    let color = if enabled { palette.icon } else { palette.icon_disabled };
     let p = ui.painter();
     if open || (enabled && resp.hovered()) {
-        let bg = if open {
-            Color32::from_white_alpha(28)
-        } else {
-            Color32::from_white_alpha(14)
-        };
+        let bg = palette.wash(if open { 28 } else { 14 });
         p.rect_filled(rect.shrink2(vec2(1.0, 3.0)), 6.0, bg);
     }
     paint(p, pos2(rect.left() + 14.0, rect.center().y), color);
@@ -656,10 +643,11 @@ fn toolbar_contents(ui: &mut egui::Ui, view: &View, actions: &mut Vec<Action>) -
         }
     }
     divider(ui);
+    let palette = theme::palette(ui);
     let [r, g, b] = view.style.color;
     let color = popup_button(ui, Popup::Color, true, crate::locale::spelled!("Colour"), |p, at, _| {
         p.circle_filled(at, 8.0, Color32::from_rgb(r, g, b));
-        p.circle_stroke(at, 8.0, Stroke::new(1.0, Color32::from_white_alpha(60)));
+        p.circle_stroke(at, 8.0, Stroke::new(1.0, palette.wash(60)));
     });
     let (radius, label) = size_look(view.style.size);
     let sized = uses_size(view.tool);
@@ -689,7 +677,7 @@ fn toolbar_contents(ui: &mut egui::Ui, view: &View, actions: &mut Vec<Action>) -
                 [pos2(at.x - 7.0, y), pos2(at.x + 7.0, y)],
                 Stroke::new(1.5, color),
             );
-            p.circle_filled(pos2(at.x + knob, y), 2.6, PANEL);
+            p.circle_filled(pos2(at.x + knob, y), 2.6, palette.floating);
             p.circle_stroke(pos2(at.x + knob, y), 2.6, Stroke::new(1.5, color));
         }
     });
@@ -778,7 +766,7 @@ fn tool_options(ui: &mut egui::Ui, view: &View, actions: &mut Vec<Action>) {
         Align2::LEFT_CENTER,
         options_title(view.tool),
         FontId::proportional(13.0),
-        ICON,
+        theme::palette(ui).icon,
     );
     let reset = reset_options(view.tool, &view.style);
     let button = Rect::from_min_size(header.right_top() - vec2(24.0, 0.0), vec2(24.0, 24.0));
@@ -883,7 +871,7 @@ fn tool_options(ui: &mut egui::Ui, view: &View, actions: &mut Vec<Action>) {
                         }
                     }
                     let Some(fonts) = fonts else {
-                        ui.label(egui::RichText::new("Finding fonts\u{2026}").color(Color32::GRAY));
+                        ui.label(egui::RichText::new("Finding fonts\u{2026}").weak());
                         ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
                         return;
                     };
@@ -899,7 +887,7 @@ fn tool_options(ui: &mut egui::Ui, view: &View, actions: &mut Vec<Action>) {
                         }
                     }
                     if first.is_none() {
-                        ui.label(egui::RichText::new("No fonts found").color(Color32::GRAY));
+                        ui.label(egui::RichText::new("No fonts found").weak());
                     }
                 });
             if enter && let Some(font) = first {
@@ -1016,7 +1004,7 @@ fn option_heading(ui: &mut egui::Ui, text: &str) {
     ui.label(
         egui::RichText::new(text)
             .size(11.5)
-            .color(Color32::from_gray(150)),
+            .color(theme::palette(ui).text_weak),
     );
     ui.add_space(1.0);
 }
@@ -1050,8 +1038,9 @@ fn px_slider(
         1.0
     };
     let knob = pos2(track.left() + t * track.width(), track.center().y);
+    let palette = theme::palette(ui);
     let p = ui.painter();
-    p.rect_filled(track, 2.0, Color32::from_white_alpha(30));
+    p.rect_filled(track, 2.0, palette.wash(30));
     p.rect_filled(
         Rect::from_min_max(track.min, pos2(knob.x, track.max.y)),
         2.0,
@@ -1064,13 +1053,13 @@ fn px_slider(
         pos2(rect.right() - LABEL, rect.top() + 2.0),
         pos2(rect.right(), rect.bottom() - 2.0),
     );
-    p.rect_filled(label, 6.0, Color32::from_white_alpha(14));
+    p.rect_filled(label, 6.0, palette.wash(14));
     p.text(
         label.center(),
         Align2::CENTER_CENTER,
         format!("{value} px"),
         FontId::proportional(12.5),
-        ICON,
+        palette.icon,
     );
     resp.on_hover_cursor(CursorIcon::PointingHand)
 }
@@ -1085,14 +1074,15 @@ fn reset_button(ui: &mut egui::Ui, rect: Rect, enabled: bool) -> egui::Response 
         Sense::hover()
     };
     let resp = ui.interact(rect, egui::Id::new("reset-tool-options"), sense);
+    let palette = theme::palette(ui);
     let p = ui.painter();
     let color = if !enabled {
-        ICON_DISABLED
+        palette.icon_disabled
     } else if resp.hovered() {
-        p.rect_filled(rect, 6.0, Color32::from_white_alpha(14));
-        ICON
+        p.rect_filled(rect, 6.0, palette.wash(14));
+        palette.icon
     } else {
-        Color32::from_gray(150)
+        palette.text_weak
     };
     // Most of a circle, open at the top left, the arrow on its end
     // pointing back round anticlockwise.
@@ -1134,18 +1124,19 @@ fn option(
         Sense::hover()
     };
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 28.0), sense);
+    let palette = theme::palette(ui);
     let p = ui.painter();
     if selected {
         p.rect_filled(rect, 6.0, ACCENT);
     } else if enabled && resp.hovered() {
-        p.rect_filled(rect, 6.0, Color32::from_white_alpha(14));
+        p.rect_filled(rect, 6.0, palette.wash(14));
     }
     let color = if !enabled {
-        ICON_DISABLED
+        palette.icon_disabled
     } else if selected {
         Color32::WHITE
     } else {
-        ICON
+        palette.icon
     };
     p.text(
         rect.center(),
@@ -1168,7 +1159,7 @@ fn divider(ui: &mut egui::Ui) {
             pos2(rect.center().x, rect.top() + 7.0),
             pos2(rect.center().x, rect.bottom() - 7.0),
         ],
-        Stroke::new(1.0, PANEL_STROKE),
+        Stroke::new(1.0, theme::palette(ui).stroke),
     );
 }
 
@@ -1192,23 +1183,24 @@ fn icon_button(
         Sense::hover()
     };
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(BUTTON), sense);
+    let palette = theme::palette(ui);
     let p = ui.painter();
     let color = if !enabled {
-        ICON_DISABLED
+        palette.icon_disabled
     } else if selected {
         Color32::WHITE
     } else {
-        ICON
+        palette.icon
     };
-    let hover = Color32::from_white_alpha(22);
+    let hover = palette.wash(22);
     let bg = if selected {
         p.rect_filled(rect, 7.0, ACCENT);
         ACCENT
     } else if enabled && resp.hovered() {
         p.rect_filled(rect, 7.0, hover);
-        PANEL.blend(hover)
+        palette.floating.blend(hover)
     } else {
-        PANEL
+        palette.floating
     };
     draw_icon(p, rect.shrink(8.0), icon, color, bg);
     let resp = resp.on_hover_text(tip);
@@ -1413,7 +1405,7 @@ fn draw_icon(p: &egui::Painter, r: Rect, icon: Icon, color: Color32, bg: Color32
             );
             p.extend(dashed);
             let front = Rect::from_min_max(at(0.36, 0.36), at(1.0, 1.0));
-            p.rect_filled(front, 1.5, PANEL);
+            p.rect_filled(front, 1.5, bg);
             p.rect_stroke(front, 1.5, Stroke::new(1.7, color), StrokeKind::Inside);
         }
         Icon::Tool(Tool::Pixelate) => {
@@ -1522,11 +1514,14 @@ mod tests {
             hint: None,
             cursor_info: None,
         };
-        let mut laid_out = false;
-        crate::preview::render("toolbar-preview", [1200, 260], 1.5, |root| {
-            laid_out |= ui(root, &view).1.is_some();
-        });
-        assert!(laid_out, "toolbar should be laid out");
+        for (name, dark) in [("toolbar-preview", true), ("toolbar-light-preview", false)] {
+            let mut laid_out = false;
+            crate::preview::render(name, [1200, 260], 1.5, |root| {
+                crate::preview::themed(root, dark);
+                laid_out |= ui(root, &view).1.is_some();
+            });
+            assert!(laid_out, "toolbar should be laid out");
+        }
     }
 
     /// Renders the toolbar with each tool's settings popup open, to
@@ -1563,13 +1558,18 @@ mod tests {
                 hint: None,
                 cursor_info: None,
             };
-            let name = format!("options-preview-{tool:?}").to_lowercase();
-            crate::preview::render(&name, [1200, 560], 1.5, |root| {
-                set_popup(root.ctx(), Some(Popup::Options));
-                ui(root, &view);
-            });
+            for dark in [true, false] {
+                let theme = if dark { "" } else { "-light" };
+                let name = format!("options-preview-{tool:?}{theme}").to_lowercase();
+                crate::preview::render(&name, [1200, 560], 1.5, |root| {
+                    crate::preview::themed(root, dark);
+                    set_popup(root.ctx(), Some(Popup::Options));
+                    ui(root, &view);
+                });
+            }
             if tool == Tool::Text {
                 crate::preview::render("options-preview-font-search", [2400, 560], 1.5, |root| {
+                    crate::preview::themed(root, true);
                     set_popup(root.ctx(), Some(Popup::Options));
                     root.ctx()
                         .data_mut(|d| d.insert_temp(egui::Id::new("font-search"), "seg".to_string()));
@@ -1591,10 +1591,13 @@ mod tests {
             hint: None,
             cursor_info: None,
         };
-        crate::preview::render("options-preview-colour", [1200, 560], 1.5, |root| {
-            set_popup(root.ctx(), Some(Popup::Color));
-            ui(root, &view);
-        });
+        for (name, dark) in [("options-preview-colour", true), ("options-preview-colour-light", false)] {
+            crate::preview::render(name, [1200, 560], 1.5, |root| {
+                crate::preview::themed(root, dark);
+                set_popup(root.ctx(), Some(Popup::Color));
+                ui(root, &view);
+            });
+        }
     }
 
     /// Renders the colour picker's hint and loupe, near the bottom-right

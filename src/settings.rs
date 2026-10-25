@@ -89,6 +89,8 @@ pub struct Settings {
     /// The tray icon's colour (Windows and Linux; macOS tints its menu bar
     /// icons itself).
     pub tray_icon: TrayIconStyle,
+    /// Light or dark windows, or whichever the system is in.
+    pub theme: Theme,
     /// Look for a new release now and then, and install it.
     pub check_for_updates: bool,
     /// Start snapr when you sign in (Windows).
@@ -364,6 +366,37 @@ impl TrayIconStyle {
     }
 }
 
+/// The theme snapr's windows are in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Theme {
+    /// Light or dark as the system is, changing when it does.
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl Theme {
+    pub const ALL: [Theme; 3] = [Theme::System, Theme::Light, Theme::Dark];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Theme::System => "System",
+            Theme::Light => "Light",
+            Theme::Dark => "Dark",
+        }
+    }
+
+    pub fn preference(self) -> egui::ThemePreference {
+        match self {
+            Theme::System => egui::ThemePreference::System,
+            Theme::Light => egui::ThemePreference::Light,
+            Theme::Dark => egui::ThemePreference::Dark,
+        }
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -401,6 +434,7 @@ impl Default for Settings {
             tray_percentage: false,
             tray_click: TrayClick::default(),
             tray_icon: TrayIconStyle::default(),
+            theme: Theme::default(),
             check_for_updates: true,
             start_with_windows: false,
             setup_done: true,
@@ -816,6 +850,16 @@ mod tests {
         assert_eq!(taskbar.tray_icon, TrayIconStyle::Taskbar);
         let text = toml::to_string_pretty(&taskbar).unwrap();
         assert_eq!(toml::from_str::<Settings>(&text).unwrap(), taskbar, "{text}");
+    }
+
+    #[test]
+    fn theme_round_trip() {
+        let old: Settings = toml::from_str("hotkey = \"Alt + Shift + KeyS\"").unwrap();
+        assert_eq!(old.theme, Theme::System);
+        let light: Settings = toml::from_str("theme = \"light\"").unwrap();
+        assert_eq!(light.theme, Theme::Light);
+        let text = toml::to_string_pretty(&light).unwrap();
+        assert_eq!(toml::from_str::<Settings>(&text).unwrap(), light, "{text}");
     }
 
     #[test]

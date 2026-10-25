@@ -194,6 +194,7 @@ key are turned off until one is entered.
 | Sub-folder         | `%y-%mo` (e.g. `2026-10`) |
 | File name          | `%rna{10}` (+ `.png`)    |
 | Copy to clipboard  | on                       |
+| Theme              | *System*: light or dark as the system is, changing when it does; or always *Light* or *Dark*. Every snapr window follows it: the main window, the capture toolbar, the recording bar, pins and the corner preview |
 | Annotation toolbar | on                       |
 | Play sounds        | on (sounds are synthesized in code, no audio assets) |
 | Sound volume       | 100% (dragging the slider plays the chime when you let go) |

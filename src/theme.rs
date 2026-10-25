@@ -1,9 +1,12 @@
 //! The look of snapr's own windows, matching the capture toolbar and the
 //! recording bar: dark panels with thin outlines, 8 px corners, and the blue
 //! accent kept for what matters (the main action, what's switched on). Light
-//! mode follows the same roles. `apply` sets it up on a context; `switch`,
-//! `checkbox`, `segmented`, `primary` and `slider` are the controls egui
-//! can't be styled into.
+//! mode follows the same roles. `apply` sets it up on a context, in the
+//! theme picked in Settings (`follow` keeps it there); `switch`, `checkbox`,
+//! `segmented`, `primary` and `slider` are the controls egui can't be styled
+//! into.
+
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use egui::{
     Color32, CornerRadius, Margin, Response, Sense, Shape, Stroke, StrokeKind, Ui, Vec2,
@@ -24,6 +27,7 @@ pub const FIELD_MARGIN: Margin = Margin::symmetric(8, 7);
 
 /// The colours each role takes in one theme.
 pub struct Palette {
+    pub dark: bool,
     /// The icon bar down the side.
     pub nav: Color32,
     /// The page behind everything.
@@ -53,9 +57,33 @@ pub struct Palette {
     pub selected: Color32,
     pub selected_text: Color32,
     pub danger: Color32,
+    /// The panels that float over the screen: the capture toolbar and its
+    /// popups, see-through a little.
+    pub floating: Color32,
+    /// The bar over a pinned image, see-through more.
+    pub hud: Color32,
+    /// Icons and labels drawn on those panels.
+    pub icon: Color32,
+    pub icon_disabled: Color32,
+    pub shadow: Color32,
+    /// What shows past a borderless window's rounded corners.
+    pub backdrop: Color32,
+}
+
+impl Palette {
+    /// A wash over the panel, lighter in the dark theme and darker in the
+    /// light one, for what's hovered or picked: stronger as `alpha` grows.
+    pub fn wash(&self, alpha: u8) -> Color32 {
+        if self.dark {
+            Color32::from_white_alpha(alpha)
+        } else {
+            Color32::from_black_alpha(alpha)
+        }
+    }
 }
 
 pub const DARK: Palette = Palette {
+    dark: true,
     nav: Color32::from_rgb(0x16, 0x17, 0x1a),
     panel: Color32::from_rgb(0x1a, 0x1b, 0x1e),
     surface: Color32::from_rgb(0x1c, 0x1d, 0x20),
@@ -75,9 +103,16 @@ pub const DARK: Palette = Palette {
     selected: Color32::from_rgb(0x1d, 0x35, 0x50),
     selected_text: Color32::from_rgb(0x7a, 0xb8, 0xff),
     danger: Color32::from_rgb(0xff, 0x8a, 0x8f),
+    floating: Color32::from_rgba_premultiplied(28, 29, 32, 245),
+    hud: Color32::from_rgba_unmultiplied_const(20, 21, 24, 220),
+    icon: Color32::from_rgb(222, 223, 228),
+    icon_disabled: Color32::from_rgb(96, 98, 104),
+    shadow: Color32::from_black_alpha(110),
+    backdrop: Color32::BLACK,
 };
 
 pub const LIGHT: Palette = Palette {
+    dark: false,
     nav: Color32::from_rgb(0xe8, 0xea, 0xee),
     panel: Color32::from_rgb(0xf6, 0xf7, 0xf9),
     surface: Color32::from_rgb(0xff, 0xff, 0xff),
@@ -97,19 +132,57 @@ pub const LIGHT: Palette = Palette {
     selected: Color32::from_rgb(0xdc, 0xea, 0xff),
     selected_text: Color32::from_rgb(0x0d, 0x5f, 0xc4),
     danger: Color32::from_rgb(0xc8, 0x32, 0x3b),
+    floating: Color32::from_rgba_unmultiplied_const(0xff, 0xff, 0xff, 245),
+    hud: Color32::from_rgba_unmultiplied_const(0xff, 0xff, 0xff, 230),
+    icon: Color32::from_rgb(0x33, 0x35, 0x3b),
+    icon_disabled: Color32::from_rgb(0xb4, 0xb7, 0xbe),
+    shadow: Color32::from_black_alpha(45),
+    backdrop: Color32::from_rgb(0xcf, 0xd2, 0xd8),
 };
 
 /// The palette for `ui`'s theme.
 pub fn palette(ui: &Ui) -> &'static Palette {
-    if ui.visuals().dark_mode {
-        &DARK
-    } else {
-        &LIGHT
-    }
+    palette_of(ui.visuals().dark_mode)
 }
 
-/// Styles a context's light and dark themes; which one shows still follows
-/// the system.
+/// The palette for the dark theme, or the light one.
+pub fn palette_of(dark: bool) -> &'static Palette {
+    if dark { &DARK } else { &LIGHT }
+}
+
+/// The theme picked in Settings, for the windows that open without the
+/// settings to hand: the capture overlay, pins, toasts, the recording bar.
+static PICKED: AtomicU8 = AtomicU8::new(0);
+
+/// Sets the theme every window follows.
+pub fn pick(theme: crate::settings::Theme) {
+    PICKED.store(theme as u8, Ordering::Relaxed);
+}
+
+pub fn picked() -> crate::settings::Theme {
+    let n = PICKED.load(Ordering::Relaxed);
+    crate::settings::Theme::ALL
+        .into_iter()
+        .find(|t| *t as u8 == n)
+        .unwrap_or_default()
+}
+
+/// Puts a context in the theme picked in Settings. Called before each
+/// frame, so a window takes a new pick the next time it's drawn. With
+/// *System*, which theme that is comes from the window's own input.
+pub fn follow(ctx: &egui::Context) {
+    ctx.set_theme(picked().preference());
+}
+
+/// The colour to clear a window to before drawing its frame, for what
+/// shows past its rounded corners.
+pub fn backdrop(ctx: &egui::Context) -> [f32; 4] {
+    let dark = ctx.theme() == egui::Theme::Dark;
+    egui::Rgba::from(palette_of(dark).backdrop).to_array()
+}
+
+/// Styles a context's light and dark themes, and shows the one picked in
+/// Settings.
 pub fn apply(ctx: &egui::Context) {
     ctx.set_visuals_of(egui::Theme::Dark, visuals(egui::Visuals::dark(), &DARK));
     ctx.set_visuals_of(egui::Theme::Light, visuals(egui::Visuals::light(), &LIGHT));
@@ -125,6 +198,7 @@ pub fn apply(ctx: &egui::Context) {
         s.menu_margin = Margin::same(4);
     });
     crisp_text(ctx);
+    follow(ctx);
 }
 
 /// On macOS's 2× screens, glyphs drawn at quarter-pixel offsets

@@ -767,6 +767,13 @@ impl App {
             t.set_click(new.tray_click);
             t.set_style(new.tray_icon);
         }
+        if new.theme != self.settings.theme {
+            theme::pick(new.theme);
+            // Pins only redraw when something happens to them.
+            for pin in &self.pins {
+                pin.window.request_redraw();
+            }
+        }
         self.settings = new;
         if let Some(w) = &mut self.main_window {
             w.form.saved(&self.settings);
@@ -1718,6 +1725,7 @@ fn main() {
     let lock = if once { None } else { single_instance() };
 
     let (settings, loaded) = Settings::load();
+    theme::pick(settings.theme);
     // Point it at this file again, in case snapr was moved.
     #[cfg(windows)]
     if settings.start_with_windows

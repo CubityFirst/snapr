@@ -25,9 +25,10 @@ const RED: [u8; 3] = [0xe5, 0x48, 0x4d];
 const GREEN: [u8; 3] = [0x3c, 0xc8, 0x6e];
 const AMBER: [u8; 3] = [0xf5, 0xa5, 0x24];
 const GAP_COLOR: [u8; 3] = [0x10, 0x10, 0x12];
-const ICON: Color32 = Color32::from_rgb(0x4c, 0x9e, 0xff);
-const PANEL: Color32 = Color32::from_rgb(32, 33, 37);
-const PANEL_STROKE: Color32 = Color32::from_rgb(58, 60, 66);
+/// The buttons' icons: on the dark bar a lighter blue than the accent, on
+/// the light one a darker blue, so they're as easy to see.
+const ICON_DARK: Color32 = Color32::from_rgb(0x4c, 0x9e, 0xff);
+const ICON_LIGHT: Color32 = Color32::from_rgb(0x0d, 0x5f, 0xc4);
 const BAR_HEIGHT: f32 = 40.0;
 /// Gap between the border and the bar, in points.
 const BAR_GAP: f64 = 6.0;
@@ -210,6 +211,7 @@ impl RecordingUi {
         let bar = &mut self.bar;
         let input = bar.state.take_egui_input(&bar.window);
         let ctx = bar.state.egui_ctx().clone();
+        crate::theme::follow(&ctx);
         let mut action = None;
         let mut output = ctx.run_ui(input, |ui| action = bar_contents(ui, elapsed, paused, color));
         bar.state
@@ -219,7 +221,7 @@ impl RecordingUi {
         bar.painter.paint_and_update_textures(
             egui::ViewportId::ROOT,
             output.pixels_per_point,
-            [0.0, 0.0, 0.0, 1.0],
+            crate::theme::backdrop(&ctx),
             &primitives,
             &mut output.textures_delta,
             Vec::new(),
@@ -418,8 +420,7 @@ impl Bar {
         window.set_outer_position(bar_position(event_loop, &window, rect));
 
         let ctx = egui::Context::default();
-        ctx.set_visuals(egui::Visuals::dark());
-        crate::theme::crisp_text(&ctx);
+        crate::theme::apply(&ctx);
         let config = egui_wgpu::WgpuConfiguration {
             wgpu_setup: gpu.egui_setup(),
             ..Default::default()
@@ -517,11 +518,12 @@ fn bar_contents(
     [r, g, b]: [u8; 3],
 ) -> Option<Action> {
     let mut action = None;
+    let p = crate::theme::palette(ui);
     egui::CentralPanel::default()
         .frame(
             egui::Frame::new()
-                .fill(PANEL)
-                .stroke(Stroke::new(1.0, PANEL_STROKE))
+                .fill(p.card)
+                .stroke(Stroke::new(1.0, p.stroke))
                 .corner_radius(CornerRadius::same(6)),
         )
         .show(ui, |ui| {
@@ -542,7 +544,7 @@ fn bar_contents(
                 egui::Align2::LEFT_CENTER,
                 format!("{:02}:{:02}:{:03}", secs / 60, secs % 60, elapsed.subsec_millis()),
                 FontId::monospace(14.0),
-                Color32::from_rgb(230, 231, 235),
+                p.text_strong,
             );
 
             let buttons: [(Action, &str, Icon); 4] = [
@@ -559,19 +561,20 @@ fn bar_contents(
             let width = (full.right() - x) / buttons.len() as f32;
             for (a, label, icon) in buttons {
                 let rect = Rect::from_min_size(pos2(x, full.top()), vec2(width, full.height()));
-                painter.vline(x, full.y_range(), Stroke::new(1.0, PANEL_STROKE));
+                painter.vline(x, full.y_range(), Stroke::new(1.0, p.stroke));
                 let response = ui.interact(rect, ui.id().with(label), Sense::click());
                 if response.hovered() {
-                    painter.rect_filled(rect.shrink(1.0), 0.0, Color32::from_white_alpha(14));
+                    painter.rect_filled(rect.shrink(1.0), 0.0, p.wash(14));
                 }
                 let galley = painter.layout_no_wrap(
                     label.to_string(),
                     FontId::proportional(13.0),
-                    Color32::from_rgb(222, 223, 228),
+                    p.icon,
                 );
                 let content = 14.0 + 7.0 + galley.size().x;
                 let icon_at = pos2(rect.center().x - content / 2.0 + 7.0, rect.center().y);
-                draw_icon(&painter, icon, icon_at);
+                let ink = if p.dark { ICON_DARK } else { ICON_LIGHT };
+                draw_icon(&painter, icon, icon_at, ink);
                 painter.galley(
                     pos2(icon_at.x + 14.0, rect.center().y - galley.size().y / 2.0),
                     galley,
@@ -599,8 +602,8 @@ enum Icon {
 }
 
 /// A 14-point icon centred on `c`.
-fn draw_icon(painter: &egui::Painter, icon: Icon, c: Pos2) {
-    let stroke = Stroke::new(1.5, ICON);
+fn draw_icon(painter: &egui::Painter, icon: Icon, c: Pos2, color: Color32) {
+    let stroke = Stroke::new(1.5, color);
     match icon {
         Icon::Stop => {
             painter.rect_stroke(
@@ -662,9 +665,10 @@ mod tests {
     #[test]
     #[ignore]
     fn recording_bar_preview() {
-        for (name, paused, color) in [
-            ("recording-bar-preview", false, super::GREEN),
-            ("recording-bar-paused-preview", true, super::AMBER),
+        for (name, paused, color, dark) in [
+            ("recording-bar-preview", false, super::GREEN, true),
+            ("recording-bar-paused-preview", true, super::AMBER, true),
+            ("recording-bar-light-preview", false, super::GREEN, false),
         ] {
             crate::preview::render(
                 name,
@@ -674,6 +678,7 @@ mod tests {
                 ],
                 1.5,
                 |root| {
+                    crate::preview::themed(root, dark);
                     super::bar_contents(root, Duration::from_millis(754_317), paused, color);
                 },
             );

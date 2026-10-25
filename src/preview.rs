@@ -15,6 +15,13 @@ pub fn render(name: &str, size: [u32; 2], ppp: f32, mut ui: impl FnMut(&mut egui
     screen.save(name);
 }
 
+/// Styles `root`'s context as snapr's windows are, in the dark theme or the
+/// light one, for previews of both.
+pub fn themed(root: &egui::Ui, dark: bool) {
+    crate::theme::apply(root.ctx());
+    root.ctx().set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
+}
+
 /// An egui context drawn into a texture, frame after frame, for scripting
 /// input (clicks, key presses) and looking at what each frame showed.
 pub struct Offscreen {
@@ -34,6 +41,11 @@ impl Offscreen {
         let gpu = Gpu::new().expect("gpu");
         let ctx = egui::Context::default();
         ctx.set_visuals(egui::Visuals::dark());
+        // As if the system were in light mode, for previews that follow it:
+        // `SNAPR_PREVIEW_LIGHT=1 cargo test preview -- --ignored`.
+        if std::env::var_os("SNAPR_PREVIEW_LIGHT").is_some() {
+            ctx.options_mut(|o| o.fallback_theme = egui::Theme::Light);
+        }
         ctx.set_pixels_per_point(ppp);
         let renderer = egui_wgpu::Renderer::new(&gpu.device, FORMAT, Default::default());
         Self {

@@ -248,6 +248,9 @@ pub struct MainWindow {
     pub last_region: Option<capture::Rect>,
     /// The windows and displays listed in the capture menu, read when it opens.
     capture_menu: (Vec<WindowInfo>, Vec<DisplayInfo>),
+    /// The theme the title bar was last put in; `None` to put it in the
+    /// picked one at the next paint.
+    title_bar: Option<crate::settings::Theme>,
 }
 
 impl MainWindow {
@@ -308,6 +311,7 @@ impl MainWindow {
             speed_unit: settings.speed_unit,
             last_region: None,
             capture_menu: Default::default(),
+            title_bar: None,
         })
     }
 
@@ -343,6 +347,9 @@ impl MainWindow {
                     self.painter.on_window_resized(egui::ViewportId::ROOT, w, h);
                 }
             }
+            // Windows puts the title bar back in the system's theme when
+            // that changes, even with another one picked.
+            WindowEvent::ThemeChanged(_) => self.title_bar = None,
             _ => {}
         }
         if self.state.on_window_event(&self.window, event).repaint {
@@ -615,7 +622,13 @@ impl MainWindow {
             egui::Order::Foreground,
             egui::Id::new("drop"),
         ));
-        painter.rect_filled(rect, 0.0, Color32::from_black_alpha(160));
+        let p = theme::palette(ui);
+        let shade = if p.dark {
+            Color32::from_black_alpha(160)
+        } else {
+            Color32::from_white_alpha(200)
+        };
+        painter.rect_filled(rect, 0.0, shade);
         painter.rect_stroke(
             rect.shrink(12.0),
             10.0,
@@ -627,7 +640,7 @@ impl MainWindow {
             egui::Align2::CENTER_CENTER,
             "Drop to upload",
             egui::FontId::proportional(22.0),
-            Color32::WHITE,
+            p.text_strong,
         );
     }
 
@@ -635,6 +648,18 @@ impl MainWindow {
         let mut actions = Vec::new();
         let input = self.state.take_egui_input(&self.window);
         let ctx = self.state.egui_ctx().clone();
+        // The theme being picked in Settings, before it's saved for the
+        // other windows.
+        let theme = self.form.draft.theme;
+        ctx.set_theme(theme.preference());
+        if self.title_bar != Some(theme) {
+            self.title_bar = Some(theme);
+            self.window.set_theme(match theme {
+                crate::settings::Theme::System => None,
+                crate::settings::Theme::Light => Some(winit::window::Theme::Light),
+                crate::settings::Theme::Dark => Some(winit::window::Theme::Dark),
+            });
+        }
         let mut output = ctx.run_ui(input, |ui| self.ui(ui, &mut actions));
         self.state
             .handle_platform_output(&self.window, std::mem::take(&mut output.platform_output));

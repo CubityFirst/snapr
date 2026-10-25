@@ -100,6 +100,23 @@ pub fn to_egui(img: DynamicImage, max: (u32, u32)) -> (egui::ColorImage, [u32; 2
     )
 }
 
+/// The file icon's colours in each theme: the page, its edge, the folded
+/// corner, the lines of "text" and the extension.
+const FILE_ICON_DARK: [Color32; 5] = [
+    Color32::from_rgb(58, 61, 68),
+    Color32::from_rgb(120, 124, 134),
+    Color32::from_rgb(88, 92, 102),
+    Color32::from_rgb(100, 104, 114),
+    Color32::from_rgb(170, 174, 184),
+];
+const FILE_ICON_LIGHT: [Color32; 5] = [
+    Color32::from_rgb(0xf4, 0xf5, 0xf7),
+    Color32::from_rgb(0x9a, 0x9e, 0xa8),
+    Color32::from_rgb(0xdc, 0xdf, 0xe4),
+    Color32::from_rgb(0xc2, 0xc6, 0xcd),
+    Color32::from_rgb(0x5f, 0x63, 0x6d),
+];
+
 /// A generic document (folded corner, extension underneath) centred in
 /// `area`, sized to fit it.
 pub fn draw_file_icon(painter: &egui::Painter, area: Rect, path: &Path) {
@@ -107,8 +124,12 @@ pub fn draw_file_icon(painter: &egui::Painter, area: Rect, path: &Path) {
     let w = h * 0.78;
     let page = Rect::from_center_size(area.center() - vec2(0.0, h * 0.08), vec2(w, h));
     let fold = w * 0.3;
-    let fill = Color32::from_rgb(58, 61, 68);
-    let edge = Stroke::new(1.5, Color32::from_rgb(120, 124, 134));
+    let [fill, edge, folded, line, ext_color] = if painter.ctx().theme() == egui::Theme::Dark {
+        FILE_ICON_DARK
+    } else {
+        FILE_ICON_LIGHT
+    };
+    let edge = Stroke::new(1.5, edge);
     let outline = vec![
         page.left_top(),
         pos2(page.right() - fold, page.top()),
@@ -124,11 +145,11 @@ pub fn draw_file_icon(painter: &egui::Painter, area: Rect, path: &Path) {
             pos2(page.right(), page.top() + fold),
             corner,
         ],
-        Color32::from_rgb(88, 92, 102),
+        folded,
         edge,
     ));
     // A few lines of "text" on the page.
-    let line = Stroke::new(1.5, Color32::from_rgb(100, 104, 114));
+    let line = Stroke::new(1.5, line);
     for i in 0..3 {
         let y = page.top() + h * (0.45 + 0.13 * i as f32);
         let right = if i == 2 {
@@ -148,7 +169,7 @@ pub fn draw_file_icon(painter: &egui::Painter, area: Rect, path: &Path) {
         egui::Align2::CENTER_TOP,
         ext,
         FontId::proportional((h * 0.16).clamp(10.0, 14.0)),
-        Color32::from_rgb(170, 174, 184),
+        ext_color,
     );
 }
 
