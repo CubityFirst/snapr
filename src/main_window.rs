@@ -861,20 +861,19 @@ fn draw_icon(p: &egui::Painter, r: Rect, icon: NavIcon, color: Color32) {
             }
         }
         NavIcon::Tools => {
-            // A wrench: an open ring at the top right on a diagonal handle.
-            let c = at(0.66, 0.34);
-            let rad = r.width() * 0.26;
-            let open = -std::f32::consts::FRAC_PI_4; // the jaw faces up-right
-            let gap = 0.9;
-            let head: Vec<Pos2> = (0..=24)
-                .map(|i| {
-                    let a = open + gap + i as f32 / 24.0 * (std::f32::consts::TAU - 2.0 * gap);
-                    c + vec2(a.cos(), a.sin()) * rad
-                })
-                .collect();
-            p.add(Shape::line(head, s));
-            let neck = c + vec2(-1.0, 1.0) * (rad * std::f32::consts::FRAC_1_SQRT_2);
-            p.line_segment([neck, at(0.06, 0.94)], Stroke::new(2.6, color));
+            // A toolbox: a handle on top, the lid's seam across the
+            // middle, and a latch where it meets the front. Drawn on a
+            // 24-unit grid.
+            let g = |x: f32, y: f32| at(x / 24.0, y / 24.0);
+            let rounded = |min: Pos2, max: Pos2, round: f32| {
+                let rect = Rect::from_min_max(min, max);
+                p.rect_stroke(rect, round, s, egui::StrokeKind::Middle);
+            };
+            rounded(g(8.5, 4.0), g(15.5, 8.0), 1.25);
+            rounded(g(2.5, 8.0), g(21.5, 20.5), 1.7);
+            p.line_segment([g(2.5, 13.5), g(10.5, 13.5)], s);
+            p.line_segment([g(13.5, 13.5), g(21.5, 13.5)], s);
+            rounded(g(10.5, 12.0), g(13.5, 15.0), 0.5);
         }
         NavIcon::Stats => {
             // Three columns of rising height on a baseline.
