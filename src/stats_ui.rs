@@ -223,7 +223,7 @@ fn highlights(daily: &BTreeMap<NaiveDate, Tally>, today: NaiveDate) -> Highlight
 }
 
 /// Today, this week against last, the streak and the busiest day, as a row
-/// of tiles, or two rows when they'd be too narrow for their notes.
+/// of tiles, their notes shortened when a tile is too narrow for them.
 fn highlights_ui(ui: &mut egui::Ui, daily: &BTreeMap<NaiveDate, Tally>, today: NaiveDate) {
     let h = highlights(daily, today);
     let (up, down) = if ui.visuals().dark_mode {
@@ -239,33 +239,42 @@ fn highlights_ui(ui: &mut egui::Ui, daily: &BTreeMap<NaiveDate, Tally>, today: N
     };
     // Up or down on last week, drawn: the font has no arrows.
     let mut arrow: Option<(bool, Color32)> = None;
-    let week_note: Vec<RichText> = if h.last_week == 0 {
-        vec![weak(if h.week == 0 { "none last week either" } else { "none by now last week" }.into())]
+    let week_notes: Vec<Vec<RichText>> = if h.last_week == 0 {
+        vec![vec![weak(if h.week == 0 { "none last week either" } else { "none by now last week" }.into())]]
     } else {
         let change = (h.week as f64 - h.last_week as f64) / h.last_week as f64 * 100.0;
         let color = if change >= 0.0 { up } else { down };
         arrow = Some((change >= 0.0, color));
+        let pct = RichText::new(format!("{:.0}%", change.abs())).small().color(color);
         vec![
-            RichText::new(format!("{:.0}%", change.abs())).small().color(color),
-            weak("vs same time last week".into()),
+            vec![pct.clone(), weak("vs same time last week".into())],
+            vec![pct, weak("vs last week".into())],
         ]
     };
-    let streak_note = match h.longest {
-        Some((n, _)) if n == h.streak => weak("your longest yet".into()),
-        Some((n, end)) => weak(format!("longest {}, to {}", thousands(n), end.format("%-d %b %Y"))),
-        None => weak("from your first capture".into()),
+    let streak_notes = match h.longest {
+        Some((n, _)) if n == h.streak => vec![weak("your longest yet".into())],
+        Some((n, end)) => vec![
+            weak(format!("longest {}, to {}", thousands(n), end.format("%-d %b %Y"))),
+            weak(format!("longest {}", thousands(n))),
+        ],
+        None => vec![weak("from your first capture".into())],
     };
-    let tiles = [
-        ("Today", thousands(h.today.total()), vec![today_note]),
-        ("This week", thousands(h.week), week_note),
-        ("Streak", plural(h.streak, "day"), vec![streak_note]),
+    let busiest_notes = match h.busiest {
+        Some((d, _)) => vec![weak(d.format("%a %-d %b %Y").to_string()), weak(d.format("%-d %b %Y").to_string())],
+        None => vec![weak("nothing yet".into())],
+    };
+    // Each tile's note, then shorter ones for when it doesn't fit.
+    let tiles: [(&str, String, Vec<Vec<RichText>>); 4] = [
+        ("Today", thousands(h.today.total()), vec![vec![today_note]]),
+        ("This week", thousands(h.week), week_notes),
+        ("Streak", plural(h.streak, "day"), streak_notes.into_iter().map(|n| vec![n]).collect()),
         (
             "Busiest day",
             h.busiest.map_or("\u{2014}".into(), |(_, n)| thousands(n)),
-            vec![weak(h.busiest.map_or("nothing yet".into(), |(d, _)| d.format("%a %-d %b %Y").to_string()))],
+            busiest_notes.into_iter().map(|n| vec![n]).collect(),
         ),
     ];
-    let tile = |ui: &mut egui::Ui, (label, value, note): &(&str, String, Vec<RichText>)| {
+    let tile = |ui: &mut egui::Ui, (label, value, notes): &(&str, String, Vec<Vec<RichText>>)| {
         card(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             ui.spacing_mut().interact_size.y = 0.0;
@@ -273,6 +282,21 @@ fn highlights_ui(ui: &mut egui::Ui, daily: &BTreeMap<NaiveDate, Tally>, today: N
             ui.label(RichText::new(value).size(24.0).strong());
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
+                let marker = if *label == "This week" && arrow.is_some() { 7.0 + 5.0 } else { 0.0 };
+                let width = |note: &Vec<RichText>| {
+                    let text: f32 = note
+                        .iter()
+                        .map(|part| {
+                            egui::WidgetText::from(part.clone())
+                                .into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body)
+                                .size()
+                                .x
+                        })
+                        .sum();
+                    marker + text + 4.0 * note.len().saturating_sub(1) as f32
+                };
+                let room = ui.available_width();
+                let note = notes.iter().find(|n| width(n) <= room).or(notes.last()).map_or(&[][..], |n| &n[..]);
                 for (i, part) in note.iter().enumerate() {
                     match arrow.filter(|_| *label == "This week" && i == 0) {
                         Some((up, color)) => marked(ui, part.clone(), 7.0, |painter, at| {
@@ -288,17 +312,11 @@ fn highlights_ui(ui: &mut egui::Ui, daily: &BTreeMap<NaiveDate, Tally>, today: N
             });
         });
     };
-    let per_row = if ui.available_width() >= 760.0 { 4 } else { 2 };
-    for (i, row) in tiles.chunks(per_row).enumerate() {
-        if i > 0 {
-            ui.add_space(8.0);
+    ui.columns(tiles.len(), |cols| {
+        for (col, t) in cols.iter_mut().zip(&tiles) {
+            tile(col, t);
         }
-        ui.columns(per_row, |cols| {
-            for (col, t) in cols.iter_mut().zip(row) {
-                tile(col, t);
-            }
-        });
-    }
+    });
 }
 
 /// Weeks of days the calendar shows at most: a year, and the week it's in.
