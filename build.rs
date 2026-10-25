@@ -24,6 +24,54 @@ fn main() {
     let bytes = serde_json::to_vec(&list).unwrap();
     let out = Path::new(&std::env::var("OUT_DIR").unwrap()).join("third-party.json.deflate");
     std::fs::write(out, miniz_oxide::deflate::compress_to_vec(&bytes, 10)).unwrap();
+
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        println!("cargo:rerun-if-changed=assets/snapr.iconset");
+        if let Err(e) = windows_icon() {
+            println!("cargo:warning=snapr.exe built without its icon: {e}");
+        }
+    }
+}
+
+/// Puts snapr's icon in snapr.exe, from `assets/snapr.iconset`: it's what
+/// Explorer, the Start menu shortcut and taskbar pins show, which can't use
+/// the one snapr draws at runtime for its windows and tray.
+fn windows_icon() -> Result<(), String> {
+    let dir = Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("assets/snapr.iconset");
+    let files = ["icon_16x16.png", "icon_32x32.png", "icon_32x32@2x.png", "icon_128x128.png", "icon_256x256.png"];
+    let pngs = files
+        .iter()
+        .map(|f| std::fs::read(dir.join(f)).map_err(|e| format!("{f}: {e}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    let out = Path::new(&std::env::var("OUT_DIR").unwrap()).to_path_buf();
+    let ico = out.join("snapr.ico");
+    std::fs::write(&ico, ico_of(&pngs)).map_err(|e| e.to_string())?;
+    let rc = out.join("snapr.rc");
+    let path = ico.to_string_lossy().replace('\\', "\\\\");
+    std::fs::write(&rc, format!("1 ICON \"{path}\"\n")).map_err(|e| e.to_string())?;
+    embed_resource::compile(&rc, embed_resource::NONE)
+        .manifest_optional()
+        .map_err(|e| e.to_string())
+}
+
+/// An .ico holding PNGs as they are (which Windows has read since Vista).
+fn ico_of(pngs: &[Vec<u8>]) -> Vec<u8> {
+    let mut ico = vec![0, 0, 1, 0];
+    ico.extend((pngs.len() as u16).to_le_bytes());
+    let mut offset = 6 + 16 * pngs.len() as u32;
+    for png in pngs {
+        // The PNG's IHDR has its width and height; 0 means 256 here.
+        let side = u32::from_be_bytes(png[16..20].try_into().unwrap());
+        let side = if side >= 256 { 0 } else { side as u8 };
+        ico.extend([side, side, 0, 0, 1, 0, 32, 0]);
+        ico.extend((png.len() as u32).to_le_bytes());
+        ico.extend(offset.to_le_bytes());
+        offset += png.len() as u32;
+    }
+    for png in pngs {
+        ico.extend(png);
+    }
+    ico
 }
 
 /// `cargo metadata` for the target, offline if every crate is already
