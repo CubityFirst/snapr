@@ -10,7 +10,7 @@ use egui::{
 };
 
 use crate::annotate::{
-    ArrowOptions, COLORS, HighlighterInk, HighlighterShape, PIXEL_BLOCKS, PixelateOptions, STEP_SIZES, Size, StepOptions, Style, TEXT_SIZES, TextOptions, Tool,
+    ArrowOptions, BENDS, COLORS, HighlighterInk, HighlighterShape, PIXEL_BLOCKS, PixelateOptions, STEP_SIZES, Size, StepOptions, Style, TEXT_SIZES, TextOptions, Tool,
 };
 use crate::session::MAGNIFIER_PIXELS;
 use crate::theme::{self, ACCENT};
@@ -26,6 +26,7 @@ pub enum Action {
     Size(Size),
     Pixelate(PixelateOptions),
     Arrow(ArrowOptions),
+    Bends(u8),
     ClipShadow(bool),
     Step(StepOptions),
     Text(TextOptions),
@@ -713,7 +714,13 @@ fn uses_size(tool: Tool) -> bool {
 fn has_options(tool: Tool) -> bool {
     matches!(
         tool,
-        Tool::Pixelate | Tool::Arrow | Tool::Clip | Tool::Text | Tool::Highlighter | Tool::Step
+        Tool::Pixelate
+            | Tool::Line
+            | Tool::Arrow
+            | Tool::Clip
+            | Tool::Text
+            | Tool::Highlighter
+            | Tool::Step
     )
 }
 
@@ -721,6 +728,7 @@ fn has_options(tool: Tool) -> bool {
 fn options_title(tool: Tool) -> &'static str {
     match tool {
         Tool::Pixelate => "Pixelate",
+        Tool::Line => "Line",
         Tool::Arrow => "Arrow",
         Tool::Clip => "Clip",
         Tool::Text => "Text",
@@ -737,7 +745,14 @@ fn reset_options(tool: Tool, style: &Style) -> Vec<Action> {
     let mut actions = Vec::new();
     match tool {
         Tool::Pixelate if style.pixelate != d.pixelate => actions.push(Action::Pixelate(d.pixelate)),
-        Tool::Arrow if style.arrow != d.arrow => actions.push(Action::Arrow(d.arrow)),
+        Tool::Line | Tool::Arrow => {
+            if tool == Tool::Arrow && style.arrow != d.arrow {
+                actions.push(Action::Arrow(d.arrow));
+            }
+            if style.bends != d.bends {
+                actions.push(Action::Bends(d.bends));
+            }
+        }
         Tool::Clip if style.clip_shadow != d.clip_shadow => {
             actions.push(Action::ClipShadow(d.clip_shadow))
         }
@@ -832,7 +847,9 @@ fn tool_options(ui: &mut egui::Ui, view: &View, actions: &mut Vec<Action>) {
                     }));
                 }
             }
+            bends_options(ui, view.style.bends, actions);
         }
+        Tool::Line => bends_options(ui, view.style.bends, actions),
         Tool::Text => {
             let opts = view.style.text;
             let fonts = crate::fonts::installed();
@@ -996,6 +1013,21 @@ fn tool_options(ui: &mut egui::Ui, view: &View, actions: &mut Vec<Action>) {
         }
         _ => {}
     }
+}
+
+/// How many nodes lines and arrows get to bend them by.
+fn bends_options(ui: &mut egui::Ui, current: u8, actions: &mut Vec<Action>) {
+    option_heading(ui, "Bend handles");
+    ui.horizontal(|ui| {
+        for bends in BENDS {
+            if option(ui, &bends.to_string(), 44.0, current == bends, true)
+                .on_hover_text("Nodes along it to drag, to curve it through them")
+                .clicked()
+            {
+                actions.push(Action::Bends(bends));
+            }
+        }
+    });
 }
 
 /// A small heading over a group of settings.
@@ -1535,6 +1567,7 @@ mod tests {
         }
         for tool in [
             Tool::Pixelate,
+            Tool::Line,
             Tool::Arrow,
             Tool::Clip,
             Tool::Text,
@@ -1543,6 +1576,7 @@ mod tests {
         ] {
             let mut style = Style::default();
             style.arrow.double = true;
+            style.bends = 3;
             style.step.size = 44;
             let view = View {
                 tool,

@@ -25,8 +25,8 @@ region; the screenshot includes your annotations.
 |------|-----|-|
 | Region | `S` | the default: drag to capture |
 | Pen | `P` or `F` | freehand; drag a stroke to move it |
-| Line | `L` | Shift snaps to 45° |
-| Arrow | `A` | Shift snaps to 45° |
+| Line | `L` | Shift snaps to 45°; drag its handles to curve it through them (1 to 5, set in its settings), or the line itself to move it |
+| Arrow | `A` | Shift snaps to 45°; one head or two, pointed where you let go or where you started; drag its handles to curve it through them (1 to 5, set in its settings, shared with lines), or the arrow itself to move it |
 | Text | `T` | click and type, or drag out a box first and the text wraps to its width; **Enter** finishes, **Shift+Enter** starts a new line, **Ctrl+V** pastes. Its settings pick the font (any installed one, with a search), the size and whether it has an outline; they and the colour apply as you type. Drag text to move it, click it to change it |
 | Box | `R` | Shift makes a square |
 | Ellipse | `E` | Shift makes a circle |

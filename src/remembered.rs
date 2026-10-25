@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::annotate::{
-    HighlighterInk, HighlighterShape, STEP_SIZES, Size, Style, TEXT_SIZES,
+    BENDS, HighlighterInk, HighlighterShape, STEP_SIZES, Size, Style, TEXT_SIZES,
 };
 use crate::session::{MAGNIFIER_PIXELS, MAGNIFIER_ZOOM};
 use crate::settings::Settings;
@@ -19,6 +19,8 @@ pub struct Remembered {
     pixelate_secure: bool,
     arrow_double: bool,
     arrow_head_at_start: bool,
+    /// Nodes along lines and arrows to bend them by.
+    bends: u8,
     clip_shadow: bool,
     step: Step,
     /// "freehand", "straight" or "box".
@@ -85,6 +87,7 @@ impl Remembered {
             pixelate_secure: style.pixelate.secure,
             arrow_double: style.arrow.double,
             arrow_head_at_start: style.arrow.head_at_start,
+            bends: style.bends,
             clip_shadow: style.clip_shadow,
             step: Step {
                 size: style.step.size,
@@ -153,6 +156,7 @@ impl Remembered {
         style.pixelate.secure = self.pixelate_secure;
         style.arrow.double = self.arrow_double;
         style.arrow.head_at_start = self.arrow_head_at_start;
+        style.bends = self.bends.clamp(*BENDS.start(), *BENDS.end());
         style.clip_shadow = self.clip_shadow;
         style.step.size = self.step.size.clamp(*STEP_SIZES.start(), *STEP_SIZES.end());
         let numbers = style.step.number_sizes();
@@ -199,6 +203,7 @@ mod tests {
         style.size = Size::Large;
         style.pixelate.secure = true;
         style.arrow.double = true;
+        style.bends = 3;
         style.clip_shadow = false;
         style.step = StepOptions {
             size: 48,
@@ -231,6 +236,7 @@ mod tests {
         assert_eq!(style.text.size, *TEXT_SIZES.start());
         assert!(style.text.outline);
         assert_eq!(style.step, Style::default().step);
+        assert_eq!(style.bends, 1);
 
         assert_eq!(loaded.magnifier(), MAGNIFIER_ZOOM.1 as u32);
         assert_eq!(loaded.font(), Some("Arial"));

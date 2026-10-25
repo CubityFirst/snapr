@@ -95,8 +95,9 @@ pub const MAGNIFIER_PIXELS: u32 = 15;
 pub const MAGNIFIER_ZOOM: (i32, i32) = (5, 45);
 
 /// How close (in pixels) a press must be to a line's or an arrow's middle
-/// node, or a step's point, to grab it.
-const NODE_RADIUS: f64 = 9.0;
+/// node, or a step's point, to grab it. Well beyond the handle drawn, so
+/// it's easy to hit.
+const NODE_RADIUS: f64 = 16.0;
 
 fn node_hit(node: (f32, f32), p: (f64, f64)) -> bool {
     (node.0 as f64 - p.0).hypot(node.1 as f64 - p.1) <= NODE_RADIUS
@@ -839,6 +840,7 @@ impl Session {
             Action::Size(s) => self.style.size = s,
             Action::Pixelate(o) => self.style.pixelate = o,
             Action::Arrow(o) => self.style.arrow = o,
+            Action::Bends(n) => self.style.bends = n,
             Action::ClipShadow(on) => self.style.clip_shadow = on,
             Action::Step(o) => self.style.step = o,
             Action::Text(t) => self.style.text = t,
@@ -1027,7 +1029,8 @@ impl Session {
         } else if let Some(canvas) = &mut self.canvas
             && canvas.begin_move((p.0 as f32, p.1 as f32), self.tool)
         {
-            // Grabbed a clip, an area, a pen stroke or text: drag to move it.
+            // Grabbed a clip, an area, a pen stroke, a line, an arrow or
+            // text: drag to move it.
             self.grab = Grab::Draw;
         } else if self.ensure_canvas_at(p)
             && let (Some(canvas), Some(a)) = (

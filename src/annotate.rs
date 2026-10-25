@@ -267,6 +267,9 @@ pub struct ArrowOptions {
     pub head_at_start: bool,
 }
 
+/// How many nodes lines and arrows offer to bend them by.
+pub const BENDS: std::ops::RangeInclusive<u8> = 1..=5;
+
 pub const COLORS: [[u8; 3]; 8] = [
     [0xff, 0x3b, 0x30], // red
     [0xff, 0x95, 0x00], // orange
@@ -284,6 +287,9 @@ pub struct Style {
     pub size: Size,
     pub pixelate: PixelateOptions,
     pub arrow: ArrowOptions,
+    /// Nodes along a line or an arrow, evenly spaced, to bend it by (see
+    /// [`BENDS`]).
+    pub bends: u8,
     /// Clips get a soft drop shadow, lifting them off the screen under them.
     pub clip_shadow: bool,
     pub step: StepOptions,
@@ -305,6 +311,7 @@ impl Default for Style {
                 double: false,
                 head_at_start: false,
             },
+            bends: 1,
             clip_shadow: true,
             step: StepOptions {
                 size: 30,
@@ -329,11 +336,11 @@ enum Shape {
     Highlighter(Vec<Point>),
     /// A highlighted box.
     Mark(Point, Point),
-    /// From, to, and the node in the middle the curve passes through, once
-    /// it's been moved off the straight line.
-    Line(Point, Point, Option<Point>),
+    /// From, to, and the nodes the curve passes through, once one's been
+    /// moved off the straight line (none while it's straight).
+    Line(Point, Point, Vec<Point>),
     /// Like a line, with a head at the end.
-    Arrow(Point, Point, Option<Point>),
+    Arrow(Point, Point, Vec<Point>),
     Rect(Point, Point),
     Ellipse(Point, Point),
     Blur(Point, Point),
@@ -406,8 +413,8 @@ impl Annotation {
                 HighlighterShape::Straight => Shape::Highlighter(vec![p, p]),
                 HighlighterShape::Box => Shape::Mark(p, p),
             },
-            Tool::Line => Shape::Line(p, p, None),
-            Tool::Arrow => Shape::Arrow(p, p, None),
+            Tool::Line => Shape::Line(p, p, Vec::new()),
+            Tool::Arrow => Shape::Arrow(p, p, Vec::new()),
             Tool::Rect => Shape::Rect(p, p),
             Tool::Ellipse => Shape::Ellipse(p, p),
             Tool::Blur => Shape::Blur(p, p),
@@ -474,12 +481,10 @@ impl Annotation {
         let mv = |p: &mut Point| *p = (p.0 + d.0, p.1 + d.1);
         match &mut self.shape {
             Shape::Pen(pts) | Shape::Highlighter(pts) => pts.iter_mut().for_each(mv),
-            Shape::Line(a, b, mid) | Shape::Arrow(a, b, mid) => {
+            Shape::Line(a, b, nodes) | Shape::Arrow(a, b, nodes) => {
                 mv(a);
                 mv(b);
-                if let Some(m) = mid {
-                    mv(m);
-                }
+                nodes.iter_mut().for_each(mv);
             }
             Shape::Rect(a, b)
             | Shape::Ellipse(a, b)
@@ -533,12 +538,14 @@ impl Annotation {
     }
 
     /// Where it is on screen (global pixels), if `tool` can move it: clips
-    /// with the clip tool, areas and pen strokes with their own tools.
+    /// with the clip tool, areas, pen strokes, lines and arrows with their
+    /// own tools.
     fn movable_rect(&self, tool: Tool) -> Option<Rect> {
         match (&self.shape, tool) {
             (Shape::Pen(_), Tool::Pen) | (Shape::Highlighter(_), Tool::Highlighter) => {
                 self.stroke_box()
             }
+            (Shape::Line(..), Tool::Line) | (Shape::Arrow(..), Tool::Arrow) => self.line_box(),
             (Shape::Text(..), Tool::Text) => self.text_box(),
             (Shape::Clip(img, (x, y)), Tool::Clip) => Some(Rect {
                 x: *x,
@@ -617,12 +624,22 @@ impl Annotation {
         (x0 <= x1).then(|| Rect::from_points((x0 as f64, y0 as f64), (x1 as f64, y1 as f64)))
     }
 
+    /// The box between a line's or an arrow's ends.
+    fn line_box(&self) -> Option<Rect> {
+        let (Shape::Line(a, b, _) | Shape::Arrow(a, b, _)) = &self.shape else {
+            return None;
+        };
+        Some(Rect::from_points((a.0 as f64, a.1 as f64), (b.0 as f64, b.1 as f64)))
+    }
+
     /// Where it is if `tool` can pick it up at `p`: anywhere in a clip or
-    /// area, but on the line itself for a stroke.
+    /// area, but on the line itself for a stroke, a line or an arrow.
     fn movable_under(&self, p: Point, tool: Tool) -> Option<Rect> {
         let r = self.movable_rect(tool)?;
         match self.shape {
-            Shape::Pen(_) | Shape::Highlighter(_) => self.hit(p).map(|_| r),
+            Shape::Pen(_) | Shape::Highlighter(_) | Shape::Line(..) | Shape::Arrow(..) => {
+                self.hit(p).map(|_| r)
+            }
             _ => r.contains((p.0 as f64, p.1 as f64)).then_some(r),
         }
     }
@@ -655,20 +672,16 @@ impl Annotation {
                 Some((Vec::new(), vec![dot]))
             }
             Shape::Pen(pts) | Shape::Highlighter(pts) => Some((vec![pen_path(pts)?], Vec::new())),
-            Shape::Line(a, b, mid) => {
-                let line = curve_path(*a, control(*a, *b, *mid), *b, mid.is_some())?;
-                Some((vec![line], Vec::new()))
-            }
-            Shape::Arrow(a, b, mid) => {
-                let c = control(*a, *b, *mid);
-                let line = curve_path(*a, c, *b, mid.is_some())?;
+            Shape::Line(a, b, nodes) => Some((vec![Curve::new(*a, *b, nodes).path()?], Vec::new())),
+            Shape::Arrow(a, b, nodes) => {
+                let curve = Curve::new(*a, *b, nodes);
                 let heads = self.heads((b.0 - a.0).hypot(b.1 - a.1));
-                let fills = [(heads.at_end, (*a, c, *b)), (heads.at_start, (*b, c, *a))]
+                let fills = [(heads.at_end, curve.clone()), (heads.at_start, curve.reversed())]
                     .into_iter()
                     .filter(|(on, _)| *on)
-                    .filter_map(|(_, curve)| head_path(curve, heads.len, heads.width))
+                    .filter_map(|(_, curve)| head_path(&curve, heads.len, heads.width))
                     .collect();
-                Some((vec![line], fills))
+                Some((vec![curve.path()?], fills))
             }
             Shape::Step(c, _, tip) => {
                 Some((Vec::new(), vec![step_path(*c, self.step_radius(), *tip)?]))
@@ -773,10 +786,11 @@ impl Annotation {
             .then_some(bounds)
     }
 
-    /// Moves a clip, area or stroke so its top-left corner is at `p`.
+    /// Moves a clip, area, stroke, line or arrow so its top-left corner is
+    /// at `p`.
     fn move_to(&mut self, p: Point) {
         let p = (p.0.round(), p.1.round());
-        if let Some(r) = self.stroke_box() {
+        if let Some(r) = self.stroke_box().or_else(|| self.line_box()) {
             return self.translate((p.0 - r.x as f32, p.1 - r.y as f32));
         }
         let radius = self.step_radius();
@@ -817,31 +831,44 @@ impl Annotation {
         }
     }
 
-    /// The node of a shape drawn with `tool` that can be dragged to reshape
-    /// it: a line's or an arrow's middle, to curve it, or the tip of a
-    /// step's point (on its edge, down and right, until it has one).
-    fn bend_node(&self, tool: Tool) -> Option<Point> {
+    /// The nodes of a shape drawn with `tool` that can be dragged to reshape
+    /// it: a line's or an arrow's, to curve it, or the tip of a step's point
+    /// (on its edge, down and right, until it has one).
+    fn bend_nodes(&self, tool: Tool) -> Vec<Point> {
         match (&self.shape, tool) {
-            (Shape::Line(a, b, mid), Tool::Line) | (Shape::Arrow(a, b, mid), Tool::Arrow) => {
-                Some(mid.unwrap_or(midpoint(*a, *b)))
+            (Shape::Line(a, b, nodes), Tool::Line) | (Shape::Arrow(a, b, nodes), Tool::Arrow) => {
+                if nodes.is_empty() {
+                    straight_nodes(*a, *b, self.style.bends)
+                } else {
+                    nodes.clone()
+                }
             }
             (Shape::Step(c, _, tip), Tool::Step) => {
                 let edge = self.step_radius() * std::f32::consts::FRAC_1_SQRT_2;
-                Some(tip.unwrap_or((c.0 + edge, c.1 + edge)))
+                vec![tip.unwrap_or((c.0 + edge, c.1 + edge))]
             }
-            _ => None,
+            _ => Vec::new(),
         }
     }
 
-    /// Moves a shape's node to `p`. Close to the straight line, a line or an
-    /// arrow snaps back to straight; close to its circle, a step loses its
-    /// point.
-    fn bend_to(&mut self, p: Point) {
+    /// Moves a shape's node `i` to `p`. With all its nodes close to the
+    /// straight line, a line or an arrow snaps back to straight; close to
+    /// its circle, a step loses its point.
+    fn bend_to(&mut self, i: usize, p: Point) {
         let radius = self.step_radius();
+        let bends = self.style.bends;
         match &mut self.shape {
-            Shape::Line(a, b, mid) | Shape::Arrow(a, b, mid) => {
-                let m = midpoint(*a, *b);
-                *mid = ((p.0 - m.0).hypot(p.1 - m.1) >= 4.0).then_some(p);
+            Shape::Line(a, b, nodes) | Shape::Arrow(a, b, nodes) => {
+                let straight = straight_nodes(*a, *b, bends);
+                if nodes.is_empty() {
+                    *nodes = straight.clone();
+                }
+                if let Some(node) = nodes.get_mut(i) {
+                    *node = p;
+                }
+                if nodes.iter().zip(&straight).all(|(n, s)| (n.0 - s.0).hypot(n.1 - s.1) < 4.0) {
+                    nodes.clear();
+                }
             }
             Shape::Step(c, _, tip) => {
                 *tip = ((p.0 - c.0).hypot(p.1 - c.1) >= radius + 6.0).then_some(p);
@@ -890,9 +917,9 @@ impl Annotation {
         }
         let pts: Vec<Point> = match &self.shape {
             Shape::Pen(p) | Shape::Highlighter(p) => p.clone(),
-            // The curve stays inside the triangle of its control points.
-            Shape::Line(a, b, mid) | Shape::Arrow(a, b, mid) => {
-                vec![*a, *b, control(*a, *b, *mid)]
+            // The curve stays inside the hull of its control points.
+            Shape::Line(a, b, nodes) | Shape::Arrow(a, b, nodes) => {
+                Curve::new(*a, *b, nodes).pieces.into_iter().flatten().collect()
             }
             Shape::Rect(a, b)
             | Shape::Ellipse(a, b)
@@ -961,9 +988,9 @@ impl Annotation {
                     pm.stroke_path(&path, &paint, &stroke, id, None);
                 }
             }
-            Shape::Line(a, b, mid) => {
-                let c = local(&control(*a, *b, *mid));
-                if let Some(path) = curve_path(local(a), c, local(b), mid.is_some()) {
+            Shape::Line(a, b, nodes) => {
+                let nodes: Vec<Point> = nodes.iter().map(local).collect();
+                if let Some(path) = Curve::new(local(a), local(b), &nodes).path() {
                     pm.stroke_path(&path, &paint, &stroke, id, None);
                 }
             }
@@ -975,8 +1002,8 @@ impl Annotation {
                     pm.fill_rect(rect, &paint, id, None);
                 }
             }
-            Shape::Arrow(a, b, mid) => {
-                let c = local(&control(*a, *b, *mid));
+            Shape::Arrow(a, b, nodes) => {
+                let nodes: Vec<Point> = nodes.iter().map(local).collect();
                 let (a, b) = (local(a), local(b));
                 let len = (b.0 - a.0).hypot(b.1 - a.1);
                 if len < 1.0 {
@@ -988,43 +1015,27 @@ impl Annotation {
                     len: head_len,
                     width: head_w,
                 } = self.heads(len);
+                let curve = Curve::new(a, b, &nodes);
+                let last = curve.pieces.len() - 1;
                 // The shaft stops inside each head so the round cap doesn't
-                // poke out: the part of the curve from `t0` to `t1`, whose
-                // control points come from blossoming the curve.
-                let t0 = if head_at_start {
-                    1.0 - t_at_distance(b, c, a, head_len * 0.7)
+                // poke out.
+                let from = if head_at_start {
+                    let (i, t) = curve.reversed().back_from_end(head_len * 0.7);
+                    (last - i, 1.0 - t)
                 } else {
-                    0.0
+                    (0, 0.0)
                 };
-                let t1 = if head_at_end {
-                    t_at_distance(a, c, b, head_len * 0.7)
+                let to = if head_at_end {
+                    curve.back_from_end(head_len * 0.7)
                 } else {
-                    1.0
+                    (last, 1.0)
                 };
-                let blossom = |u: f32, v: f32| {
-                    let (wa, wb) = ((1.0 - u) * (1.0 - v), u * v);
-                    let wc = 1.0 - wa - wb;
-                    (
-                        wa * a.0 + wc * c.0 + wb * b.0,
-                        wa * a.1 + wc * c.1 + wb * b.1,
-                    )
-                };
-                if t0 < t1 {
-                    let (start, ctrl, end) = (blossom(t0, t0), blossom(t0, t1), blossom(t1, t1));
-                    let mut shaft = PathBuilder::new();
-                    shaft.move_to(start.0, start.1);
-                    if mid.is_some() {
-                        shaft.quad_to(ctrl.0, ctrl.1, end.0, end.1);
-                    } else {
-                        shaft.line_to(end.0, end.1);
-                    }
-                    if let Some(path) = shaft.finish() {
-                        pm.stroke_path(&path, &paint, &stroke, id, None);
-                    }
+                if let Some(path) = curve.between(from, to).and_then(|c| c.path()) {
+                    pm.stroke_path(&path, &paint, &stroke, id, None);
                 }
-                let heads = [(head_at_end, (a, c, b)), (head_at_start, (b, c, a))];
+                let heads = [(head_at_end, curve.clone()), (head_at_start, curve.reversed())];
                 for (_, curve) in heads.into_iter().filter(|(on, _)| *on) {
-                    if let Some(path) = head_path(curve, head_len, head_w) {
+                    if let Some(path) = head_path(&curve, head_len, head_w) {
                         pm.fill_path(&path, &paint, FillRule::Winding, id, None);
                     }
                 }
@@ -1531,42 +1542,149 @@ fn dashed_outline(pm: &mut Pixmap, a: Point, b: Point) {
     }
 }
 
-fn midpoint(a: Point, b: Point) -> Point {
-    ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0)
+fn lerp(a: Point, b: Point, t: f32) -> Point {
+    (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
 }
 
-/// The quadratic BÃ©zier control point that makes the curve from `a` to `b`
-/// pass through `mid` halfway along.
-fn control(a: Point, b: Point, mid: Option<Point>) -> Point {
-    let m = midpoint(a, b);
-    match mid {
-        Some(p) => (2.0 * p.0 - m.0, 2.0 * p.1 - m.1),
-        None => m,
+/// `n` nodes spaced evenly along the straight line from `a` to `b`.
+fn straight_nodes(a: Point, b: Point, n: u8) -> Vec<Point> {
+    (1..=n).map(|i| lerp(a, b, i as f32 / (n as f32 + 1.0))).collect()
+}
+
+/// A line's or an arrow's course: cubic Bézier pieces end to end, each
+/// its start, two controls and its end.
+#[derive(Debug, Clone)]
+struct Curve {
+    pieces: Vec<[Point; 4]>,
+    /// Drawn as curves, rather than one straight line.
+    bent: bool,
+}
+
+impl Curve {
+    /// From `a` to `b` through `nodes`: one in the middle makes a single
+    /// arc through it, more a smooth (Catmull-Rom) curve through them all.
+    fn new(a: Point, b: Point, nodes: &[Point]) -> Self {
+        let pieces = match nodes {
+            [] => vec![[a, lerp(a, b, 1.0 / 3.0), lerp(a, b, 2.0 / 3.0), b]],
+            // The quadratic through it halfway along, as a cubic.
+            [mid] => {
+                let m = lerp(a, b, 0.5);
+                let c = (2.0 * mid.0 - m.0, 2.0 * mid.1 - m.1);
+                vec![[a, lerp(a, c, 2.0 / 3.0), lerp(b, c, 2.0 / 3.0), b]]
+            }
+            _ => {
+                let pts: Vec<Point> = [a].into_iter().chain(nodes.iter().copied()).chain([b]).collect();
+                let at = |i: usize| pts[i.min(pts.len() - 1)];
+                (0..pts.len() - 1)
+                    .map(|i| {
+                        let (p0, p1, p2, p3) = (at(i.saturating_sub(1)), at(i), at(i + 1), at(i + 2));
+                        [
+                            p1,
+                            (p1.0 + (p2.0 - p0.0) / 6.0, p1.1 + (p2.1 - p0.1) / 6.0),
+                            (p2.0 - (p3.0 - p1.0) / 6.0, p2.1 - (p3.1 - p1.1) / 6.0),
+                            p2,
+                        ]
+                    })
+                    .collect()
+            }
+        };
+        Self {
+            pieces,
+            bent: !nodes.is_empty(),
+        }
+    }
+
+    fn end(&self) -> Point {
+        self.pieces[self.pieces.len() - 1][3]
+    }
+
+    /// The same course, from the other end.
+    fn reversed(&self) -> Self {
+        Self {
+            pieces: self.pieces.iter().rev().map(|&[a, b, c, d]| [d, c, b, a]).collect(),
+            bent: self.bent,
+        }
+    }
+
+    /// Where the point `dist` short of the end is: which piece, and how far
+    /// along it (as `t`).
+    fn back_from_end(&self, dist: f32) -> (usize, f32) {
+        let tip = self.end();
+        let away = |p: Point| (tip.0 - p.0).hypot(tip.1 - p.1) > dist;
+        for (i, piece) in self.pieces.iter().enumerate().rev() {
+            if away(piece[0]) {
+                let (mut lo, mut hi) = (0.0f32, 1.0f32);
+                for _ in 0..24 {
+                    let t = (lo + hi) / 2.0;
+                    if away(cubic(piece, t)) {
+                        lo = t;
+                    } else {
+                        hi = t;
+                    }
+                }
+                return (i, lo);
+            }
+        }
+        (0, 0.0)
+    }
+
+    fn at(&self, (i, t): (usize, f32)) -> Point {
+        cubic(&self.pieces[i], t)
+    }
+
+    /// The part of it between two places along it, if there's any.
+    fn between(&self, from: (usize, f32), to: (usize, f32)) -> Option<Self> {
+        if from >= to {
+            return None;
+        }
+        let pieces = (from.0..=to.0)
+            .filter_map(|i| {
+                let lo = if i == from.0 { from.1 } else { 0.0 };
+                let hi = if i == to.0 { to.1 } else { 1.0 };
+                (lo < hi).then(|| {
+                    let left = split(self.pieces[i], hi).0;
+                    split(left, lo / hi).1
+                })
+            })
+            .collect();
+        Some(Self {
+            pieces,
+            bent: self.bent,
+        })
+    }
+
+    fn path(&self) -> Option<Path> {
+        let mut pb = PathBuilder::new();
+        let start = self.pieces.first()?[0];
+        pb.move_to(start.0, start.1);
+        if self.bent {
+            for [_, c1, c2, end] in &self.pieces {
+                pb.cubic_to(c1.0, c1.1, c2.0, c2.1, end.0, end.1);
+            }
+        } else {
+            let end = self.end();
+            pb.line_to(end.0, end.1);
+        }
+        pb.finish()
     }
 }
 
-/// A point on the quadratic BÃ©zier curve from `a` to `b` with control `c`.
-fn bezier(a: Point, c: Point, b: Point, t: f32) -> Point {
+/// A point on a cubic Bézier piece.
+fn cubic(&[a, b, c, d]: &[Point; 4], t: f32) -> Point {
     let u = 1.0 - t;
+    let (wa, wb, wc, wd) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
     (
-        u * u * a.0 + 2.0 * u * t * c.0 + t * t * b.0,
-        u * u * a.1 + 2.0 * u * t * c.1 + t * t * b.1,
+        wa * a.0 + wb * b.0 + wc * c.0 + wd * d.0,
+        wa * a.1 + wb * b.1 + wc * c.1 + wd * d.1,
     )
 }
 
-/// Where along the curve (as `t`) the point `dist` short of the end `b` is.
-fn t_at_distance(a: Point, c: Point, b: Point, dist: f32) -> f32 {
-    let (mut lo, mut hi) = (0.0f32, 1.0f32);
-    for _ in 0..24 {
-        let t = (lo + hi) / 2.0;
-        let p = bezier(a, c, b, t);
-        if (b.0 - p.0).hypot(b.1 - p.1) > dist {
-            lo = t;
-        } else {
-            hi = t;
-        }
-    }
-    lo
+/// A cubic Bézier piece cut in two at `t`.
+fn split([a, b, c, d]: [Point; 4], t: f32) -> ([Point; 4], [Point; 4]) {
+    let (ab, bc, cd) = (lerp(a, b, t), lerp(b, c, t), lerp(c, d, t));
+    let (abc, bcd) = (lerp(ab, bc, t), lerp(bc, cd, t));
+    let m = lerp(abc, bcd, t);
+    ([a, ab, abc, m], [m, bcd, cd, d])
 }
 
 fn arrow_head(stroke: f32) -> (f32, f32) {
@@ -1574,11 +1692,11 @@ fn arrow_head(stroke: f32) -> (f32, f32) {
     (len, len * 0.85)
 }
 
-/// An arrowhead `len` long and `width` wide at `b`, the end of the curve
-/// from `a` with control `c`. It sits on the curve, pointing from where it
-/// meets the shaft to the tip.
-fn head_path((a, c, b): (Point, Point, Point), len: f32, width: f32) -> Option<Path> {
-    let meets = bezier(a, c, b, t_at_distance(a, c, b, len));
+/// An arrowhead `len` long and `width` wide at the end of `curve`. It sits
+/// on the curve, pointing from where it meets the shaft to the tip.
+fn head_path(curve: &Curve, len: f32, width: f32) -> Option<Path> {
+    let b = curve.end();
+    let meets = curve.at(curve.back_from_end(len));
     let (dx, dy) = (b.0 - meets.0, b.1 - meets.1);
     let d = dx.hypot(dy).max(f32::EPSILON);
     let (dir, perp) = ((dx / d, dy / d), (-dy / d, dx / d));
@@ -1602,18 +1720,6 @@ fn pen_path(pts: &[Point]) -> Option<Path> {
     }
     let last = pts[pts.len() - 1];
     pb.line_to(last.0, last.1);
-    pb.finish()
-}
-
-/// A line from `a` to `b`, curved through control `c` if `curved`.
-fn curve_path(a: Point, c: Point, b: Point, curved: bool) -> Option<Path> {
-    let mut pb = PathBuilder::new();
-    pb.move_to(a.0, a.1);
-    if curved {
-        pb.quad_to(c.0, c.1, b.0, b.1);
-    } else {
-        pb.line_to(b.0, b.1);
-    }
     pb.finish()
 }
 
@@ -1841,8 +1947,8 @@ struct Edit {
 
 #[derive(Clone, Copy)]
 enum EditKind {
-    /// Moving a line's or an arrow's middle node, or a step's point.
-    Bend,
+    /// Moving a line's or an arrow's node (which one), or a step's point.
+    Bend(usize),
     /// Moving a clip, held at `grab` from its top-left corner.
     Move { grab: Point },
 }
@@ -2016,18 +2122,29 @@ impl Canvas {
         self.replay();
     }
 
-    /// Picks up the topmost shape drawn with `tool` whose node is within
-    /// `radius` of `p`, to reshape it by dragging. Returns whether there
-    /// was one.
+    /// Picks up the topmost shape drawn with `tool` with a node within
+    /// `radius` of `p`, by its nearest one, to reshape it by dragging.
+    /// Returns whether there was one.
     pub fn begin_bend(&mut self, p: Point, radius: f32, tool: Tool) -> bool {
-        let near = |a: &Annotation| {
-            a.bend_node(tool)
-                .is_some_and(|n| (n.0 - p.0).hypot(n.1 - p.1) <= radius)
+        let nearest = |a: &Annotation| {
+            a.bend_nodes(tool)
+                .into_iter()
+                .map(|n| (n.0 - p.0).hypot(n.1 - p.1))
+                .enumerate()
+                .filter(|&(_, d)| d <= radius)
+                .min_by(|x, y| x.1.total_cmp(&y.1))
+                .map(|(node, _)| node)
         };
-        let Some(i) = self.annotations.iter().rposition(near) else {
+        let Some((i, node)) = self
+            .annotations
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(i, a)| nearest(a).map(|node| (i, node)))
+        else {
             return false;
         };
-        self.begin_edit(i, EditKind::Bend);
+        self.begin_edit(i, EditKind::Bend(node));
         true
     }
 
@@ -2153,13 +2270,13 @@ impl Canvas {
     }
 
     /// Nodes of the shapes drawn with `tool` that can be dragged to reshape
-    /// them: lines' and arrows' middles, and steps' points.
+    /// them: lines' and arrows' nodes, and steps' points.
     pub fn bend_nodes(&self, tool: Tool) -> Vec<Point> {
         let edited = self.active.as_ref().filter(|_| self.editing.is_some());
         self.annotations
             .iter()
             .chain(edited)
-            .filter_map(|a| a.bend_node(tool))
+            .flat_map(|a| a.bend_nodes(tool))
             .collect()
     }
 
@@ -2177,7 +2294,7 @@ impl Canvas {
     pub fn drag_to(&mut self, p: Point, constrain: bool) {
         if let Some(a) = &mut self.active {
             match self.editing.as_ref().map(|e| e.kind) {
-                Some(EditKind::Bend) => a.bend_to(p),
+                Some(EditKind::Bend(node)) => a.bend_to(node, p),
                 Some(EditKind::Move { grab }) => a.move_to((p.0 - grab.0, p.1 - grab.1)),
                 None => a.drag_to(p, constrain),
             }
@@ -2865,6 +2982,87 @@ mod tests {
         assert_eq!(c.image().get_pixel(10, 10).0, [200, 200, 200, 255]);
         c.undo();
         assert_eq!(c.image().as_raw(), before.as_raw());
+    }
+
+    #[test]
+    fn arrows_drag_with_their_own_tool_and_keep_their_curve() {
+        let mut c = canvas();
+        draw(&mut c, Tool::Arrow, (1010.0, 530.0), (1090.0, 530.0));
+        assert!(c.begin_bend((1050.0, 530.0), 10.0, Tool::Arrow));
+        c.drag_to((1050.0, 520.0), false);
+        c.commit();
+        let before = c.image();
+        // Off the arrow, or with another tool: nothing to pick up.
+        assert!(!c.movable_at((1030.0, 550.0), Tool::Arrow));
+        assert!(!c.movable_at((1020.0, 529.0), Tool::Line));
+        assert!(c.begin_move((1020.0, 529.0), Tool::Arrow));
+        c.drag_to((1030.0, 539.0), false);
+        c.commit();
+        assert_eq!(c.annotations.len(), 1);
+        let Shape::Arrow(a, b, nodes) = &c.annotations[0].shape else {
+            panic!("still an arrow");
+        };
+        assert_eq!((*a, *b), ((1020.0, 540.0), (1100.0, 540.0)));
+        assert_eq!(nodes, &[(1060.0, 530.0)]);
+        c.undo();
+        assert_eq!(c.image().as_raw(), before.as_raw());
+    }
+
+    #[test]
+    fn lines_and_arrows_bend_through_each_of_their_nodes() {
+        let style = Style {
+            bends: 3,
+            ..Style::default()
+        };
+        let untouched = [200, 200, 200, 255];
+        for tool in [Tool::Line, Tool::Arrow] {
+            let mut c = canvas();
+            c.begin(Annotation::new(tool, style, (1010.0, 530.0)).unwrap());
+            c.drag_to((1090.0, 530.0), false);
+            c.commit();
+            assert_eq!(c.bend_nodes(tool), vec![(1030.0, 530.0), (1050.0, 530.0), (1070.0, 530.0)]);
+
+            // The nearest node is picked up; the others stay where they are.
+            assert!(c.begin_bend((1033.0, 531.0), 16.0, tool));
+            c.drag_to((1030.0, 512.0), false);
+            c.commit();
+            assert_eq!(c.bend_nodes(tool), vec![(1030.0, 512.0), (1050.0, 530.0), (1070.0, 530.0)]);
+            // It curves through them all.
+            assert_ne!(c.image().get_pixel(30, 12).0, untouched);
+            assert_ne!(c.image().get_pixel(50, 30).0, untouched);
+            assert_eq!(c.image().get_pixel(30, 30).0, untouched);
+
+            // Put back on the line, it's straight again.
+            assert!(c.begin_bend((1030.0, 512.0), 16.0, tool));
+            c.drag_to((1031.0, 531.0), false);
+            c.commit();
+            assert_eq!(c.bend_nodes(tool), vec![(1030.0, 530.0), (1050.0, 530.0), (1070.0, 530.0)]);
+            assert_ne!(c.image().get_pixel(30, 30).0, untouched);
+        }
+    }
+
+    #[test]
+    fn curves_split_into_the_same_course() {
+        let curve = Curve::new((0.0, 0.0), (90.0, 0.0), &[(30.0, -20.0), (60.0, 20.0)]);
+        assert_eq!(curve.pieces.len(), 3);
+        // Each piece runs through the next node.
+        assert_eq!(curve.pieces[0][3], (30.0, -20.0));
+        assert_eq!(curve.pieces[1][3], (60.0, 20.0));
+        // The middle third of the middle piece starts and ends on it.
+        let part = curve.between((1, 1.0 / 3.0), (1, 2.0 / 3.0)).unwrap();
+        let near = |p: Point, q: Point| (p.0 - q.0).hypot(p.1 - q.1) < 1e-3;
+        assert!(near(part.pieces[0][0], curve.at((1, 1.0 / 3.0))));
+        assert!(near(part.pieces[0][3], curve.at((1, 2.0 / 3.0))));
+        assert!(near(cubic(&part.pieces[0], 0.5), curve.at((1, 0.5))));
+        // Across pieces: the rest of the first, all of the second, and the
+        // start of the third.
+        assert_eq!(curve.between((0, 0.5), (2, 0.5)).unwrap().pieces.len(), 3);
+        assert!(curve.between((2, 0.5), (0, 0.5)).is_none());
+        // 10 short of the end is 10 from the tip, on the last piece.
+        let (i, t) = curve.back_from_end(10.0);
+        assert_eq!(i, 2);
+        let p = curve.at((i, t));
+        assert!(((90.0 - p.0).hypot(p.1) - 10.0).abs() < 1e-2);
     }
 
     #[test]
