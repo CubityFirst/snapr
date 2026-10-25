@@ -1,5 +1,5 @@
-# Windows on ARM machines often lack the Visual C++ runtime (a tester's
+# Not every Windows machine has the Visual C++ runtime (a tester's ARM one
 # didn't, and snapr wouldn't start: "VCRUNTIME140.dll was not found"), so
-# the ARM build carries it inside the .exe.
-[target.aarch64-pc-windows-msvc]
+# the Windows builds carry it inside the .exe.
+[target.'cfg(all(windows, target_env = "msvc"))']
 rustflags = ["-C", "target-feature=+crt-static"]
