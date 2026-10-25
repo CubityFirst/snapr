@@ -237,6 +237,8 @@ impl X11Window {
         }
         let primitives =
             ctx.tessellate(std::mem::take(&mut output.shapes), output.pixels_per_point);
+        let [r, g, b, a] = crate::theme::backdrop(ctx).map(f64::from);
+        let clear = wgpu::Color { r, g, b, a };
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f)
             | wgpu::CurrentSurfaceTexture::Suboptimal(f) => Some(f),
@@ -268,7 +270,7 @@ impl X11Window {
                             depth_slice: None,
                             resolve_target: None,
                             ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                load: wgpu::LoadOp::Clear(clear),
                                 store: wgpu::StoreOp::Store,
                             },
                         })],

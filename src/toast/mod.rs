@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use egui::{Color32, RichText};
+use egui::RichText;
 use egui_wgpu::winit::Painter;
 use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -105,8 +105,7 @@ impl Toast {
             (preview.y + CAPTION_HEIGHT + 2.0 * MARGIN) as f64,
         );
         let ctx = egui::Context::default();
-        ctx.set_visuals(egui::Visuals::dark());
-        crate::theme::crisp_text(&ctx);
+        crate::theme::apply(&ctx);
 
         #[cfg(target_os = "linux")]
         let backend = if x11::wanted(event_loop) {
@@ -315,6 +314,7 @@ impl Toast {
             Backend::X11(w) => w.egui_input(),
         };
         let ctx = self.ctx.clone();
+        crate::theme::follow(&ctx);
         let texture = self.texture.clone();
         let caption = match (self.link.is_some(), self.video) {
             (true, _) => "Click to open the link",
@@ -346,7 +346,7 @@ impl Toast {
         painter.paint_and_update_textures(
             egui::ViewportId::ROOT,
             output.pixels_per_point,
-            [0.0, 0.0, 0.0, 1.0],
+            crate::theme::backdrop(&ctx),
             &primitives,
             &mut output.textures_delta,
             Vec::new(),
@@ -366,12 +366,13 @@ fn contents(
     video: bool,
 ) {
     egui::CentralPanel::default()
-        .frame(
+        .frame({
+            let p = crate::theme::palette(ui);
             egui::Frame::new()
-                .fill(Color32::from_rgb(28, 29, 32))
-                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(58, 60, 66)))
-                .inner_margin(MARGIN),
-        )
+                .fill(p.surface)
+                .stroke(egui::Stroke::new(1.0, p.stroke))
+                .inner_margin(MARGIN)
+        })
         .show(ui, |ui| {
             let image_area =
                 egui::vec2(ui.available_width(), ui.available_height() - CAPTION_HEIGHT);
@@ -392,7 +393,7 @@ fn contents(
             }
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new(caption).color(Color32::WHITE).size(12.0));
+                ui.label(RichText::new(caption).strong().size(12.0));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(RichText::new(hint).weak().size(11.0));
                 });
@@ -463,9 +464,14 @@ mod tests {
             .flat_map(|i| [(i % 640 / 3) as u8, 90, (i / 640 / 2) as u8, 255])
             .collect();
         let image = egui::ColorImage::from_rgba_unmultiplied([640, 360], &pixels);
-        for (name, video) in [("toast-preview", false), ("toast-video-preview", true)] {
+        for (name, video, dark) in [
+            ("toast-preview", false, true),
+            ("toast-video-preview", true, true),
+            ("toast-light-preview", false, false),
+        ] {
             let mut texture = None;
             crate::preview::render(name, [332, 218], 1.0, |root| {
+                crate::preview::themed(root, dark);
                 let t = texture.get_or_insert_with(|| {
                     root.ctx()
                         .load_texture("toast", image.clone(), Default::default())

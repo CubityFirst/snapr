@@ -15,7 +15,7 @@ use crate::output;
 use crate::secrets;
 use crate::settings_search::found;
 use crate::settings::{
-    MagnifierScroll, Settings, ToolAction, ToolHotkey, TrayClick, TrayIconStyle, Upload, parse_hotkey,
+    MagnifierScroll, Settings, Theme, ToolAction, ToolHotkey, TrayClick, TrayIconStyle, Upload, parse_hotkey,
 };
 use crate::sound::{self, Sound};
 use crate::theme;
@@ -272,6 +272,16 @@ impl Form {
                     });
                 });
             }
+
+            group(ui, "Appearance", |ui| {
+                row(ui, "theme", "Theme", Some("For every snapr window, from this one to the capture toolbar"), false, |ui| {
+                    theme::segmented(ui, |ui| {
+                        for choice in Theme::ALL {
+                            ui.selectable_value(&mut self.draft.theme, choice, choice.label());
+                        }
+                    });
+                });
+            });
 
             group(ui, "After each capture", |ui| {
                 row(ui, "play-sounds", "Play sounds", Some("A shutter on capture, and a chime when something's done"), false, |ui| {

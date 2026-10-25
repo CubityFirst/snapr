@@ -188,8 +188,7 @@ impl Pin {
         }
 
         let ctx = egui::Context::default();
-        ctx.set_visuals(egui::Visuals::dark());
-        crate::theme::crisp_text(&ctx);
+        crate::theme::apply(&ctx);
         let config = egui_wgpu::WgpuConfiguration {
             wgpu_setup: gpu.egui_setup(),
             ..Default::default()
@@ -615,6 +614,7 @@ impl Pin {
         self.fit_surface(self.window.inner_size());
         let input = self.state.take_egui_input(&self.window);
         let ctx = self.state.egui_ctx().clone();
+        crate::theme::follow(&ctx);
         let texture = self.texture.id();
         let pointer = self.pointer();
         let zoom = self.zoom;
@@ -632,7 +632,7 @@ impl Pin {
         self.painter.paint_and_update_textures(
             egui::ViewportId::ROOT,
             output.pixels_per_point,
-            [0.0, 0.0, 0.0, 1.0],
+            crate::theme::backdrop(&ctx),
             &primitives,
             &mut output.textures_delta,
             Vec::new(),
@@ -705,6 +705,7 @@ fn draw(
     notice: Option<&str>,
 ) -> Vec<(Rect, Button)> {
     let rect = ui.max_rect();
+    let p = crate::theme::palette(ui);
     let painter = ui.painter();
     painter.image(
         texture,
@@ -731,7 +732,7 @@ fn draw(
         pos2(rect.right() - BAR_MARGIN - GRIP - bar_width, rect.top() + BAR_MARGIN),
         vec2(bar_width, BUTTON),
     );
-    painter.rect_filled(bar, 6.0, Color32::from_rgba_unmultiplied(20, 21, 24, 220));
+    painter.rect_filled(bar, 6.0, p.hud);
     let zoom_rect = Rect::from_min_size(bar.min, vec2(ZOOM_LABEL, BUTTON));
     let top_rect = Rect::from_min_size(zoom_rect.right_top(), vec2(BUTTON, BUTTON));
     let copy_rect = Rect::from_min_size(top_rect.right_top(), vec2(BUTTON, BUTTON));
@@ -747,12 +748,14 @@ fn draw(
             let fill = if *b == Button::Close {
                 Color32::from_rgb(196, 43, 28)
             } else {
-                Color32::from_white_alpha(28)
+                p.wash(28)
             };
             painter.rect_filled(r.shrink(2.0), 4.0, fill);
         }
     }
-    let ink = Color32::from_gray(235);
+    let ink = p.icon;
+    // Behind the icons' parts that cover others.
+    let behind = p.hud.to_opaque();
     painter.text(
         zoom_rect.center(),
         egui::Align2::CENTER_CENTER,
@@ -770,14 +773,14 @@ fn draw(
         painter.circle_filled(head, 4.0, ACCENT);
     } else {
         painter.line_segment([head, tip], stroke);
-        painter.circle(head, 3.5, Color32::from_rgb(20, 21, 24), stroke);
+        painter.circle(head, 3.5, behind, stroke);
     }
     // Copy: two overlapping sheets.
     let c = copy_rect.center();
     let back = Rect::from_center_size(c + vec2(-1.5, -1.5), vec2(8.0, 9.0));
     let front = Rect::from_center_size(c + vec2(1.5, 1.5), vec2(8.0, 9.0));
     painter.rect_stroke(back, 1.5, stroke, egui::StrokeKind::Middle);
-    painter.rect_filled(front, 1.5, Color32::from_rgb(20, 21, 24));
+    painter.rect_filled(front, 1.5, behind);
     painter.rect_stroke(front, 1.5, stroke, egui::StrokeKind::Middle);
     // Close: a cross.
     let c = close_rect.center();
@@ -791,7 +794,7 @@ fn draw(
             at - vec2(galley.size().x + 12.0, 0.0),
             galley.size() + vec2(12.0, 6.0),
         );
-        painter.rect_filled(bg, 4.0, Color32::from_rgba_unmultiplied(20, 21, 24, 220));
+        painter.rect_filled(bg, 4.0, p.hud);
         painter.galley(bg.min + vec2(6.0, 3.0), galley, ink);
     }
     buttons
@@ -828,12 +831,15 @@ mod tests {
             .flat_map(|i| [(i % 480 / 2) as u8, 90, (i / 480) as u8, 255])
             .collect();
         let image = egui::ColorImage::from_rgba_unmultiplied([480, 270], &pixels);
-        let mut texture = None;
-        crate::preview::render("pin-preview", [480, 270], 1.0, |root| {
-            let t = texture.get_or_insert_with(|| {
-                root.ctx().load_texture("pin", image.clone(), TEXTURE)
+        for (name, dark) in [("pin-preview", true), ("pin-light-preview", false)] {
+            let mut texture = None;
+            crate::preview::render(name, [480, 270], 1.0, |root| {
+                crate::preview::themed(root, dark);
+                let t = texture.get_or_insert_with(|| {
+                    root.ctx().load_texture("pin", image.clone(), TEXTURE)
+                });
+                draw(root, t.id(), Some(pos2(400.0, 18.0)), 1.25, true, Some("Copied"));
             });
-            draw(root, t.id(), Some(pos2(400.0, 18.0)), 1.25, true, Some("Copied"));
-        });
+        }
     }
 }

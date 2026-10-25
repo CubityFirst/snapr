@@ -201,8 +201,7 @@ impl Overlay {
         let bind_group = bind_group(gpu, &frame_view, &uniforms, &gpu.empty_layer);
 
         let ctx = egui::Context::default();
-        ctx.set_visuals(egui::Visuals::dark());
-        crate::theme::crisp_text(&ctx);
+        crate::theme::apply(&ctx);
         // The toolbar's tooltips name its tools and their keys: show them
         // soon after the pointer stops (egui waits half a second).
         ctx.all_styles_mut(|s| s.interaction.tooltip_delay = 0.1);
@@ -211,7 +210,7 @@ impl Overlay {
             egui::ViewportId::ROOT,
             &window,
             Some(window.scale_factor() as f32),
-            None,
+            window.theme(),
             Some(gpu.device.limits().max_texture_dimension_2d as usize),
         );
         let renderer = egui_wgpu::Renderer::new(&gpu.device, format, Default::default());

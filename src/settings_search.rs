@@ -45,6 +45,7 @@ static INDEX: LazyLock<Vec<Entry>> = LazyLock::new(|| {
     if cfg!(windows) {
         add(Settings, "start-with-windows", "Start snapr when you sign in to Windows", "startup boot login logon autostart launch");
     }
+    add(Settings, "theme", "Theme", "light dark mode appearance colours colors system night");
     add(Settings, "play-sounds", "Play sounds", "shutter sound effects audio mute quiet");
     add(Settings, "sound-volume", "Sound volume", "loudness audio shutter");
     add(Settings, "show-toast", "Show a preview in the corner after each capture", "toast notification popup thumbnail");
