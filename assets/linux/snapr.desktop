@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=snapr
+GenericName=Screenshot Tool
+Comment=Capture a region of the screen
+Exec=snapr
+Icon=snapr
+Terminal=false
+Categories=Graphics;Utility;
+Keywords=screenshot;screen;capture;record;
+StartupNotify=false
+Actions=capture;
+
+[Desktop Action capture]
+Name=Capture
+Exec=snapr --once

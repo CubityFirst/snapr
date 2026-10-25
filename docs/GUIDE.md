@@ -309,10 +309,15 @@ snapr --settings   # open the settings window on start
   Audio Recording* (capture) and *Device Control and Data Access* (global
   hotkey; called *Accessibility* before macOS 27) permissions. The tray icon
   lives in the menu bar.
-- **Linux**: the tray uses StatusNotifierItem (KDE and most desktops; GNOME
-  needs the AppIndicator extension). Without a tray the settings window is
-  shown instead. On Wayland, global hotkeys need the user in the `input` group,
-  or bind `snapr --once` to a compositor shortcut. Screen recording and video
-  previews need [FFmpeg](https://ffmpeg.org) (on `PATH`, or set its path in
-  Settings); Windows and macOS encode and play videos with the system's own
-  codecs.
+- **Linux**: on Debian and Ubuntu, install `snapr-linux-x86_64.deb` (`sudo
+  apt install ./snapr-linux-x86_64.deb`; it needs Ubuntu 24.04, Debian 13 or
+  newer), which puts snapr in the app menu with a *Capture* action. snapr
+  then tells you when there's a newer .deb rather than updating itself.
+  Elsewhere, run the bare `snapr-linux-x86_64` (`chmod +x` it first). The
+  tray uses StatusNotifierItem (KDE and most desktops; GNOME needs the
+  AppIndicator extension, which Ubuntu has). Without a tray the settings
+  window is shown instead. On Wayland, global hotkeys need the user in the
+  `input` group, or bind `snapr --once` to a compositor shortcut. Screen
+  recording and video previews need [FFmpeg](https://ffmpeg.org) (on `PATH`,
+  or set its path in Settings; the .deb installs it); Windows and macOS
+  encode and play videos with the system's own codecs.

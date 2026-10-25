@@ -4,7 +4,8 @@
 # latest release, so the file names below must stay in step with
 # `update::asset_name`: snapr-<os>-<arch>[.exe], and on macOS
 # snapr-macos-<arch>.app.zip (scripts/macos-bundle.sh, which also makes the
-# .dmg people install from).
+# .dmg people install from). On Linux there's also snapr-linux-<arch>.deb to
+# install from, which the updater leaves to the package manager.
 #
 # The release notes are the commits since the previous version tag
 # (scripts/release-notes.sh), grouped by their Conventional Commits types
@@ -87,6 +88,18 @@ jobs:
         run: |
           mkdir dist
           cp "target/${{ matrix.target }}/release/snapr${{ runner.os == 'Windows' && '.exe' || '' }}" "dist/${{ matrix.asset }}"
+
+      - uses: taiki-e/install-action@v2
+        if: runner.os == 'Linux'
+        with:
+          tool: cargo-deb
+
+      # The .deb people install from (Cargo.toml's [package.metadata.deb]),
+      # its dependencies worked out from the libraries snapr links to. The
+      # bare binary above stays for other distributions and their updater.
+      - name: Package the .deb
+        if: runner.os == 'Linux'
+        run: cargo deb --no-build --target ${{ matrix.target }} --output "dist/${{ matrix.asset }}.deb"
 
       # The self-signed certificate snapr.app is signed with, so macOS keeps
       # its permissions across updates (scripts/macos-bundle.sh). It must

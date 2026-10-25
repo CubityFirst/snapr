@@ -4,6 +4,8 @@
 //! puts it in place of the running program, which carries on as it is until
 //! it's restarted. On macOS that's the whole `snapr.app` it runs from, so
 //! the app stays sealed by its signature; a bare program is replaced alone.
+//! Installed from the .deb, snapr only says there's a newer one: its file
+//! belongs to the package manager.
 
 use std::fmt::Write as _;
 use std::io::{Read, Write};
@@ -31,8 +33,8 @@ pub enum Status {
     /// When it last found nothing newer.
     UpToDate(chrono::DateTime<chrono::Local>),
     Downloading(String),
-    /// A newer version that development builds don't install themselves
-    /// over: its version and release page.
+    /// A newer version that development builds and the .deb's don't
+    /// install themselves over: its version and release page.
     Available(String, String),
     /// Installed; it runs from the next start. Its version and release page.
     Installed(String, String),
@@ -66,6 +68,12 @@ pub fn exe() -> Result<&'static Path, String> {
     EXE.get_or_init(|| std::env::current_exe().ok())
         .as_deref()
         .ok_or_else(|| "couldn't find snapr's own file".into())
+}
+
+/// snapr was installed from the .deb (Cargo.toml's
+/// `[package.metadata.deb]`), so updates come from a newer .deb.
+pub fn packaged() -> bool {
+    cfg!(target_os = "linux") && exe().is_ok_and(|exe| exe.starts_with("/usr/bin"))
 }
 
 /// Calls `due` shortly after starting, then twice a day.
@@ -128,7 +136,7 @@ fn check_and_install(report: &dyn Fn(Status)) -> Result<Status, String> {
     {
         return Ok(Status::Installed(v, page));
     }
-    if cfg!(debug_assertions) {
+    if cfg!(debug_assertions) || packaged() {
         return Ok(Status::Available(version, release.html_url));
     }
     let exe = exe()?;

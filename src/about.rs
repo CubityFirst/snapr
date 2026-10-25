@@ -181,6 +181,9 @@ fn update_status(ui: &mut egui::Ui, update: &update::Status, actions: &mut Vec<A
         // Said beside the version.
         Status::Idle | Status::Checking | Status::UpToDate(_) => return,
         Status::Downloading(version) => RichText::new(format!("Downloading snapr {version}\u{2026}")),
+        Status::Available(version, _) if update::packaged() => {
+            RichText::new(format!("snapr {version} is available: install its .deb from the release"))
+        }
         Status::Available(version, _) => {
             RichText::new(format!("snapr {version} is available (development builds don't install it)"))
         }

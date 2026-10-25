@@ -52,6 +52,29 @@ debug = "line-tables-only"
 lto = "thin"
 strip = true
 
+# The .deb the release workflow builds with cargo-deb: snapr in /usr/bin,
+# in the app menu, and the libraries it links to as dependencies.
+[package.metadata.deb]
+maintainer = "Michael Burr <cubity@cubityfir.st>"
+section = "graphics"
+depends = "$auto"
+# Screen recording and video previews.
+recommends = "ffmpeg"
+extended-description = """\
+snapr lives in the system tray: press the hotkey, every monitor freezes, \
+drag a region, and the result is saved as a PNG and copied to the \
+clipboard. It also records the screen, annotates, and uploads."""
+assets = [
+    ["target/release/snapr", "usr/bin/", "755"],
+    ["assets/linux/snapr.desktop", "usr/share/applications/", "644"],
+    ["assets/icon.svg", "usr/share/icons/hicolor/scalable/apps/snapr.svg", "644"],
+    ["assets/snapr.iconset/icon_16x16.png", "usr/share/icons/hicolor/16x16/apps/snapr.png", "644"],
+    ["assets/snapr.iconset/icon_32x32.png", "usr/share/icons/hicolor/32x32/apps/snapr.png", "644"],
+    ["assets/snapr.iconset/icon_128x128.png", "usr/share/icons/hicolor/128x128/apps/snapr.png", "644"],
+    ["assets/snapr.iconset/icon_256x256.png", "usr/share/icons/hicolor/256x256/apps/snapr.png", "644"],
+    ["assets/snapr.iconset/icon_512x512.png", "usr/share/icons/hicolor/512x512/apps/snapr.png", "644"],
+]
+
 [target."cfg(windows)".dependencies]
 opus-rs = "0.1.34"
 windows = { version = "0.62", features = ["Win32_Devices_Display", "Win32_Graphics_Direct3D", "Win32_Graphics_Gdi", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Media_MediaFoundation", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Ole", "Win32_System_Variant", "Win32_UI_HiDpi", "Win32_UI_Shell", "Win32_UI_Shell_Common"] }
