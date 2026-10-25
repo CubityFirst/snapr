@@ -474,10 +474,20 @@ pub fn displays() -> Vec<DisplayInfo> {
     list
 }
 
+/// Why capturing the screen failed with `e`, as the user is told: on
+/// Wayland without the desktop's permission, what to do about it, since
+/// xcap's own error then is about the last thing it tried.
+pub fn failure(e: impl std::fmt::Display) -> String {
+    #[cfg(target_os = "linux")]
+    if crate::portal::screenshots_blocked() {
+        return crate::portal::SCREENSHOTS_OFF.into();
+    }
+    format!("screen capture failed: {e}")
+}
+
 /// Captures `target` straight away, with the naming details of what was
 /// captured (process and title).
 pub fn grab(target: &Target) -> Result<(RgbaImage, Option<String>, Option<String>), String> {
-    let failed = |e: xcap::XCapError| format!("screen capture failed: {e}");
     #[cfg(target_os = "macos")]
     if !crate::macos::screen_recording_allowed() {
         return Err(crate::macos::SCREEN_RECORDING_OFF.into());
@@ -485,11 +495,11 @@ pub fn grab(target: &Target) -> Result<(RgbaImage, Option<String>, Option<String
     match target {
         Target::Window(id) => {
             let window = xcap::Window::all()
-                .map_err(failed)?
+                .map_err(failure)?
                 .into_iter()
                 .find(|w| w.id().is_ok_and(|i| i == *id))
                 .ok_or("that window has closed")?;
-            let image = window.capture_image().map_err(failed)?;
+            let image = window.capture_image().map_err(failure)?;
             let process = window
                 .pid()
                 .ok()
@@ -501,17 +511,17 @@ pub fn grab(target: &Target) -> Result<(RgbaImage, Option<String>, Option<String
         }
         Target::Display(id) => {
             let monitor = xcap::Monitor::all()
-                .map_err(failed)?
+                .map_err(failure)?
                 .into_iter()
                 .find(|m| m.id().is_ok_and(|i| i == *id))
                 .ok_or("that display is no longer connected")?;
-            let image = monitor.capture_image().map_err(failed)?;
+            let image = monitor.capture_image().map_err(failure)?;
             let (process, title) = foreground_window();
             Ok((image, process, title))
         }
         Target::Region(_) | Target::Everything => {
             let (process, title) = foreground_window();
-            let shots = capture_all().map_err(failed)?;
+            let shots = capture_all().map_err(failure)?;
             let placed: Vec<_> = shots
                 .iter()
                 .map(|s| PlacedShot {

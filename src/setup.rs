@@ -7,7 +7,7 @@
 use egui::{Label, Margin, RichText, Sense, Stroke, TextEdit, vec2};
 
 use crate::settings::default_folder;
-use crate::settings_ui::{ERROR, Form};
+use crate::settings_ui::{Action, ERROR, Form};
 use crate::sound::{self, Sound};
 use crate::theme::{self, ACCENT};
 
@@ -51,7 +51,7 @@ pub struct Setup {
 impl Setup {
     /// The question showing and the buttons to move between them. Answers
     /// go into `form.draft`; once it returns, setup is over.
-    pub fn ui(&mut self, ui: &mut egui::Ui, form: &mut Form) -> Option<Finish> {
+    pub fn ui(&mut self, ui: &mut egui::Ui, form: &mut Form, actions: &mut Vec<Action>) -> Option<Finish> {
         let steps = Step::all();
         let step = steps[self.step.min(steps.len() - 1)];
         let mut finish = None;
@@ -85,7 +85,7 @@ impl Setup {
                         Step::Folder => folder(ui, form),
                         Step::StartWithOs => start_with_os(ui, form),
                         Step::Sounds => sounds(ui, form),
-                        Step::Done => done(ui, form),
+                        Step::Done => done(ui, form, actions),
                     };
                     ui.add_space(28.0);
                     ui.horizontal(|ui| {
@@ -219,7 +219,7 @@ fn sounds(ui: &mut egui::Ui, form: &mut Form) -> bool {
 }
 
 /// The last page: how to take a screenshot, and anything that went wrong.
-fn done(ui: &mut egui::Ui, form: &mut Form) -> bool {
+fn done(ui: &mut egui::Ui, form: &mut Form, actions: &mut Vec<Action>) -> bool {
     heading(ui, "You're all set");
     let draft = &form.draft;
     let mut how = format!("Press {} to capture a region", draft.hotkey);
@@ -242,7 +242,9 @@ fn done(ui: &mut egui::Ui, form: &mut Form) -> bool {
     // E.g. a hotkey another program has, found on starting.
     if let Some((msg, true)) = &form.status {
         ui.add_space(12.0);
-        ui.add(Label::new(RichText::new(msg).color(ERROR)).wrap());
+        if !crate::settings_ui::permission_card(ui, msg, actions) {
+            ui.add(Label::new(RichText::new(msg).color(ERROR)).wrap());
+        }
     }
     true
 }
@@ -327,7 +329,7 @@ mod tests {
             crate::preview::render(&name, [980, 660], 1.0, |root| {
                 crate::theme::apply(root.ctx());
                 egui::CentralPanel::default().show(root, |ui| {
-                    setup.ui(ui, &mut form);
+                    setup.ui(ui, &mut form, &mut Vec::new());
                 });
             });
         }

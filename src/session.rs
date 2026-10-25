@@ -212,7 +212,7 @@ impl Session {
         let shots = match capture::capture_all() {
             Ok(s) if !s.is_empty() => s,
             Ok(_) => return Err("no monitors found".into()),
-            Err(e) => return Err(format!("screen capture failed: {e}")),
+            Err(e) => return Err(capture::failure(e)),
         };
         let mut overlays = HashMap::new();
         for shot in shots {

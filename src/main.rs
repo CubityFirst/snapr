@@ -36,6 +36,8 @@ mod pin;
 mod policy;
 mod player;
 mod pomf;
+#[cfg(target_os = "linux")]
+mod portal;
 #[cfg(test)]
 mod preview;
 mod qr;
@@ -119,6 +121,9 @@ enum UserEvent {
     UpdateDue,
     /// Checking for or installing an update got further.
     Update(update::Status),
+    /// The desktop answered snapr's request to take screenshots.
+    #[cfg(target_os = "linux")]
+    ScreenshotsAllowed(Result<(), String>),
 }
 
 /// A global hotkey, or why it's unavailable.
@@ -902,6 +907,14 @@ impl App {
             Action::TestUpload(upload, secret) => self.test_upload(upload, secret, false),
             Action::UploadIcon(upload, secret) => self.test_upload(upload, secret, true),
             Action::CheckForUpdates => self.check_for_updates(),
+            #[cfg(target_os = "linux")]
+            Action::AllowScreenshots => {
+                let proxy = Mutex::new(self.proxy.clone());
+                std::thread::spawn(move || {
+                    let result = portal::ask_for_screenshots();
+                    let _ = proxy.lock().unwrap().send_event(UserEvent::ScreenshotsAllowed(result));
+                });
+            }
             Action::RestartToUpdate => {
                 if let Some(save) = self.main_window.as_mut().and_then(|w| w.flush_settings()) {
                     self.main_window_action(event_loop, save);
@@ -1478,6 +1491,15 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 self.update = status;
             }
+            #[cfg(target_os = "linux")]
+            UserEvent::ScreenshotsAllowed(result) => {
+                let (msg, is_error) = match result {
+                    Ok(()) => ("snapr can take screenshots now".into(), false),
+                    // Still the card, with why.
+                    Err(e) => (format!("{e} \u{2014} {}", portal::SCREENSHOTS_OFF), true),
+                };
+                self.report(event_loop, msg, is_error);
+            }
             UserEvent::ThumbnailReady => {
                 if let Some(w) = &self.main_window {
                     w.window.request_redraw();
@@ -1790,6 +1812,13 @@ fn main() {
         }
         hotkeys
     };
+    // Asked for from the window, as GNOME only asks the focused app, and a
+    // capture from the hotkey or the tray has no snapr window focused.
+    #[cfg(target_os = "linux")]
+    if !once && portal::gnome() && portal::screenshots_blocked() {
+        status.get_or_insert((portal::SCREENSHOTS_OFF.into(), true));
+        open_settings = true;
+    }
 
     let config = output_config(&settings).unwrap_or_else(|e| {
         status = Some((format!("{e} \u{2014} using default naming"), true));

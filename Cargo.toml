@@ -82,6 +82,7 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphic
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni = { version = "0.3.6", default-features = false, features = ["async-io", "blocking"] }
+zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }
 # The corner preview under Wayland goes through XWayland (the same x11rb as winit).
 x11rb = { version = "0.13", default-features = false, features = ["allow-unsafe-code", "dl-libxcb", "randr", "resource_manager"] }
 
