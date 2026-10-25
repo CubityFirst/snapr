@@ -2000,6 +2000,7 @@ fn main() {
         eprintln!("event loop error: {e}");
     }
     app.output.flush();
+    hotkey::release();
     if app.restart {
         // Let go of the tray icon and the single-instance lock first, or the
         // new copy would hand over to this one and quit.

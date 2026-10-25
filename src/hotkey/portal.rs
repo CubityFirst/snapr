@@ -237,6 +237,10 @@ impl Shortcut {
     /// Asks for `hotkey`. Binding happens shortly after, on another thread,
     /// and problems are reported through `super::report`.
     pub fn register(&self, hotkey: Hotkey) -> Result<(), String> {
+        // Elsewhere the desktop asks for keys it can't be told.
+        if super::hyprland::running() && trigger(hotkey).is_none() {
+            return Err(format!("Hyprland can't bind {}: choose another key", hotkey.key_code.name()));
+        }
         self.set(true, Some(hotkey));
         Ok(())
     }
@@ -275,7 +279,13 @@ fn run(conn: Connection, state: Arc<Mutex<State>>, changes: Receiver<()>) {
     let mut bound: Vec<Wanted> = Vec::new();
     while changes.recv().is_ok() {
         while changes.recv_timeout(SETTLE).is_ok() {}
-        let wanted = wanted(&state.lock().unwrap());
+        let mut wanted = wanted(&state.lock().unwrap());
+        if super::hyprland::running() {
+            // Hyprland ignores suggested keys: they're bound there instead,
+            // so changing them needn't open another session.
+            let keys: Vec<_> = wanted.iter_mut().map(|w| (w.0.clone(), w.2.take())).collect();
+            super::hyprland::apply(&keys);
+        }
         if wanted == bound {
             continue;
         }
@@ -408,7 +418,8 @@ fn keys<'a>(
 ) -> HashMap<String, String> {
     list.filter_map(|(id, details)| {
         let keys = details.get("trigger_description")?;
-        let keys = <&str>::try_from(&**keys).ok()?;
+        // Hyprland's are empty: its keys aren't the portal's.
+        let keys = <&str>::try_from(&**keys).ok().filter(|k| !k.is_empty())?;
         Some((id.clone(), keys.to_string()))
     })
     .collect()

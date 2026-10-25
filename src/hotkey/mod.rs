@@ -2,7 +2,8 @@
 //!
 //! Windows uses the OS hotkey API (`RegisterHotKey`): the OS tracks the
 //! modifier keys and swallows the combination so it doesn't also reach the
-//! focused app. Wayland uses the desktop's global shortcuts portal. Other
+//! focused app. Wayland uses the desktop's global shortcuts portal, and on
+//! Hyprland snapr binds the portal's shortcuts to their keys itself. Other
 //! platforms use livesplit-hotkey.
 
 use std::sync::OnceLock;
@@ -11,6 +12,8 @@ use livesplit_hotkey::Hotkey;
 
 use crate::settings::parse_hotkey;
 
+#[cfg(target_os = "linux")]
+mod hyprland;
 #[cfg(target_os = "linux")]
 mod portal;
 
@@ -52,10 +55,11 @@ fn keys_changed() {
 }
 
 /// Whether the desktop decides the hotkeys' keys: snapr's are only
-/// suggested the first time, then changed in the desktop's settings.
+/// suggested the first time, then changed in the desktop's settings. Not on
+/// Hyprland, where snapr binds the portal's shortcuts to its own keys.
 pub fn desktop_picks_keys() -> bool {
     #[cfg(target_os = "linux")]
-    return platform::wayland() && portal::Portal::get().is_some();
+    return platform::wayland() && portal::Portal::get().is_some() && !hyprland::running();
     #[cfg(not(target_os = "linux"))]
     false
 }
@@ -188,6 +192,13 @@ pub fn desktop_asking() -> bool {
     return portal::Portal::get().is_some_and(|p| p.binding());
     #[cfg(not(target_os = "linux"))]
     false
+}
+
+/// Lets go of the hotkeys' keys as snapr quits, where they outlive it:
+/// Hyprland keeps the binds snapr added (see `hyprland`).
+pub fn release() {
+    #[cfg(target_os = "linux")]
+    hyprland::clear();
 }
 
 /// Opens the desktop's settings where snapr's hotkeys' keys are changed.
@@ -605,7 +616,7 @@ mod platform {
                     .map(Self::Hook)
                     .map_err(|_| {
                         "global hotkeys on Wayland need the desktop's global shortcuts \
-                         portal (GNOME 48 or later, KDE Plasma) or the input group"
+                         portal (GNOME 48 or later, KDE Plasma, Hyprland) or the input group"
                             .to_string()
                     });
             }

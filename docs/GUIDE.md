@@ -322,7 +322,11 @@ snapr --settings   # open the settings window on start
   also work over remote desktop. The first time, the desktop asks you to
   confirm snapr's hotkeys; after that their keys are changed in the
   desktop's own settings (GNOME: Settings → Apps → snapr → Global
-  Shortcuts), not snapr's. Without the portal they need the user in the
+  Shortcuts), not snapr's. Hyprland's portal leaves the keys to its config,
+  so there snapr binds them itself (`global, snapr:capture` and so on) to
+  the keys set in snapr, again after each config reload, and unbinds them
+  when it quits. Keys Hyprland already binds to something else are left
+  alone, and snapr says so. Without the portal they need the user in the
   `input` group, or bind `snapr --once` to a compositor shortcut. GNOME also
   asks before snapr can take screenshots, but only while snapr's window is
   focused, so until it's allowed snapr opens its window with an **Allow
