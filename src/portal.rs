@@ -221,6 +221,54 @@ pub fn proxy<'a>(
         .build()
 }
 
+const SETTINGS: &str = "org.freedesktop.portal.Settings";
+const APPEARANCE: &str = "org.freedesktop.appearance";
+
+/// Passes `changed` whether the desktop's style is dark (its appearance
+/// `color-scheme`: 1 is dark; 2, light, and 0, no preference, aren't), now
+/// and whenever it changes, from a thread of its own. Nothing happens if the
+/// desktop has no settings portal.
+pub fn watch_dark_style(changed: impl Fn(bool) + Send + 'static) {
+    std::thread::spawn(move || {
+        let watch = || -> zbus::Result<()> {
+            let conn = Connection::session()?;
+            let settings = proxy(&conn, PATH, SETTINGS)?;
+            // Listening before reading, so a change in between isn't missed.
+            let signals = settings.receive_signal("SettingChanged")?;
+            // ReadOne (version 2) answers with the value; Read, which older
+            // portals have instead, wraps it in another variant.
+            let value: zbus::Result<OwnedValue> = settings
+                .call("ReadOne", &(APPEARANCE, "color-scheme"))
+                .or_else(|_| settings.call("Read", &(APPEARANCE, "color-scheme")));
+            if let Some(dark) = value.ok().and_then(|v| dark_style(&v)) {
+                changed(dark);
+            }
+            for signal in signals {
+                let (namespace, key, value): (String, String, OwnedValue) =
+                    signal.body().deserialize()?;
+                if namespace == APPEARANCE
+                    && key == "color-scheme"
+                    && let Some(dark) = dark_style(&value)
+                {
+                    changed(dark);
+                }
+            }
+            Ok(())
+        };
+        if let Err(e) = watch() {
+            eprintln!("couldn't follow the desktop's dark style: {e}");
+        }
+    });
+}
+
+fn dark_style(value: &Value) -> Option<bool> {
+    match value {
+        Value::U32(scheme) => Some(*scheme == 1),
+        Value::Value(inner) => dark_style(inner),
+        _ => None,
+    }
+}
+
 /// A fresh handle token, the last element of a request or session path.
 pub fn token() -> String {
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -249,6 +297,16 @@ mod tests {
         );
         assert_eq!(id_of("vte-spawn-1234.scope"), None);
         assert_eq!(id_of("app-7285.scope"), None);
+    }
+
+    #[test]
+    fn reads_the_dark_style() {
+        assert_eq!(dark_style(&Value::U32(1)), Some(true));
+        assert_eq!(dark_style(&Value::U32(0)), Some(false));
+        assert_eq!(dark_style(&Value::U32(2)), Some(false));
+        // As Read gives it.
+        assert_eq!(dark_style(&Value::Value(Box::new(Value::U32(1)))), Some(true));
+        assert_eq!(dark_style(&Value::from("dark")), None);
     }
 
     #[test]

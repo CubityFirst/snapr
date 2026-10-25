@@ -111,6 +111,9 @@ enum UserEvent {
     /// Mouse input for the corner preview, when it's an X11 window.
     #[cfg(target_os = "linux")]
     ToastX11(x11::X11Event),
+    /// The desktop's dark style was read, or changed (Linux).
+    #[cfg(target_os = "linux")]
+    DesktopStyleChanged,
     /// Mouse input for the recording bar, when it's an X11 window.
     #[cfg(target_os = "linux")]
     RecordingX11(x11::X11Event),
@@ -350,6 +353,14 @@ impl App {
         if let Some(w) = &mut self.main_window {
             w.form.status = self.status.clone();
             w.window.request_redraw();
+        }
+    }
+
+    /// Pins only redraw when something happens to them, so after the theme
+    /// changes they're asked to.
+    fn redraw_pins(&self) {
+        for pin in &self.pins {
+            pin.window.request_redraw();
         }
     }
 
@@ -816,10 +827,7 @@ impl App {
         }
         if new.theme != self.settings.theme {
             theme::pick(new.theme);
-            // Pins only redraw when something happens to them.
-            for pin in &self.pins {
-                pin.window.request_redraw();
-            }
+            self.redraw_pins();
         }
         self.settings = new;
         if let Some(w) = &mut self.main_window {
@@ -1488,6 +1496,15 @@ impl ApplicationHandler<UserEvent> for App {
                 self.toast_action(action);
             }
             #[cfg(target_os = "linux")]
+            UserEvent::DesktopStyleChanged => {
+                if theme::picked() == settings::Theme::System {
+                    self.redraw_pins();
+                    if let Some(w) = &self.main_window {
+                        w.window.request_redraw();
+                    }
+                }
+            }
+            #[cfg(target_os = "linux")]
             UserEvent::RecordingX11(e) => {
                 let action = self
                     .recording
@@ -1853,6 +1870,15 @@ fn main() {
     #[cfg(target_os = "macos")]
     macos::ask_for_screen_recording();
     let proxy = event_loop.create_proxy();
+    // Under *System*, windows follow the desktop's style (see `theme::preference`).
+    #[cfg(target_os = "linux")]
+    {
+        let proxy = Mutex::new(proxy.clone());
+        portal::watch_dark_style(move |dark| {
+            theme::set_desktop_dark(dark);
+            let _ = proxy.lock().unwrap().send_event(UserEvent::DesktopStyleChanged);
+        });
+    }
     // Development builds are restarted too often to check each time.
     if !once && !cfg!(debug_assertions) {
         let proxy = Mutex::new(proxy.clone());

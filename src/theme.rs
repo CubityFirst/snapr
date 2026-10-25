@@ -167,11 +167,33 @@ pub fn picked() -> crate::settings::Theme {
         .unwrap_or_default()
 }
 
+/// The desktop's style, on Linux: 0 not known yet, 1 dark, 2 light.
+static DESKTOP: AtomicU8 = AtomicU8::new(0);
+
+/// Sets the desktop's style, as its settings portal gives it (Linux).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn set_desktop_dark(dark: bool) {
+    DESKTOP.store(if dark { 1 } else { 2 }, Ordering::Relaxed);
+}
+
+/// What a window shows for `theme`. With *System*, on Windows and macOS
+/// that comes from the window's own input; on Linux winit never tells a
+/// window the system's theme (egui would always fall back to dark), so it's
+/// the desktop's style from its settings portal, or dark until that's known.
+pub fn preference(theme: crate::settings::Theme) -> egui::ThemePreference {
+    if theme == crate::settings::Theme::System && cfg!(target_os = "linux") {
+        return match DESKTOP.load(Ordering::Relaxed) {
+            2 => egui::ThemePreference::Light,
+            _ => egui::ThemePreference::Dark,
+        };
+    }
+    theme.preference()
+}
+
 /// Puts a context in the theme picked in Settings. Called before each
-/// frame, so a window takes a new pick the next time it's drawn. With
-/// *System*, which theme that is comes from the window's own input.
+/// frame, so a window takes a new pick the next time it's drawn.
 pub fn follow(ctx: &egui::Context) {
-    ctx.set_theme(picked().preference());
+    ctx.set_theme(preference(picked()));
 }
 
 /// The colour to clear a window to before drawing its frame, for what

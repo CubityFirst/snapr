@@ -255,7 +255,7 @@ pub struct MainWindow {
     capture_menu: (Vec<WindowInfo>, Vec<DisplayInfo>),
     /// The theme the title bar was last put in; `None` to put it in the
     /// picked one at the next paint.
-    title_bar: Option<crate::settings::Theme>,
+    title_bar: Option<egui::ThemePreference>,
 }
 
 impl MainWindow {
@@ -660,14 +660,14 @@ impl MainWindow {
         let ctx = self.state.egui_ctx().clone();
         // The theme being picked in Settings, before it's saved for the
         // other windows.
-        let theme = self.form.draft.theme;
-        ctx.set_theme(theme.preference());
+        let theme = theme::preference(self.form.draft.theme);
+        ctx.set_theme(theme);
         if self.title_bar != Some(theme) {
             self.title_bar = Some(theme);
             self.window.set_theme(match theme {
-                crate::settings::Theme::System => None,
-                crate::settings::Theme::Light => Some(winit::window::Theme::Light),
-                crate::settings::Theme::Dark => Some(winit::window::Theme::Dark),
+                egui::ThemePreference::System => None,
+                egui::ThemePreference::Light => Some(winit::window::Theme::Light),
+                egui::ThemePreference::Dark => Some(winit::window::Theme::Dark),
             });
         }
         let mut output = ctx.run_ui(input, |ui| self.ui(ui, &mut actions));
