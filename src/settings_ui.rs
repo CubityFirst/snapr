@@ -832,8 +832,12 @@ impl Form {
                         .weak(),
                 );
                 if crate::hotkey::desktop_picks_keys() {
+                    #[cfg(target_os = "linux")]
+                    let gnome = crate::portal::gnome();
+                    #[cfg(not(target_os = "linux"))]
+                    let gnome = false;
                     ui.label(
-                        RichText::new(if crate::portal::gnome() {
+                        RichText::new(if gnome {
                             "Your desktop keeps the keys. To change them, open its settings \
                              and click Global Shortcuts. A new hotkey gets its keys when you \
                              save: the desktop asks for them."
