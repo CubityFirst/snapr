@@ -104,6 +104,9 @@ enum UserEvent {
     /// A saved screenshot's corner preview was decoded.
     /// `None` for a file without a picture, which gets an icon.
     ToastReady(PathBuf, Option<egui::ColorImage>),
+    /// Mouse input for the corner preview, when it's an X11 window.
+    #[cfg(target_os = "linux")]
+    ToastX11(toast::X11Event),
     /// A region was read for QR codes: their text, and a preview of it.
     QrScanned(Vec<String>, egui::ColorImage),
     /// A tool's global hotkey was pressed.
@@ -1121,7 +1124,22 @@ impl App {
             .map(|(_, l)| l.clone());
         // A new capture replaces the previous preview.
         self.toast = None;
-        match Toast::open(event_loop, gpu, path, image, link) {
+        #[cfg(target_os = "linux")]
+        let send_x11 = {
+            let proxy = Mutex::new(self.proxy.clone());
+            move |e| {
+                let _ = proxy.lock().unwrap().send_event(UserEvent::ToastX11(e));
+            }
+        };
+        match Toast::open(
+            event_loop,
+            gpu,
+            path,
+            image,
+            link,
+            #[cfg(target_os = "linux")]
+            send_x11,
+        ) {
             Ok(t) => self.toast = Some(t),
             Err(e) => eprintln!("{e}"),
         }
@@ -1129,7 +1147,13 @@ impl App {
 
     fn toast_event(&mut self, event: WindowEvent) {
         let Some(t) = &mut self.toast else { return };
-        match t.on_event(&event) {
+        let action = t.on_event(&event);
+        self.toast_action(action);
+    }
+
+    fn toast_action(&mut self, action: Option<toast::Action>) {
+        let Some(t) = &mut self.toast else { return };
+        match action {
             None => {}
             Some(toast::Action::Open) => {
                 match &t.link {
@@ -1395,6 +1419,11 @@ impl ApplicationHandler<UserEvent> for App {
                 self.gallery_notice(event_loop, msg, is_error);
             }
             UserEvent::ToastReady(path, image) => self.show_toast(event_loop, path, image),
+            #[cfg(target_os = "linux")]
+            UserEvent::ToastX11(e) => {
+                let action = self.toast.as_mut().and_then(|t| t.on_x11_event(e));
+                self.toast_action(action);
+            }
             UserEvent::ToolHotkey(action) | UserEvent::Tray(TrayAction::Tool(action)) => {
                 self.run_tool(event_loop, action)
             }
@@ -1539,7 +1568,7 @@ impl ApplicationHandler<UserEvent> for App {
         {
             return self.main_window_event(event_loop, event);
         }
-        if self.toast.as_ref().is_some_and(|t| t.window.id() == id) {
+        if self.toast.as_ref().is_some_and(|t| t.is_window(id)) {
             return self.toast_event(event);
         }
         if let Some(index) = self.pins.iter().position(|p| p.window.id() == id) {

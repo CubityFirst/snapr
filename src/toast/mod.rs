@@ -17,6 +17,11 @@ use winit::window::{Window, WindowLevel};
 
 use crate::gpu::Gpu;
 
+#[cfg(target_os = "linux")]
+mod x11;
+#[cfg(target_os = "linux")]
+pub use x11::X11Event;
+
 /// Largest preview, in points; the window fits the image's shape.
 const MAX_PREVIEW: (f32, f32) = (320.0, 200.0);
 const CAPTION_HEIGHT: f32 = 26.0;
@@ -39,10 +44,32 @@ pub enum Action {
     Dismiss,
 }
 
+/// What the mouse did over the toast.
+#[derive(Debug)]
+enum Pointer {
+    Pressed(MouseButton),
+    Released(MouseButton),
+    Moved(PhysicalPosition<f64>),
+    Entered,
+    Left,
+}
+
+/// The toast's window and what draws it. There's one toast at a time.
+#[allow(clippy::large_enum_variant)]
+enum Backend {
+    Winit {
+        window: Arc<Window>,
+        state: egui_winit::State,
+        painter: Painter,
+    },
+    /// Under Wayland, which won't let the toast go in the corner.
+    #[cfg(target_os = "linux")]
+    X11(x11::X11Window),
+}
+
 pub struct Toast {
-    pub window: Arc<Window>,
-    state: egui_winit::State,
-    painter: Painter,
+    backend: Backend,
+    ctx: egui::Context,
     /// The preview; `None` shows a file icon.
     texture: Option<egui::TextureHandle>,
     pub path: PathBuf,
@@ -57,12 +84,14 @@ pub struct Toast {
 }
 
 impl Toast {
+    /// `send_x11` passes on an X11 toast's input, from its own thread.
     pub fn open(
         event_loop: &ActiveEventLoop,
         gpu: &Gpu,
         path: PathBuf,
         image: Option<egui::ColorImage>,
         link: Option<String>,
+        #[cfg(target_os = "linux")] send_x11: impl Fn(X11Event) + Send + 'static,
     ) -> Result<Self, String> {
         // A file without a picture gets a 16:10 icon area.
         let [w, h] = image.as_ref().map_or([320, 200], |i| i.size);
@@ -75,7 +104,53 @@ impl Toast {
             (preview.x.max(220.0) + 2.0 * MARGIN) as f64,
             (preview.y + CAPTION_HEIGHT + 2.0 * MARGIN) as f64,
         );
+        let ctx = egui::Context::default();
+        ctx.set_visuals(egui::Visuals::dark());
+        crate::theme::crisp_text(&ctx);
 
+        #[cfg(target_os = "linux")]
+        let backend = if x11::wanted(event_loop) {
+            x11::X11Window::open(gpu, size, send_x11)
+                .map(Backend::X11)
+                .inspect_err(|e| eprintln!("couldn't show the preview through XWayland: {e}"))
+                .ok()
+        } else {
+            None
+        };
+        #[cfg(not(target_os = "linux"))]
+        let backend = None;
+        let backend = match backend {
+            Some(b) => b,
+            None => Self::open_winit(event_loop, gpu, &ctx, size)?,
+        };
+
+        let texture = image.map(|i| ctx.load_texture("toast", i, egui::TextureOptions::LINEAR));
+        let video = crate::thumbnail::kind(&path) == crate::thumbnail::Kind::Video;
+        let mut toast = Self {
+            backend,
+            ctx,
+            texture,
+            path,
+            link,
+            video,
+            expires_at: Some(Instant::now() + SHOWN_FOR),
+            cursor: PhysicalPosition::new(0.0, 0.0),
+            pressed_at: None,
+        };
+        // Paint before showing it, so it doesn't flash white.
+        toast.paint();
+        if let Backend::Winit { window, .. } = &toast.backend {
+            window.set_visible(true);
+        }
+        Ok(toast)
+    }
+
+    fn open_winit(
+        event_loop: &ActiveEventLoop,
+        gpu: &Gpu,
+        ctx: &egui::Context,
+        size: LogicalSize<f64>,
+    ) -> Result<Backend, String> {
         #[allow(unused_mut)]
         let mut attrs = Window::default_attributes()
             .with_title("snapr")
@@ -95,9 +170,6 @@ impl Toast {
             window.set_outer_position(pos);
         }
 
-        let ctx = egui::Context::default();
-        ctx.set_visuals(egui::Visuals::dark());
-        crate::theme::crisp_text(&ctx);
         let config = egui_wgpu::WgpuConfiguration {
             wgpu_setup: gpu.egui_setup(),
             ..Default::default()
@@ -114,91 +186,135 @@ impl Toast {
             window.theme(),
             painter.max_texture_side(),
         );
-        let texture = image.map(|i| ctx.load_texture("toast", i, egui::TextureOptions::LINEAR));
-        let video = crate::thumbnail::kind(&path) == crate::thumbnail::Kind::Video;
-        let mut toast = Self {
+        Ok(Backend::Winit {
             window,
             state,
             painter,
-            texture,
-            path,
-            link,
-            video,
-            expires_at: Some(Instant::now() + SHOWN_FOR),
-            cursor: PhysicalPosition::new(0.0, 0.0),
-            pressed_at: None,
-        };
-        // Paint before showing it, so it doesn't flash white.
-        toast.paint();
-        toast.window.set_visible(true);
-        Ok(toast)
+        })
+    }
+
+    /// Whether this is the toast's window.
+    pub fn is_window(&self, id: winit::window::WindowId) -> bool {
+        matches!(&self.backend, Backend::Winit { window, .. } if window.id() == id)
     }
 
     pub fn set_link(&mut self, link: String) {
         self.link = Some(link);
-        self.window.request_redraw();
+        match &self.backend {
+            Backend::Winit { window, .. } => window.request_redraw(),
+            #[cfg(target_os = "linux")]
+            Backend::X11(_) => self.paint(),
+        }
     }
 
     pub fn on_event(&mut self, event: &WindowEvent) -> Option<Action> {
-        match event {
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => self.pressed_at = Some(self.cursor),
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button,
-                ..
-            } => match button {
+        let pointer = match event {
+            WindowEvent::MouseInput { state, button, .. } => Some(match state {
+                ElementState::Pressed => Pointer::Pressed(*button),
+                ElementState::Released => Pointer::Released(*button),
+            }),
+            WindowEvent::CursorMoved { position, .. } => Some(Pointer::Moved(*position)),
+            WindowEvent::CursorEntered { .. } => Some(Pointer::Entered),
+            WindowEvent::CursorLeft { .. } => Some(Pointer::Left),
+            _ => None,
+        };
+        let action = pointer.and_then(|p| self.on_pointer(p));
+        if action.is_some() {
+            return action;
+        }
+        // Not passed on to egui, which asks to repaint after every redraw:
+        // the toast would paint non-stop, and on Windows that starves the
+        // main window of redraws, so it stops responding.
+        if let WindowEvent::RedrawRequested = event {
+            self.paint();
+            return None;
+        }
+        let Backend::Winit {
+            window,
+            state,
+            painter,
+        } = &mut self.backend
+        else {
+            return None;
+        };
+        if let WindowEvent::Resized(size) = event
+            && let (Some(w), Some(h)) = (
+                std::num::NonZeroU32::new(size.width),
+                std::num::NonZeroU32::new(size.height),
+            )
+        {
+            painter.on_window_resized(egui::ViewportId::ROOT, w, h);
+        }
+        if state.on_window_event(window, event).repaint {
+            window.request_redraw();
+        }
+        None
+    }
+
+    /// Input for an X11 toast; ignored if it's for an earlier one.
+    #[cfg(target_os = "linux")]
+    pub fn on_x11_event(&mut self, event: X11Event) -> Option<Action> {
+        match &self.backend {
+            Backend::X11(w) if w.id() == event.window => {}
+            _ => return None,
+        }
+        match event.pointer {
+            Some(p) => self.on_pointer(p),
+            None => {
+                self.paint();
+                None
+            }
+        }
+    }
+
+    fn on_pointer(&mut self, pointer: Pointer) -> Option<Action> {
+        match pointer {
+            Pointer::Pressed(MouseButton::Left) => self.pressed_at = Some(self.cursor),
+            Pointer::Pressed(_) => {}
+            Pointer::Released(button) => match button {
                 // Not if the press turned into a drag.
                 MouseButton::Left if self.pressed_at.take().is_some() => return Some(Action::Open),
                 MouseButton::Middle => return Some(Action::CopyImage),
                 MouseButton::Right => return Some(Action::Dismiss),
                 _ => {}
             },
-            WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = *position;
+            Pointer::Moved(position) => {
+                self.cursor = position;
                 // Also after a drag, which swallows the mouse's comings and goings.
                 self.expires_at = None;
                 if let Some(from) = self.pressed_at {
                     let (dx, dy) = (position.x - from.x, position.y - from.y);
-                    let threshold = DRAG_THRESHOLD * self.window.scale_factor();
+                    let threshold = DRAG_THRESHOLD * self.scale_factor();
                     if dx * dx + dy * dy >= threshold * threshold {
                         self.pressed_at = None;
-                        crate::output::drag_out(&self.window, std::slice::from_ref(&self.path));
+                        if let Backend::Winit { window, .. } = &self.backend {
+                            crate::output::drag_out(window, std::slice::from_ref(&self.path));
+                        }
                         self.expires_at = Some(Instant::now() + AFTER_HOVER);
                     }
                 }
             }
-            WindowEvent::CursorEntered { .. } => self.expires_at = None,
-            WindowEvent::CursorLeft { .. } => self.expires_at = Some(Instant::now() + AFTER_HOVER),
-            // Not passed on to egui, which asks to repaint after every redraw:
-            // the toast would paint non-stop, and on Windows that starves the
-            // main window of redraws, so it stops responding.
-            WindowEvent::RedrawRequested => {
-                self.paint();
-                return None;
-            }
-            WindowEvent::Resized(size) => {
-                if let (Some(w), Some(h)) = (
-                    std::num::NonZeroU32::new(size.width),
-                    std::num::NonZeroU32::new(size.height),
-                ) {
-                    self.painter.on_window_resized(egui::ViewportId::ROOT, w, h);
-                }
-            }
-            _ => {}
-        }
-        if self.state.on_window_event(&self.window, event).repaint {
-            self.window.request_redraw();
+            Pointer::Entered => self.expires_at = None,
+            Pointer::Left => self.expires_at = Some(Instant::now() + AFTER_HOVER),
         }
         None
     }
 
+    fn scale_factor(&self) -> f64 {
+        match &self.backend {
+            Backend::Winit { window, .. } => window.scale_factor(),
+            #[cfg(target_os = "linux")]
+            Backend::X11(w) => w.scale_factor,
+        }
+    }
+
     fn paint(&mut self) {
-        let input = self.state.take_egui_input(&self.window);
-        let ctx = self.state.egui_ctx().clone();
+        let input = match &mut self.backend {
+            Backend::Winit { window, state, .. } => state.take_egui_input(window),
+            #[cfg(target_os = "linux")]
+            Backend::X11(w) => w.egui_input(),
+        };
+        let ctx = self.ctx.clone();
         let texture = self.texture.clone();
         let caption = match (self.link.is_some(), self.video) {
             (true, _) => "Click to open the link",
@@ -215,18 +331,26 @@ impl Toast {
         let mut output = ctx.run_ui(input, |ui| {
             contents(ui, texture.as_ref(), &path, caption, hint, video)
         });
-        self.state
-            .handle_platform_output(&self.window, std::mem::take(&mut output.platform_output));
+        let (window, state, painter) = match &mut self.backend {
+            Backend::Winit {
+                window,
+                state,
+                painter,
+            } => (window, state, painter),
+            #[cfg(target_os = "linux")]
+            Backend::X11(w) => return w.paint(&ctx, output),
+        };
+        state.handle_platform_output(window, std::mem::take(&mut output.platform_output));
         let primitives =
             ctx.tessellate(std::mem::take(&mut output.shapes), output.pixels_per_point);
-        self.painter.paint_and_update_textures(
+        painter.paint_and_update_textures(
             egui::ViewportId::ROOT,
             output.pixels_per_point,
             [0.0, 0.0, 0.0, 1.0],
             &primitives,
             &mut output.textures_delta,
             Vec::new(),
-            &self.window,
+            window,
         );
         output.textures_delta.clear();
     }
