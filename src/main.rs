@@ -4,7 +4,7 @@
 mod about;
 mod annotate;
 mod atomic;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 mod autostart;
 mod audio;
 mod capture;
@@ -648,6 +648,11 @@ impl App {
             Ok(g) => g,
             Err(e) => return eprintln!("can't open the window: {e}"),
         };
+        // It may have been turned on or off in the desktop's settings since.
+        #[cfg(target_os = "linux")]
+        {
+            self.settings.start_with_windows = autostart::enabled();
+        }
         let mut form = Form::new(&self.settings);
         form.status = self.status.clone();
         form.last_capture = self.last_capture.clone();
@@ -768,7 +773,7 @@ impl App {
         }
         // Only on a change: another copy (e.g. with its own SNAPR_CONFIG_DIR)
         // shouldn't undo this one's.
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         if new.start_with_windows != self.settings.start_with_windows
             && let Err(e) = autostart::set(new.start_with_windows)
         {
@@ -1779,10 +1784,16 @@ fn main() {
     fonts::preload();
     let lock = if once { None } else { single_instance() };
 
-    let (settings, loaded) = Settings::load();
+    #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+    let (mut settings, loaded) = Settings::load();
     theme::pick(settings.theme);
+    // On Linux the desktop's settings can turn it on or off too.
+    #[cfg(target_os = "linux")]
+    {
+        settings.start_with_windows = autostart::enabled();
+    }
     // Point it at this file again, in case snapr was moved.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     if settings.start_with_windows
         && !once
         && let Err(e) = autostart::refresh()

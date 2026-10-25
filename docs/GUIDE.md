@@ -203,7 +203,7 @@ key are turned off until one is entered.
 | Beside the crosshair | off; any of *Position* (screen X/Y), *Colour* (hex and RGB) and *Magnifier*, shown next to the cursor while selecting a region |
 | Scrolling the magnifier | *Resizes it*: bigger, or smaller until it's hidden; or *Zooms it*: fewer, bigger pixels, or more, smaller ones |
 | Check for updates  | on (see [Updates](#updates)) |
-| Start with Windows | off; on, snapr starts when you sign in (it can also be turned off in Task Manager's *Startup apps*) |
+| Start when you sign in | Windows and Linux; off. On Windows it can also be turned off in Task Manager's *Startup apps*; on Linux it's `~/.config/autostart/snapr.desktop`, which the desktop's own startup settings (e.g. GNOME Settings' *Apps* › *Autostart*) also turn on and off, and snapr's switch follows them |
 
 ## Naming templates
 

@@ -42,8 +42,8 @@ static INDEX: LazyLock<Vec<Entry>> = LazyLock::new(|| {
     let mut add = |page, key, title: &'static str, terms| index.push(Entry { page, key, title, terms });
 
     // General
-    if cfg!(windows) {
-        add(Settings, "start-with-windows", "Start snapr when you sign in to Windows", "startup boot login logon autostart launch");
+    if cfg!(any(windows, target_os = "linux")) {
+        add(Settings, "start-with-windows", crate::settings_ui::START_WITH_OS, "startup boot login logon autostart launch windows linux");
     }
     add(Settings, "theme", "Theme", "light dark mode appearance colours colors system night");
     add(Settings, "play-sounds", "Play sounds", "shutter sound effects audio mute quiet");

@@ -93,7 +93,9 @@ pub struct Settings {
     pub theme: Theme,
     /// Look for a new release now and then, and install it.
     pub check_for_updates: bool,
-    /// Start snapr when you sign in (Windows).
+    /// Start snapr when you sign in (Windows and Linux; the name is from
+    /// before Linux had it). On Linux the autostart entry is what counts:
+    /// this is read back from it on starting.
     pub start_with_windows: bool,
     /// First-time setup was finished or skipped. Config files from before
     /// it existed don't have it, which counts as done.

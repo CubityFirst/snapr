@@ -17,7 +17,7 @@ const WIDTH: f32 = 520.0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Step {
     Folder,
-    /// Windows only: elsewhere snapr can't start itself yet.
+    /// Windows and Linux: snapr can't start itself on macOS yet.
     StartWithOs,
     Sounds,
     Done,
@@ -26,7 +26,7 @@ enum Step {
 impl Step {
     fn all() -> Vec<Step> {
         let mut all = vec![Step::Folder];
-        if cfg!(windows) {
+        if cfg!(any(windows, target_os = "linux")) {
             all.push(Step::StartWithOs);
         }
         all.extend([Step::Sounds, Step::Done]);
@@ -158,7 +158,12 @@ fn folder(ui: &mut egui::Ui, form: &mut Form) -> bool {
 }
 
 fn start_with_os(ui: &mut egui::Ui, form: &mut Form) -> bool {
-    heading(ui, "Start snapr with Windows?");
+    let (heading_text, yes, no) = if cfg!(windows) {
+        ("Start snapr with Windows?", "Yes, start with Windows", "You open it from the Start menu.")
+    } else {
+        ("Start snapr when you sign in?", "Yes, start when I sign in", "You open it from your apps.")
+    };
+    heading(ui, heading_text);
     ui.add(
         Label::new(
             RichText::new("snapr waits in the tray for its hotkeys, so they only work while it's running.")
@@ -171,8 +176,8 @@ fn start_with_os(ui: &mut egui::Ui, form: &mut Form) -> bool {
     yes_no(
         ui,
         on,
-        ("Yes, start with Windows", "It's ready whenever you sign in."),
-        ("No, I'll start it myself", "You open it from the Start menu."),
+        (yes, "It's ready whenever you sign in."),
+        ("No, I'll start it myself", no),
     );
     true
 }

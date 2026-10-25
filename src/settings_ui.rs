@@ -57,6 +57,10 @@ const AUTOSAVE_DELAY: Duration = Duration::from_millis(600);
 pub const ERROR: Color32 = Color32::from_rgb(0xe5, 0x48, 0x4d);
 pub const SUCCESS: Color32 = Color32::from_rgb(0x34, 0xc7, 0x59);
 
+/// The startup setting's title, in Settings and its search.
+pub const START_WITH_OS: &str =
+    if cfg!(windows) { "Start snapr when you sign in to Windows" } else { "Start snapr when you sign in" };
+
 /// The result of testing an upload destination.
 pub enum Test {
     Running,
@@ -266,9 +270,9 @@ impl Form {
     /// The General tab.
     pub fn ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-            if cfg!(windows) {
+            if cfg!(any(windows, target_os = "linux")) {
                 group(ui, "Startup", |ui| {
-                    row(ui, "start-with-windows", "Start snapr when you sign in to Windows",
+                    row(ui, "start-with-windows", START_WITH_OS,
                         Some("So the hotkeys work without starting it yourself"), false, |ui| {
                         theme::switch(ui, &mut self.draft.start_with_windows, "");
                     });
