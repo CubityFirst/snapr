@@ -637,7 +637,9 @@ impl Gallery {
             && is_image
             && thumbnail::kind(dragged) == Kind::Image
             && !self.dragged_with(dragged).iter().any(|p| p == path)
-            && let Some(pos) = ui.input(|i| i.pointer.latest_pos())
+            // Not `latest_pos`: a finger lifting is gone with it, so on a
+            // touchscreen that's empty in the frame it's dropped.
+            && let Some(pos) = ui.input(|i| i.pointer.interact_pos())
             && rect.contains(pos)
             && ui.clip_rect().contains(pos)
         {
