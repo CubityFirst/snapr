@@ -190,6 +190,7 @@ pub(crate) enum Matrix {
 const HDR_REFERENCE_WHITE_NITS: f32 = 203.0;
 
 /// BT.2020 to BT.709 primaries, for linear light.
+#[allow(clippy::excessive_precision)] // trailing zeros, to line the columns up
 const TO_BT709: [[f32; 3]; 3] = [
     [1.660_491, -0.587_641, -0.072_850],
     [-0.124_550, 1.132_900, -0.008_349],
@@ -321,7 +322,7 @@ mod tests {
             let img = picture_from_nv12(&data, layout, 4, yuv, (10, 10)).unwrap();
             for px in img.pixels() {
                 for c in 0..3 {
-                    assert!((px[c] as i32 - rgb[c] as i32).abs() <= 2, "{:?} vs {rgb:?}", px.0);
+                    assert!((px[c] as i32 - rgb[c]).abs() <= 2, "{:?} vs {rgb:?}", px.0);
                 }
             }
         }

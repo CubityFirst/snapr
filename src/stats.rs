@@ -208,8 +208,10 @@ mod tests {
 
     #[test]
     fn round_trips_through_toml() {
-        let mut s = Stats::default();
-        s.qr_scans = 4;
+        let mut s = Stats {
+            qr_scans: 4,
+            ..Default::default()
+        };
         s.count(Kind::Recording, Local::now());
         let text = toml::to_string(&s).unwrap();
         assert_eq!(toml::from_str::<Stats>(&text).unwrap(), s);

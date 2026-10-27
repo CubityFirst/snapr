@@ -455,8 +455,10 @@ mod tests {
 
     #[test]
     fn hidden_ffmpeg_rows_point_to_the_encoder() {
-        let mut s = Settings::default();
-        s.record_with_ffmpeg = false;
+        let mut s = Settings {
+            record_with_ffmpeg: false,
+            ..Default::default()
+        };
         let expect = if cfg!(target_os = "linux") { "ffmpeg-args" } else { "encoder" };
         assert_eq!(shown_key("ffmpeg-args", &s), expect);
         s.record_with_ffmpeg = true;

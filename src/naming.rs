@@ -183,14 +183,14 @@ impl FromStr for Template {
             };
             rest = &after[name.len()..];
             let mut part = part.clone();
-            if let Part::Random(n, _) | Part::Counter(n) = &mut part {
-                if let Some((count, tail)) = repeat_count(rest) {
-                    if !(1..=MAX_REPEAT).contains(&count) {
-                        return Err(format!("%{name}{{{count}}}: count must be 1-{MAX_REPEAT}"));
-                    }
-                    *n = count;
-                    rest = tail;
+            if let Part::Random(n, _) | Part::Counter(n) = &mut part
+                && let Some((count, tail)) = repeat_count(rest)
+            {
+                if !(1..=MAX_REPEAT).contains(&count) {
+                    return Err(format!("%{name}{{{count}}}: count must be 1-{MAX_REPEAT}"));
                 }
+                *n = count;
+                rest = tail;
             }
             if !text.is_empty() {
                 parts.push(Part::Text(std::mem::take(&mut text)));

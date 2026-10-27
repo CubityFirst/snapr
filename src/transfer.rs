@@ -116,15 +116,21 @@ mod tests {
     use crate::settings::Upload;
 
     fn exported() -> Exported {
-        let mut settings = Settings::default();
-        settings.hotkey = "Ctrl + Shift + KeyA".into();
-        settings.folder = "Q:\\nowhere\\at\\all\\snapr".into();
-        settings.redact_image = "Q:\\nowhere\\face.png".into();
-        let mut with_key = Upload::default();
-        with_key.name = "With key".into();
-        let mut without_key = Upload::default();
-        without_key.name = "Without key".into();
-        settings.uploads = vec![with_key.clone(), without_key, Upload::pomf()];
+        let with_key = Upload {
+            name: "With key".into(),
+            ..Default::default()
+        };
+        let without_key = Upload {
+            name: "Without key".into(),
+            ..Default::default()
+        };
+        let settings = Settings {
+            hotkey: "Ctrl + Shift + KeyA".into(),
+            folder: "Q:\\nowhere\\at\\all\\snapr".into(),
+            redact_image: "Q:\\nowhere\\face.png".into(),
+            uploads: vec![with_key.clone(), without_key, Upload::pomf()],
+            ..Default::default()
+        };
         Exported {
             snapr: "0.0.0".into(),
             settings,
@@ -143,9 +149,11 @@ mod tests {
     #[test]
     fn exports_and_imports_a_file() {
         let path = std::env::temp_dir().join(format!("snapr-export-{}.toml", fastrand::u64(..)));
-        let mut settings = Settings::default();
-        settings.hotkey = "Ctrl + Shift + KeyA".into();
-        settings.uploads = vec![Upload::pomf()];
+        let settings = Settings {
+            hotkey: "Ctrl + Shift + KeyA".into(),
+            uploads: vec![Upload::pomf()],
+            ..Default::default()
+        };
         assert_eq!(export(&path, &settings, false).unwrap(), 0);
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.starts_with("# snapr settings"));

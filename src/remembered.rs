@@ -145,13 +145,15 @@ impl Remembered {
     /// The style, without its font: that's looked up with [`Self::font`]
     /// once the installed fonts have been found.
     pub fn style(&self) -> Style {
-        let mut style = Style::default();
-        style.color = self.color;
-        style.highlighter_color = self.highlighter_color;
-        style.size = match self.size.as_str() {
-            "small" => Size::Small,
-            "large" => Size::Large,
-            _ => Size::Medium,
+        let mut style = Style {
+            color: self.color,
+            highlighter_color: self.highlighter_color,
+            size: match self.size.as_str() {
+                "small" => Size::Small,
+                "large" => Size::Large,
+                _ => Size::Medium,
+            },
+            ..Default::default()
         };
         if self.pixelate_block > 0 {
             style.pixelate.block = self.pixelate_block.min(400);
@@ -201,26 +203,28 @@ mod tests {
 
     #[test]
     fn round_trips_through_toml() {
-        let mut style = Style::default();
-        style.color = [1, 2, 3];
-        style.highlighter_color = [4, 5, 6];
-        style.size = Size::Large;
+        let mut style = Style {
+            color: [1, 2, 3],
+            highlighter_color: [4, 5, 6],
+            size: Size::Large,
+            bends: 3,
+            clip_shadow: false,
+            step: StepOptions {
+                size: 48,
+                number: 24,
+                border: false,
+            },
+            highlighter: HighlighterShape::Box,
+            highlighter_ink: HighlighterInk::Tint,
+            text: TextOptions {
+                font: None,
+                size: 64,
+                outline: false,
+            },
+            ..Default::default()
+        };
         style.pixelate.secure = true;
         style.arrow.double = true;
-        style.bends = 3;
-        style.clip_shadow = false;
-        style.step = StepOptions {
-            size: 48,
-            number: 24,
-            border: false,
-        };
-        style.highlighter = HighlighterShape::Box;
-        style.highlighter_ink = HighlighterInk::Tint;
-        style.text = TextOptions {
-            font: None,
-            size: 64,
-            outline: false,
-        };
         let saved = Remembered::new(style, 0);
         let text = toml::to_string(&saved).unwrap();
         let loaded: Remembered = toml::from_str(&text).unwrap();

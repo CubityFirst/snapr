@@ -23,8 +23,8 @@ static ERROR: LazyLock<Vec<u8>> = LazyLock::new(|| wav(&error(), 1.0));
 
 /// Quieter copies, made the first time each is played. They're never freed,
 /// as playback may still be reading one (at most 3 x 100 small files).
-static QUIETER: LazyLock<Mutex<HashMap<(Sound, u8), &'static [u8]>>> =
-    LazyLock::new(Default::default);
+static QUIETER: LazyLock<Mutex<Quieter>> = LazyLock::new(Default::default);
+type Quieter = HashMap<(Sound, u8), &'static [u8]>;
 
 fn bytes(sound: Sound) -> &'static [u8] {
     match sound {

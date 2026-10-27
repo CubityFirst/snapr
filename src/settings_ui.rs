@@ -1151,7 +1151,7 @@ pub(crate) fn is_missing_permission(msg: &str) -> bool {
 
 /// A card for `msg` if it's about a permission snapr is missing: what's
 /// off and buttons to turn it on. Returns whether it showed one.
-#[cfg_attr(windows, allow(unused_variables))]
+#[cfg_attr(windows, allow(unused_variables, clippy::ptr_arg))]
 pub(crate) fn permission_card(ui: &mut egui::Ui, msg: &str, actions: &mut Vec<Action>) -> bool {
     // macOS only tells a program that started without the permission once
     // it's started again.

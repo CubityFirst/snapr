@@ -24,6 +24,9 @@ use crate::encode::{self, Encoder, VideoFormat, mix::Mixer};
 type Recorders = HashMap<u32, (Recorder, Receiver<Frame>)>;
 static RECORDERS: Mutex<Option<Recorders>> = Mutex::new(None);
 
+/// A started capture, its encoder and the first picture (for a preview).
+type Opened = (Box<dyn Frames>, Box<dyn Encoder>, RgbaImage);
+
 /// xcap's recorder for one monitor. On macOS it holds an `AVCaptureSession`,
 /// which objc2 doesn't mark `Send`, though AVFoundation lets a session be
 /// started and stopped from any thread (Apple's samples do it on a
@@ -186,7 +189,7 @@ impl Recording {
                         .ok()
                 });
                 #[cfg(not(windows))]
-                let hdr_source: Option<Option<(Box<dyn Frames>, Box<dyn Encoder>, RgbaImage)>> = None;
+                let hdr_source: Option<Option<Opened>> = None;
                 let opened = match hdr_source.flatten() {
                     Some(opened) => Ok(opened),
                     None => (|| {
@@ -637,7 +640,7 @@ fn open_hdr(
     out: &std::path::Path,
     format: VideoFormat,
     audio: Option<encode::AudioFormat>,
-) -> Result<(Box<dyn Frames>, Box<dyn Encoder>, RgbaImage), String> {
+) -> Result<Opened, String> {
     let display = crate::hdr::displays()
         .into_iter()
         .find(|d| (d.rect.x, d.rect.y) == origin)

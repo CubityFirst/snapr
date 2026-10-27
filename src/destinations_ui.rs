@@ -141,7 +141,7 @@ impl Form {
                             });
                         });
                         let icon = if cfg!(target_os = "macos") { "menu bar icon" } else { "tray icon" };
-                        row(ui, "tray-percentage", &format!("Show the percentage uploaded on the {icon}"),
+                        row(ui, "tray-percentage", format!("Show the percentage uploaded on the {icon}"),
                             Some("Above the progress bar the icon shows while uploading"), false, |ui| {
                             theme::switch(ui, &mut self.draft.tray_percentage, "");
                         });

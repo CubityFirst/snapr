@@ -4,6 +4,9 @@
 //! The border is red while the encoder starts, green once it's recording and
 //! amber while paused.
 
+// `Edges` and `BarWindow` only have their X11 variants on Linux.
+#![cfg_attr(not(target_os = "linux"), allow(irrefutable_let_patterns))]
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 

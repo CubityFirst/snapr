@@ -49,7 +49,8 @@ pub fn family(i: u16) -> Option<&'static str> {
 /// The file of installed font `i` (from [`installed`]), read once, and its
 /// face index. `None` if it can't be read.
 pub fn data(i: u16) -> Option<(Arc<Vec<u8>>, u32)> {
-    static LOADED: Mutex<Option<HashMap<u16, Option<Arc<Vec<u8>>>>>> = Mutex::new(None);
+    type Loaded = HashMap<u16, Option<Arc<Vec<u8>>>>;
+    static LOADED: Mutex<Option<Loaded>> = Mutex::new(None);
     let font = installed()?.get(i as usize)?;
     let mut loaded = LOADED.lock().unwrap_or_else(|e| e.into_inner());
     let data = loaded

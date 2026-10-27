@@ -559,10 +559,10 @@ pub fn peek_counter() -> u64 {
 
 pub fn next_counter() -> u64 {
     let n = peek_counter() + 1;
-    if let Some(path) = counter_path() {
-        if let Err(e) = crate::atomic::write(&path, n.to_string()) {
-            eprintln!("couldn't save counter: {e}");
-        }
+    if let Some(path) = counter_path()
+        && let Err(e) = crate::atomic::write(&path, n.to_string())
+    {
+        eprintln!("couldn't save counter: {e}");
     }
     n
 }

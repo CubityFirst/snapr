@@ -18,6 +18,10 @@ use crate::capture::Rect;
 
 type Point = (f32, f32);
 
+/// A ring drawn around a hovered annotation: what it was for, where its
+/// top-left corner goes and the ring itself.
+type Ring = (u64, (i32, i32), Arc<Pixmap>);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
     Select,
@@ -1996,7 +2000,7 @@ pub struct Canvas {
     /// however many mouse events arrive in between.
     stale: bool,
     /// The last ring drawn around a hovered annotation, with what it was for.
-    ring: Mutex<Option<(u64, (i32, i32), Arc<Pixmap>)>>,
+    ring: Mutex<Option<Ring>>,
     /// The active annotation is text being typed.
     typing: bool,
 }
@@ -2673,11 +2677,13 @@ mod tests {
         // the white of its number.
         let place = |size, number| {
             let mut c = canvas();
-            let mut style = Style::default();
-            style.step = StepOptions {
-                size,
-                number,
-                border: false,
+            let style = Style {
+                step: StepOptions {
+                    size,
+                    number,
+                    border: false,
+                },
+                ..Default::default()
             };
             c.begin(Annotation::new(Tool::Step, style, (1050.0, 530.0)).unwrap());
             c.commit();
@@ -3427,10 +3433,12 @@ mod tests {
             h: 8,
         };
         let mut c = Canvas::new(rect, img.clone());
-        let mut style = Style::default();
-        style.pixelate = PixelateOptions {
-            block: 8,
-            secure: true,
+        let style = Style {
+            pixelate: PixelateOptions {
+                block: 8,
+                secure: true,
+            },
+            ..Default::default()
         };
         c.begin(Annotation::new(Tool::Pixelate, style, (0.0, 0.0)).unwrap());
         c.drag_to((80.0, 8.0), false);
@@ -3454,8 +3462,10 @@ mod tests {
     fn arrow_heads_go_where_the_options_say() {
         let head_at = |arrow: ArrowOptions| {
             let mut c = canvas();
-            let mut style = Style::default();
-            style.arrow = arrow;
+            let style = Style {
+                arrow,
+                ..Default::default()
+            };
             c.begin(Annotation::new(Tool::Arrow, style, (1010.0, 530.0)).unwrap());
             c.drag_to((1090.0, 530.0), false);
             c.commit();

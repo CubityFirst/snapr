@@ -1122,13 +1122,12 @@ impl Session {
                 self.finish_typing();
                 return false;
             }
-            _ => match &event.text {
-                Some(text) => {
+            _ => {
+                if let Some(text) = &event.text {
                     let text: String = text.chars().filter(|ch| !ch.is_control()).collect();
                     c.type_text(&text);
                 }
-                None => {}
-            },
+            }
         }
         true
     }

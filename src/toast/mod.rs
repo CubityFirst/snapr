@@ -4,6 +4,9 @@
 //! into another app. It goes away by itself after a few seconds, unless the
 //! mouse is over it.
 
+// `Backend` only has its X11 variant on Linux.
+#![cfg_attr(not(target_os = "linux"), allow(irrefutable_let_patterns))]
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

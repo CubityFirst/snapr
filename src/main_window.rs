@@ -286,6 +286,7 @@ fn fit(screen: LogicalSize<f64>) -> LogicalSize<f64> {
 }
 
 impl MainWindow {
+    #[allow(clippy::too_many_arguments)]
     pub fn open(
         event_loop: &ActiveEventLoop,
         gpu: &Gpu,
