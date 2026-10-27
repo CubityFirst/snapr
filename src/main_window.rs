@@ -64,6 +64,10 @@ pub enum Action {
     AllowScreenshots,
     /// Quit and start the updated program.
     RestartToUpdate,
+    /// Copy snapr to the Programs folder and start it from there, with its
+    /// window on Settings if true.
+    #[cfg(windows)]
+    MoveToPrograms { settings: bool },
     /// Copy a link, or other text, to the clipboard.
     CopyText(String),
     CopyImage(image::RgbaImage),
@@ -104,6 +108,8 @@ impl From<settings_ui::Action> for Action {
             #[cfg(target_os = "linux")]
             settings_ui::Action::AllowScreenshots => Action::AllowScreenshots,
             settings_ui::Action::RestartToUpdate => Action::RestartToUpdate,
+            #[cfg(windows)]
+            settings_ui::Action::MoveToPrograms { settings } => Action::MoveToPrograms { settings },
             settings_ui::Action::OpenUrl(u) => Action::OpenUrl(u),
             settings_ui::Action::ImportTools(t) => Action::ImportTools(t),
         }

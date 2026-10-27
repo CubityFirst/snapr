@@ -1,8 +1,9 @@
 //! First-time setup: a few questions on snapr's first start, in the main
 //! window before its usual pages. Where screenshots are saved, whether snapr
-//! starts with Windows, and whether it plays sounds. Each answer is a
-//! setting, so the form saves it as it's picked; finishing (or skipping)
-//! marks setup as done.
+//! starts with Windows, whether it plays sounds, and on Windows whether it
+//! moves to the Programs folder. Each answer but the last is a setting, so
+//! the form saves it as it's picked; finishing (or skipping) marks setup as
+//! done.
 
 use egui::{Label, Margin, RichText, Sense, Stroke, TextEdit, vec2};
 
@@ -20,6 +21,10 @@ enum Step {
     /// Windows and Linux: snapr can't start itself on macOS yet.
     StartWithOs,
     Sounds,
+    /// Windows, run from wherever it was downloaded: move it to the Programs
+    /// folder? Done once setup's finished, as snapr starts again from there.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    Install,
     Done,
 }
 
@@ -29,7 +34,12 @@ impl Step {
         if cfg!(any(windows, target_os = "linux")) {
             all.push(Step::StartWithOs);
         }
-        all.extend([Step::Sounds, Step::Done]);
+        all.push(Step::Sounds);
+        #[cfg(windows)]
+        if crate::install::place() == crate::install::Place::Elsewhere {
+            all.push(Step::Install);
+        }
+        all.push(Step::Done);
         all
     }
 }
@@ -46,6 +56,8 @@ pub enum Finish {
 pub struct Setup {
     /// The question showing, as an index into `Step::all()`.
     step: usize,
+    /// The answer to `Step::Install` was no.
+    stay_put: bool,
 }
 
 impl Setup {
@@ -85,6 +97,7 @@ impl Setup {
                         Step::Folder => folder(ui, form),
                         Step::StartWithOs => start_with_os(ui, form),
                         Step::Sounds => sounds(ui, form),
+                        Step::Install => install(ui, &mut self.stay_put),
                         Step::Done => done(ui, form, actions),
                     };
                     ui.add_space(28.0);
@@ -110,6 +123,12 @@ impl Setup {
         });
         if finish.is_some() {
             form.draft.setup_done = true;
+        }
+        // Not when setup's skipped, before the question.
+        #[cfg(windows)]
+        if step == Step::Done && steps.contains(&Step::Install) && !self.stay_put && finish.is_some() {
+            let settings = matches!(finish, Some(Finish::OpenSettings));
+            actions.push(Action::MoveToPrograms { settings });
         }
         finish
     }
@@ -223,6 +242,33 @@ fn sounds(ui: &mut egui::Ui, form: &mut Form) -> bool {
     true
 }
 
+/// Whether to move snapr to the Programs folder (Windows).
+fn install(ui: &mut egui::Ui, stay_put: &mut bool) -> bool {
+    heading(ui, "Install snapr in your Programs folder?");
+    let dir = crate::update::exe().ok().and_then(|exe| exe.parent()).map(|dir| dir.display().to_string());
+    ui.add(
+        Label::new(
+            RichText::new(format!(
+                "It's running from {}. In your Programs folder it has a place of its own, and is \
+                 listed in Settings \u{203a} Apps to uninstall it. No administrator rights needed.",
+                dir.unwrap_or_default()
+            ))
+            .weak(),
+        )
+        .wrap(),
+    );
+    ui.add_space(14.0);
+    let mut moving = !*stay_put;
+    yes_no(
+        ui,
+        &mut moving,
+        ("Yes, move it there", "snapr starts again from there when you're done."),
+        ("No, leave it here", "You can move it later in Settings."),
+    );
+    *stay_put = !moving;
+    true
+}
+
 /// The last page: how to take a screenshot, and anything that went wrong.
 fn done(ui: &mut egui::Ui, form: &mut Form, actions: &mut Vec<Action>) -> bool {
     heading(ui, "You're all set");
@@ -329,7 +375,7 @@ mod tests {
         for n in 0..Step::all().len() {
             let mut form = Form::new(&Settings::default());
             form.draft.play_sounds = n % 2 == 0;
-            let mut setup = Setup { step: n };
+            let mut setup = Setup { step: n, ..Setup::default() };
             let name = format!("setup-preview-{n}");
             crate::preview::render(&name, [980, 660], 1.0, |root| {
                 crate::theme::apply(root.ctx());

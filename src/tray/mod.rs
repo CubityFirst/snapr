@@ -12,7 +12,7 @@ pub use linux::Tray;
 #[cfg(target_os = "macos")]
 pub use macos::Tray;
 #[cfg(windows)]
-pub use windows::{Tray, signal_running_instance};
+pub use windows::{Tray, quit_running_instance, signal_running_instance};
 
 use std::sync::Arc;
 

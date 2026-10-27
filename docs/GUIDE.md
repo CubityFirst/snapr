@@ -205,6 +205,7 @@ key are turned off until one is entered.
 | Check for updates  | on (see [Updates](#updates)) |
 | Start when you sign in | Windows and Linux; off. On Windows it can also be turned off in Task Manager's *Startup apps*; on Linux it's `~/.config/autostart/snapr.desktop`, which the desktop's own startup settings (e.g. GNOME Settings' *Apps* › *Autostart*) also turn on and off, and snapr's switch follows them |
 | Show snapr in the Start menu | Windows; on. A shortcut to snapr's file in your Start menu's programs, `%APPDATA%\Microsoft\Windows\Start Menu\Programs\snapr.lnk`, pointed at the file again each time snapr starts in case it was moved. Turning it off removes the shortcut |
+| Install snapr in your Programs folder | Windows, when snapr isn't there already. *Move it there* copies snapr to `%LOCALAPPDATA%\Programs\snapr` and starts it again from there, removing the copy it was run from; no administrator rights needed. First-time setup asks the same |
 
 ## Naming templates
 
@@ -318,7 +319,14 @@ that capture the output wait anyway).
 
 ## Platform notes
 
-- **Windows**: works out of the box.
+- **Windows**: works out of the box, from wherever it was downloaded, though
+  first-time setup offers to move it to your Programs folder
+  (`%LOCALAPPDATA%\Programs\snapr`) without needing an administrator.
+  Either way it lists itself in *Settings › Apps*, pointed at its file again
+  each time it starts. *Uninstall* there (or `snapr --uninstall`) quits it,
+  takes it out of the Start menu and startup, asks whether to delete its
+  settings, recent captures and saved upload keys, and deletes the program
+  (and its Programs folder); your screenshots stay where they are.
 - **macOS**: open `snapr-macos-aarch64.dmg` and drag snapr to Applications.
   It isn't notarised, so the first time macOS won't open it: choose *Open
   Anyway* under System Settings → Privacy & Security. Grant *Screen & System

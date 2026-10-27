@@ -26,6 +26,8 @@ const CLASS_NAME: &str = "snapr.tray";
 const WM_TRAY: u32 = WM_APP + 1;
 /// Sent by a second instance to ask this one to show its settings.
 const WM_SHOW_SETTINGS: u32 = WM_APP + 2;
+/// Sent by `snapr --uninstall` to ask this one to quit.
+const WM_QUIT_SNAPR: u32 = WM_APP + 3;
 
 const MENU: &[(usize, TrayAction)] = &[
     (1, TrayAction::Capture),
@@ -226,6 +228,16 @@ pub fn signal_running_instance() -> bool {
     }
 }
 
+/// Asks a running snapr to quit, as from its tray menu. Returns whether one
+/// was asked.
+pub fn quit_running_instance() -> bool {
+    // SAFETY: as above.
+    unsafe {
+        let hwnd = FindWindowW(wide(CLASS_NAME).as_ptr(), null());
+        !hwnd.is_null() && PostMessageW(hwnd, WM_QUIT_SNAPR, 0, 0) != 0
+    }
+}
+
 fn tooltip(hotkey: Option<&str>) -> String {
     match hotkey {
         Some(h) => format!("snapr \u{2014} {h} to capture"),
@@ -369,6 +381,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_SHOW_SETTINGS => {
             dispatch(TrayAction::Recent);
+            0
+        }
+        WM_QUIT_SNAPR => {
+            dispatch(TrayAction::Quit);
             0
         }
         // Among other things, the light or dark mode was changed.

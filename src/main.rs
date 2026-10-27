@@ -24,6 +24,8 @@ mod gpu;
 mod hdr;
 mod history;
 mod hotkey;
+#[cfg(windows)]
+mod install;
 mod locale;
 #[cfg(target_os = "macos")]
 mod macos;
@@ -279,12 +281,18 @@ struct App {
     /// The last screenshot's region, for capturing it again.
     last_region: Option<capture::Rect>,
     open_settings_on_start: bool,
+    /// Open the window on Recent rather than Settings: snapr was just moved.
+    open_recent_on_start: bool,
     /// What's been captured and which tools were used, for the Stats page.
     stats: stats::Stats,
     /// Where checking for and installing updates is up to.
     update: update::Status,
     /// Start the program again once the event loop exits (to run an update).
     restart: bool,
+    /// Start this copy of the program once the event loop exits, with its
+    /// window on Settings if true: snapr's been moved to the Programs folder.
+    #[cfg(windows)]
+    moved_to: Option<(PathBuf, bool)>,
 }
 
 impl App {
@@ -982,6 +990,24 @@ impl App {
                 self.restart = true;
                 event_loop.exit();
             }
+            #[cfg(windows)]
+            Action::MoveToPrograms { settings } => {
+                if let Some(save) = self.main_window.as_mut().and_then(|w| w.flush_settings()) {
+                    self.main_window_action(event_loop, save);
+                }
+                match install::copy_home() {
+                    Ok(installed) => {
+                        // Hidden now: closing it would wait for the event
+                        // loop, which is ending, and the new copy opens its own.
+                        if let Some(w) = &self.main_window {
+                            w.window.set_visible(false);
+                        }
+                        self.moved_to = Some((installed, settings));
+                        event_loop.exit();
+                    }
+                    Err(e) => self.report_on(event_loop, e, true, Page::Settings),
+                }
+            }
             Action::CopyText(text) => {
                 self.chime_on_copy = true;
                 self.output.copy_text(text);
@@ -1358,10 +1384,12 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         if self.open_settings_on_start {
-            let page = if self.settings.setup_done {
-                Page::Settings
-            } else {
+            let page = if !self.settings.setup_done {
                 Page::Setup
+            } else if self.open_recent_on_start {
+                Page::Recent
+            } else {
+                Page::Settings
             };
             self.open_main_window(event_loop, page);
         }
@@ -1830,11 +1858,21 @@ fn main() {
     if args.next_if_eq("upload").is_some() {
         std::process::exit(cli::upload(args));
     }
+    // What Settings > Apps runs.
+    #[cfg(windows)]
+    if args.next_if_eq("--uninstall").is_some() {
+        std::process::exit(install::uninstall());
+    }
     let (mut once, mut open_settings) = (false, false);
-    for arg in args {
+    // The copy snapr was moved from, to remove (`install::relaunch`).
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut moved_from: Option<PathBuf> = None;
+    while let Some(arg) = args.next() {
         match arg.as_str() {
             "--once" => once = true,
             "--settings" => open_settings = true,
+            #[cfg(windows)]
+            "--moved-from" if args.peek().is_some() => moved_from = args.next().map(PathBuf::from),
             "--help" | "-h" => {
                 println!("{HELP}");
                 return;
@@ -1846,6 +1884,10 @@ fn main() {
         }
     }
     update::init();
+    #[cfg(windows)]
+    if let Some(old) = moved_from.clone() {
+        install::remove_moved(old);
+    }
     // Ready for the text tool's font list by the time it's opened.
     fonts::preload();
     let lock = if once { None } else { single_instance() };
@@ -1873,6 +1915,11 @@ fn main() {
         && !cfg!(debug_assertions)
         && let Err(e) = start_menu::refresh()
     {
+        eprintln!("{e}");
+    }
+    // Listed in Settings > Apps, to uninstall it from there.
+    #[cfg(windows)]
+    if !once && let Err(e) = install::register() {
         eprintln!("{e}");
     }
     let mut status = None;
@@ -2018,22 +2065,36 @@ fn main() {
         status,
         last_capture: None,
         last_region: None,
-        open_settings_on_start: open_settings,
+        open_settings_on_start: open_settings || moved_from.is_some(),
+        open_recent_on_start: moved_from.is_some() && !open_settings,
         stats: stats::Stats::load(),
         update: update::Status::default(),
         restart: false,
+        #[cfg(windows)]
+        moved_to: None,
     };
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("event loop error: {e}");
     }
     app.output.flush();
     hotkey::release();
-    if app.restart {
+    #[cfg(windows)]
+    let moved_to = app.moved_to.take();
+    #[cfg(not(windows))]
+    let moved_to = None::<()>;
+    if app.restart || moved_to.is_some() {
         // Let go of the tray icon and the single-instance lock first, or the
         // new copy would hand over to this one and quit.
         drop(app);
         drop(lock);
-        if let Err(e) = update::restart() {
+        #[cfg(windows)]
+        let started = match moved_to {
+            Some((installed, settings)) => install::relaunch(&installed, settings),
+            None => update::restart(),
+        };
+        #[cfg(not(windows))]
+        let started = update::restart();
+        if let Err(e) = started {
             eprintln!("{e}");
         }
     }

@@ -36,6 +36,10 @@ pub enum Action {
     AllowScreenshots,
     /// Quit and start snapr again: the updated program, if one's installed.
     RestartToUpdate,
+    /// Copy snapr to the Programs folder and start it from there, with its
+    /// window on Settings if true.
+    #[cfg(windows)]
+    MoveToPrograms { settings: bool },
     OpenUrl(String),
     /// Use the capture tools' settings from an imported file.
     ImportTools(crate::remembered::Remembered),
@@ -267,6 +271,28 @@ impl Form {
         }
     }
 
+    /// Where snapr is, and a button to move it to the Programs folder.
+    #[cfg(windows)]
+    fn install_row(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        use crate::install::{Place, place};
+        let note = match place() {
+            Place::Development => return,
+            Place::Home => "Listed in Settings \u{203a} Apps, to uninstall it from there".to_string(),
+            Place::Elsewhere => {
+                let exe = crate::update::exe().ok();
+                let dir = exe.and_then(|exe| exe.parent()).map(|dir| dir.display().to_string());
+                format!("It's running from {}; it starts again from there", dir.unwrap_or_default())
+            }
+        };
+        row(ui, "install", "Install snapr in your Programs folder", Some(&note), false, |ui| {
+            if place() == Place::Home {
+                ui.label(RichText::new("Installed").weak());
+            } else if ui.button("Move it there").clicked() {
+                actions.push(Action::MoveToPrograms { settings: true });
+            }
+        });
+    }
+
     /// The General tab.
     pub fn ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
@@ -282,6 +308,8 @@ impl Form {
                             theme::switch(ui, &mut self.draft.start_menu, "");
                         });
                     }
+                    #[cfg(windows)]
+                    self.install_row(ui, actions);
                 });
             }
 

@@ -48,6 +48,10 @@ static INDEX: LazyLock<Vec<Entry>> = LazyLock::new(|| {
     if cfg!(windows) {
         add(Settings, "start-menu", "Show snapr in the Start menu", "shortcut start menu programs pin search launch open windows");
     }
+    #[cfg(windows)]
+    if crate::install::place() != crate::install::Place::Development {
+        add(Settings, "install", "Install snapr in your Programs folder", "install location move folder programs appdata uninstall remove apps");
+    }
     add(Settings, "theme", "Theme", "light dark mode appearance colours colors system night");
     add(Settings, "play-sounds", "Play sounds", "shutter sound effects audio mute quiet");
     add(Settings, "sound-volume", "Sound volume", "loudness audio shutter");
