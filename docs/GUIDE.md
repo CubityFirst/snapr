@@ -300,7 +300,21 @@ somewhere only an administrator can write to (e.g. `/usr/bin`) reports
 ```
 snapr --once       # capture immediately with the saved settings, then exit
 snapr --settings   # open the settings window on start
+snapr upload shot.png log.txt         # upload files, print a link for each
+snapr upload -d "My R2" shot.png      # to a particular destination
+snapr upload --list                   # the destinations, and which is the default
 ```
+
+`snapr upload` is for scripts and AI agents: it uploads to a destination from
+*Destinations* using the key in the credential store, so neither needs the
+key itself. Each file goes to the *Link from* destination (or the first
+ticked one) unless `-d` names another, by name or id, ticked or not. Links
+go to stdout, one per line in the order given; errors go to stderr, and the
+exit status is 1 if any file failed. Files are added to Recent, as dropped
+files are. It works while snapr is running in the tray. On Windows snapr is a
+windowed app, which PowerShell doesn't wait for unless its output is piped:
+use `snapr upload shot.png | Out-String` there (Git Bash and cmd scripts
+that capture the output wait anyway).
 
 ## Platform notes
 

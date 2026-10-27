@@ -8,6 +8,7 @@ mod atomic;
 mod autostart;
 mod audio;
 mod capture;
+mod cli;
 mod color_names;
 mod combine;
 mod cursor;
@@ -1787,11 +1788,15 @@ const HELP: &str = "snapr - region screenshot tool
 Runs in the system tray; use its menu or the settings window to configure.
 
 USAGE: snapr [OPTIONS]
+       snapr upload [OPTIONS] <FILE>...
 
 OPTIONS:
       --once       Capture immediately with the saved settings, then exit
       --settings   Open the settings window on start
-  -h, --help       Show this help";
+  -h, --help       Show this help
+
+COMMANDS:
+  upload           Upload files and print their links (see snapr upload --help)";
 
 /// Holds an exclusive lock on a file in the config folder for as long as
 /// snapr runs, so only one instance handles the hotkey.
@@ -1821,8 +1826,12 @@ fn main() {
         );
     }
 
+    let mut args = std::env::args().skip(1).peekable();
+    if args.next_if_eq("upload").is_some() {
+        std::process::exit(cli::upload(args));
+    }
     let (mut once, mut open_settings) = (false, false);
-    for arg in std::env::args().skip(1) {
+    for arg in args {
         match arg.as_str() {
             "--once" => once = true,
             "--settings" => open_settings = true,

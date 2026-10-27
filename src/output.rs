@@ -491,7 +491,7 @@ impl Batch {
 
 /// The `Content-Type` for a (lower-case) file extension, so browsers show
 /// common files rather than downloading them.
-fn content_type(ext: &str) -> &'static str {
+pub fn content_type(ext: &str) -> &'static str {
     match ext {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
@@ -557,7 +557,7 @@ pub fn peek_counter() -> u64 {
         .unwrap_or(0)
 }
 
-fn next_counter() -> u64 {
+pub fn next_counter() -> u64 {
     let n = peek_counter() + 1;
     if let Some(path) = counter_path() {
         if let Err(e) = crate::atomic::write(&path, n.to_string()) {
