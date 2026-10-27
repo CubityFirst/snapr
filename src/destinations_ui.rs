@@ -40,16 +40,22 @@ impl Form {
                         ui.label(RichText::new("No upload destinations yet.").weak());
                     }
                     let mut remove = None;
+                    let mut cards = Vec::new();
+                    let movable = self.draft.uploads.len() > 1;
                     for i in 0..self.draft.uploads.len() {
-                        if self.upload_card(ui, i, actions) {
+                        let (gone, rect, handle) = self.upload_card(ui, i, movable, actions);
+                        if gone {
                             remove = Some(i);
                         }
+                        cards.push((rect, handle));
                         ui.add_space(8.0);
                     }
                     if let Some(i) = remove {
                         let u = self.draft.uploads.remove(i);
                         self.secrets.remove(&u.id);
                         self.tests.remove(&u.id);
+                    } else {
+                        self.drag_to_reorder(ui, &cards);
                     }
                     ui.horizontal(|ui| {
                         for (label, hover, new) in [
@@ -146,16 +152,61 @@ impl Form {
             });
     }
 
-    /// One upload destination. Returns true if it should be removed.
-    fn upload_card(&mut self, ui: &mut egui::Ui, i: usize, actions: &mut Vec<Action>) -> bool {
+    /// While a destination's handle is dragged, a line where it would go;
+    /// let go, it moves there. `cards` are where each one is, and its handle.
+    fn drag_to_reorder(&mut self, ui: &egui::Ui, cards: &[(egui::Rect, Option<egui::Response>)]) {
+        let Some((from, handle)) = cards
+            .iter()
+            .enumerate()
+            .find_map(|(i, (_, h))| h.as_ref().filter(|h| h.dragged() || h.drag_stopped()).map(|h| (i, h)))
+        else {
+            return;
+        };
+        let Some(y) = ui.input(|i| i.pointer.latest_pos()).map(|p| p.y) else {
+            return;
+        };
+        // The gap it goes into: after every card whose middle is above the pointer.
+        let to = cards.iter().filter(|(r, _)| r.center().y < y).count();
+        let moves = to != from && to != from + 1;
+        if handle.drag_stopped() {
+            if moves {
+                let u = self.draft.uploads.remove(from);
+                self.draft.uploads.insert(if to > from { to - 1 } else { to }, u);
+            }
+            return;
+        }
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        let dragged = cards[from].0;
+        ui.painter().rect_stroke(dragged, 8, egui::Stroke::new(1.5, theme::ACCENT), egui::StrokeKind::Inside);
+        if moves {
+            // Halfway across the 8 points between cards.
+            let y = if to == 0 { cards[0].0.top() - 4.0 } else { cards[to - 1].0.bottom() + 4.0 };
+            ui.painter().hline(dragged.x_range(), y, egui::Stroke::new(2.0, theme::ACCENT));
+        }
+    }
+
+    /// One upload destination, with a handle to drag it by if it's
+    /// `movable`. Returns whether it should be removed, where it is, and
+    /// its handle.
+    fn upload_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        i: usize,
+        movable: bool,
+        actions: &mut Vec<Action>,
+    ) -> (bool, egui::Rect, Option<egui::Response>) {
         let mut remove = false;
+        let mut handle = None;
         let id = self.draft.uploads[i].id.clone();
         let expanded = self.expanded.as_deref() == Some(id.as_str());
         let stored = self.stored_secrets.contains(&id);
-        ui.push_id(&id, |ui| card(ui, |ui| {
+        let rect = ui.push_id(&id, |ui| card(ui, |ui| {
             block(ui, |ui| {
                 let u = &mut self.draft.uploads[i];
                 ui.horizontal(|ui| {
+                    if movable {
+                        handle = Some(grab_handle(ui, &id));
+                    }
                     theme::switch(ui, &mut u.enabled, RichText::new(&u.name).strong());
                     let host = u
                         .endpoint
@@ -304,9 +355,29 @@ impl Form {
             if self.secrets.get(&id).is_some_and(|s| s.is_empty()) {
                 self.secrets.remove(&id);
             }
-        }));
-        remove
+        }))
+        .inner;
+        (remove, rect, handle)
     }
+}
+
+/// The dots at the left of the destination with id `id` that drag it up or
+/// down the list.
+fn grab_handle(ui: &mut egui::Ui, id: &str) -> egui::Response {
+    let rect = ui.allocate_space(egui::vec2(12.0, 20.0)).1;
+    let r = ui.interact(rect, grab_id(id), egui::Sense::drag());
+    let p = theme::palette(ui);
+    let color = if r.hovered() || r.dragged() { p.text } else { p.text_weak };
+    for row in [-1.0, 0.0, 1.0] {
+        for col in [-0.5, 0.5] {
+            ui.painter().circle_filled(rect.center() + egui::vec2(col, row) * 5.0, 1.4, color);
+        }
+    }
+    r.on_hover_cursor(egui::CursorIcon::Grab).on_hover_text("Drag to reorder")
+}
+
+fn grab_id(id: &str) -> egui::Id {
+    egui::Id::new(("upload-grab", id))
 }
 
 #[cfg(test)]
@@ -341,6 +412,110 @@ mod tests {
             .textures_delta
             .clear();
         assert_eq!(fastrand::get_seed(), before);
+    }
+
+    /// Dragging a destination's handle moves it to the gap it's let go
+    /// over: the last one to the top, then the (new) first to the bottom.
+    #[test]
+    fn drag_handle_reorders_uploads() {
+        use egui::{Event, PointerButton, Pos2, vec2};
+        let uploads: Vec<Upload> = ["a", "b", "c"]
+            .into_iter()
+            .map(|name| Upload { name: name.into(), ..Upload::default() })
+            .collect();
+        let mut form = Form::new(&Settings { uploads, ..Settings::default() });
+        let ctx = egui::Context::default();
+        let mut frame = |form: &mut Form, events: Vec<Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, vec2(900.0, 900.0))),
+                events,
+                ..Default::default()
+            };
+            ctx.run_ui(input, |ui| form.destinations_ui(ui, &mut Vec::new())).textures_delta.clear();
+        };
+        let names = |form: &Form| form.draft.uploads.iter().map(|u| u.name.clone()).collect::<Vec<_>>();
+        let drag = |form: &mut Form, frame: &mut dyn FnMut(&mut Form, Vec<Event>), from: usize, to: usize, dy: f32| {
+            frame(form, vec![]);
+            let handle = |i: usize| {
+                ctx.read_response(super::grab_id(&form.draft.uploads[i].id)).unwrap().rect.center()
+            };
+            let (start, end) = (handle(from), handle(to) + vec2(0.0, dy));
+            let button = |pos, pressed| Event::PointerButton {
+                pos,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            frame(form, vec![Event::PointerMoved(start), button(start, true)]);
+            frame(form, vec![Event::PointerMoved(start.lerp(end, 0.5))]);
+            frame(form, vec![Event::PointerMoved(end)]);
+            frame(form, vec![button(end, false)]);
+            frame(form, vec![]);
+        };
+        drag(&mut form, &mut frame, 2, 0, -10.0);
+        assert_eq!(names(&form), ["c", "a", "b"]);
+        drag(&mut form, &mut frame, 0, 2, 10.0);
+        assert_eq!(names(&form), ["a", "b", "c"]);
+    }
+
+    /// Renders the Destinations page with the last of three destinations
+    /// being dragged to the top to `target/destinations-reorder-preview.png`:
+    /// `cargo test destinations_reorder_preview -- --ignored`.
+    #[test]
+    #[ignore]
+    fn destinations_reorder_preview() {
+        use egui::{Event, PointerButton, vec2};
+        let uploads = vec![
+            Upload {
+                name: "Cloudflare R2".into(),
+                endpoint: "https://0123456789abcdef.r2.cloudflarestorage.com".into(),
+                bucket: "screenshots".into(),
+                ..Upload::default()
+            },
+            Upload {
+                name: "Amazon S3".into(),
+                endpoint: "https://s3.us-east-1.amazonaws.com".into(),
+                bucket: "team-shots".into(),
+                enabled: false,
+                ..Upload::default()
+            },
+            Upload {
+                name: "pomf.lain.la".into(),
+                endpoint: "https://pomf.lain.la/upload.php".into(),
+                ..Upload::pomf()
+            },
+        ];
+        let ids: Vec<String> = uploads.iter().map(|u| u.id.clone()).collect();
+        let mut form = Form::new(&Settings { uploads, ..Settings::default() });
+        let handles = std::cell::RefCell::new(Vec::new());
+        let mut ui = |root: &mut egui::Ui| {
+            crate::theme::apply(root.ctx());
+            egui::CentralPanel::default().show(root, |ui| form.destinations_ui(ui, &mut Vec::new()));
+            *handles.borrow_mut() = ids
+                .iter()
+                .filter_map(|id| root.ctx().read_response(super::grab_id(id)))
+                .map(|r| r.rect.center())
+                .collect();
+        };
+        let mut screen = crate::preview::Offscreen::new([1380, 840], 1.5);
+        for _ in 0..3 {
+            screen.run(vec![], &mut ui);
+        }
+        let (start, end) = {
+            let h = handles.borrow();
+            (h[2], h[0] - vec2(0.0, 10.0))
+        };
+        let press = Event::PointerButton {
+            pos: start,
+            button: PointerButton::Primary,
+            pressed: true,
+            modifiers: Default::default(),
+        };
+        screen.run(vec![Event::PointerMoved(start), press], &mut ui);
+        screen.run(vec![Event::PointerMoved(start.lerp(end, 0.5))], &mut ui);
+        screen.run(vec![Event::PointerMoved(end)], &mut ui);
+        screen.run(vec![], &mut ui);
+        screen.save("destinations-reorder-preview");
     }
 
     /// Renders the Destinations page with an R2 destination being edited to

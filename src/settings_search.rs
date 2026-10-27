@@ -106,6 +106,7 @@ static INDEX: LazyLock<Vec<Entry>> = LazyLock::new(|| {
     add(Destinations, "uploads", "Add S3 upload", "upload destination r2 cloudflare amazon s3 minio backblaze b2 bucket");
     add(Destinations, "uploads", "Add Pomf upload", "upload destination pomf uguu lain file host");
     add(Destinations, "uploads", "Test upload", "upload try check destination");
+    add(Destinations, "uploads", "Reorder uploads", "upload destination order drag move up down sort");
     add(Destinations, "copy-link", "Copy the link after uploading", "clipboard url link upload");
     add(Destinations, "link-from", "Link from", "which destination link url upload");
     add(Destinations, "speed-unit", "Show upload speed in", "mb/s mbps megabytes megabits upload");
