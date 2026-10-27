@@ -7,9 +7,12 @@ Everything snapr does, in detail. For an overview see the [README](../README.md)
 Press the hotkey (`Alt + Shift + S` by default) and every monitor freezes.
 **Drag** a region and let go to take the screenshot (works across
 monitors). **Shift** keeps the region square, holding **Ctrl** moves the region
-while you drag it, and a plain **click** takes the whole monitor.
-**Right-click** / **Esc** cancels. A shutter sound plays on capture. The
-result is saved as a PNG and copied to the clipboard.
+while you drag it, and a plain **click** takes the window under the cursor
+(highlighted as you move; the part of it on that monitor), or the whole
+monitor if there's no window there. **Right-click** / **Esc** cancels (in the
+middle of a drag, just that drag; right-clicking an annotation deletes it).
+A shutter sound plays on capture. The result is saved as a PNG and copied to
+the clipboard.
 
 Pressing the hotkey again during a capture freezes the screen again, overlay
 and toolbar included, so the capture UI itself can be captured.
@@ -28,14 +31,17 @@ region; the screenshot includes your annotations.
 | Line | `L` | Shift snaps to 45°; drag its handles to curve it through them (1 to 5, set in its settings), or the line itself to move it |
 | Arrow | `A` | Shift snaps to 45°; one head or two, pointed where you let go or where you started; drag its handles to curve it through them (1 to 5, set in its settings, shared with lines), or the arrow itself to move it |
 | Text | `T` | click and type, or drag out a box first and the text wraps to its width; **Enter** finishes, **Shift+Enter** starts a new line, **Ctrl+V** pastes. Its settings pick the font (any installed one, with a search), the size and whether it has an outline; they and the colour apply as you type. Drag text to move it, click it to change it |
+| Step | `N` | click to place numbered markers 1, 2, 3…; drag its node out to point a step at something. Its settings set the circle size, the number size and a border |
 | Box | `R` | Shift makes a square |
 | Ellipse | `E` | Shift makes a circle |
 | Highlighter | `H` | marker, drawn freehand, straight (Shift snaps to 45°) or as a filled box (Shift makes a square), with realistic ink (light areas take the colour, dark ones stay dark) or a see-through tint, chosen in its settings; drag a stroke or box to move it. It has a colour of its own (yellow at first): choosing one while it's the tool doesn't change the other tools' |
 | Blur | `B` | blurs the dragged area |
-| Pixelate | `X` | pixelates the dragged area |
+| Pixelate | `X` | pixelates the dragged area; its settings pick the block size and whether blocks are the average of what's behind or *Secure* (those averages shuffled between the blocks, with a little noise) |
 | Image redaction | `I` | covers the dragged area with an image chosen in Settings (stretched to fit, or cropped to keep its proportions); black boxes if none is set |
+| Smart eraser | `D` | drag a box filled with the colour under where you start (hold Ctrl to move it) |
+| Clip | `C` | drag over part of the screen to copy it, then drag the copy to move it; with a drop shadow unless it's turned off in its settings |
 
-Plus 8 colours (or any, from the picker under them), 3 sizes and undo/redo (`Ctrl+Z` / `Ctrl+Y`). The colour, size and each tool's settings are kept for the next capture, and the next time snapr starts. **Enter** / ✓
+Plus 8 colours (or any, from the picker under them), 3 sizes and undo/redo (`Ctrl+Z` / `Ctrl+Y`). The colour, size and each tool's settings are kept for the next capture, and the next time snapr starts. **Enter** / ✓ (or **Ctrl+S**)
 saves the whole monitor under the cursor, **Ctrl+C** copies it to the clipboard
 without saving a file. Turn off *Show the annotation toolbar* in settings for a
 plain region capture.
@@ -43,19 +49,23 @@ plain region capture.
 ## Main window
 
 Open it from the tray (left-click, or *Recent screenshots…*). What a left-click
-on the tray icon does can be changed under *Settings → General → Clicking the
-tray icon*: open snapr, show the menu, capture or record a region, or start one
+on the tray icon does can be changed under *Settings → General → Tray icon →
+Clicking it*: open snapr, show the menu (not on Linux), capture or record a region, or start one
 of the tools. A right-click (or Control-click on macOS) always shows the menu. The bar on the left has *Capture*, *Recent*,
-*Tools*, *Stats*, *Settings* and, at the bottom, *Open screenshots folder*.
+*Tools*, *Stats* and, at the bottom, *Open screenshots folder* and *Settings*.
+The arrow under *Capture* opens a menu: *Region*, *Last region*, a *Window*
+or *Display*, *Fullscreen*, or *Record region…*.
 
 - **Recent** shows a large preview of the selected screenshot (the newest by
-  default) with *Open*, *Copy*, *Show in folder* and *Delete* (to the Recycle
-  Bin), and a grid of earlier ones: click to preview, double-click to open,
-  right-click for the same actions. Saved screenshots are remembered in
-  `history.txt` next to the settings.
+  default) with *Open*, *Copy*, *Pin*, *Copy link* (once uploaded), *Show in
+  folder* and *Delete* (to the Recycle Bin), and a grid of earlier ones: click
+  to preview, double-click to open, right-click for the same actions, or drag
+  one out into another app. Files dropped on the window are uploaded. Saved
+  screenshots are remembered in `history.txt` next to the settings.
 - **Combine images** on the Recent page: drag one screenshot onto another and
   drop it on *Horizontal* or *Vertical*, or Ctrl-click several (they're
-  numbered and combined in the order you click them; Esc clears the selection)
+  numbered and combined in the order you click them; Shift-click picks every
+  one up to the clicked one; Esc clears the selection)
   and right-click one for *Combine horizontally / vertically*. The
   result is a new screenshot, saved, copied and uploaded like a capture.
   Smaller images are centred, and the space around them is filled with the
@@ -106,7 +116,8 @@ of the tools. A right-click (or Control-click on macOS) always shows the menu. T
   *Tool use* (QR scans, codes read, colours picked, images pinned). It's kept
   in `stats.toml` next to the settings.
 - **First-time setup** greets you on first run: where screenshots are saved,
-  whether snapr starts with Windows, and whether it plays sounds. *Skip
+  whether snapr starts when you sign in (Windows and Linux), whether it plays
+  sounds and, on Windows, whether to move it to your Programs folder. *Skip
   setup* keeps the defaults; everything can be changed later in Settings,
   and *Run setup again* in Settings › General goes back through it.
 - **Settings** opens by itself whenever something needs attention (e.g. the
@@ -115,13 +126,17 @@ of the tools. A right-click (or Control-click on macOS) always shows the menu. T
 Launching snapr again while it's running opens the running instance's window
 (Windows).
 
+Touchscreens work in the capture overlay, pins and the corner preview: the
+first finger acts as the mouse.
+
 ## Destinations
 
 The *Destinations* tab of Settings sets where each screenshot goes: **Save to folder**,
 **Copy image to clipboard**, and any number of **S3-compatible uploads**
 (Cloudflare R2, Amazon S3, MinIO, Backblaze B2, ...). Add one with
-*+ Cloudflare R2* (replace `ACCOUNT_ID` in the endpoint) or *+ S3-compatible*,
-fill in the bucket and keys, and press **Test** to upload and delete a tiny
+*+ Add S3 upload*, fill in the endpoint (for R2,
+`https://<account>.r2.cloudflarestorage.com`, region `auto`), bucket and
+keys, and press **Test** to upload and delete a tiny
 file. **Test upload** sends snapr's icon to every ticked destination, named
 as a screenshot would be, and shows its link; that file stays. The object
 key uses the same placeholders as file names (default `%y-%mo/%rna{10}.png`); **Public URL** is the base for links, e.g. an
@@ -129,15 +144,16 @@ key uses the same placeholders as file names (default `%y-%mo/%rna{10}.png`); **
 is copied to the clipboard (optional) and the Recent page gets a *Copy link*
 button. With more than one destination ticked, *Link from* picks whose link
 that is (or, if it fails, the first that works); by default it's whichever
-finishes first. Right-click an uploaded screenshot there and choose *Delete remotely* to
+finishes first. With more than one destination, drag one by its handle to
+reorder them. Right-click an uploaded screenshot there and choose *Delete remotely* to
 remove the uploaded copy (the local file is kept); *Clear recent* empties the
 list without deleting any files.
 
 *+ Add Pomf upload* adds a [Pomf](https://github.com/pomf/pomf)-compatible
 file host instead (version 1 of its API: pomf.lain.la, uguu.se, qu.ax, ...).
 Give it the host's upload address, e.g. `https://pomf.lain.la/upload.php`;
-there are no keys. The host picks the file's name and link (set **Public
-URL** to put links under a domain of your own). Pomf can't delete uploads,
+there are no keys. Most hosts pick the file's name and link themselves (set
+**Public URL** to put links under a domain of your own). Pomf can't delete uploads,
 so **Test** uploads snapr's icon and leaves it there, and those screenshots
 don't offer *Delete remotely*.
 
@@ -145,8 +161,9 @@ Secret access keys are kept in the system credential store (Windows Credential
 Manager, macOS Keychain, Secret Service on Linux), never in `config.toml`.
 Requests are signed with AWS Signature V4, checked against AWS's published
 examples. To try a real bucket from the command line, set
-`SNAPR_TEST_S3_ENDPOINT`, `_REGION`, `_BUCKET`, `_ACCESS_KEY_ID`,
-`_SECRET_ACCESS_KEY` (and `_PATH_STYLE=1` for R2/MinIO) and run
+`SNAPR_TEST_S3_ENDPOINT`, `_BUCKET`, `_ACCESS_KEY_ID`, `_SECRET_ACCESS_KEY`
+(optionally `_REGION`, default `auto`; `_PATH_STYLE=1` for R2/MinIO;
+`_SIGN_PAYLOAD=1`) and run
 `cargo test live_bucket -- --ignored`.
 
 ### Turning uploads off
@@ -179,8 +196,8 @@ writing a new copy and swapping it in, so a crash mid-save leaves the old one
 intact. If `config.toml` can't be read, snapr starts with the defaults and
 keeps the unreadable file as `config.toml.broken`.
 
-To move them to another computer, use *Export settings…* on the General tab and
-*Import settings…* there on the other one. The file holds the settings and the
+To move them to another computer, use *Export…* beside *Move to another
+computer* on the General tab and *Import…* there on the other one. The file holds the settings and the
 capture tools' (colour, size, font and so on); upload secret keys go in only if
 *Include upload secret keys* is ticked, as plain text. Importing replaces the
 settings once you confirm. Paths that don't exist on the new computer (save
@@ -190,6 +207,7 @@ key are turned off until one is entered.
 | Setting            | Default                  |
 |--------------------|--------------------------|
 | Capture hotkey     | `Alt + Shift + KeyS` (or press *Record* and type a combination) |
+| Record hotkey      | `Alt + Shift + KeyV`: record a region, or stop the recording |
 | Save folder        | `<Pictures>/snapr`       |
 | Sub-folder         | `%y-%mo` (e.g. `2026-10`) |
 | File name          | `%rna{10}` (+ `.png`)    |
@@ -202,10 +220,10 @@ key are turned off until one is entered.
 | Overlay frame rate | match monitor (vsync), or a custom limit |
 | Beside the crosshair | off; any of *Position* (screen X/Y), *Colour* (hex and RGB) and *Magnifier*, shown next to the cursor while selecting a region |
 | Scrolling the magnifier | *Resizes it*: bigger, or smaller until it's hidden; or *Zooms it*: fewer, bigger pixels, or more, smaller ones |
-| Check for updates  | on (see [Updates](#updates)) |
+| Check for updates automatically | on; on the *About* tab (see [Updates](#updates)) |
 | Start when you sign in | Windows and Linux; off. On Windows it can also be turned off in Task Manager's *Startup apps*; on Linux it's `~/.config/autostart/snapr.desktop`, which the desktop's own startup settings (e.g. GNOME Settings' *Apps* › *Autostart*) also turn on and off, and snapr's switch follows them |
 | Show snapr in the Start menu | Windows; on. A shortcut to snapr's file in your Start menu's programs, `%APPDATA%\Microsoft\Windows\Start Menu\Programs\snapr.lnk`, pointed at the file again each time snapr starts in case it was moved. Turning it off removes the shortcut |
-| Install snapr in your Programs folder | Windows, when snapr isn't there already. *Move it there* copies snapr to `%LOCALAPPDATA%\Programs\snapr` and starts it again from there, removing the copy it was run from; no administrator rights needed. First-time setup asks the same |
+| Install snapr in your Programs folder | Windows; says *Installed* once snapr is there. Otherwise *Move it there* copies snapr to `%LOCALAPPDATA%\Programs\snapr` and starts it again from there, removing the copy it was run from; no administrator rights needed. First-time setup asks the same |
 
 ## Naming templates
 
@@ -227,7 +245,8 @@ Templates use ShareX's syntax. Random tokens repeat with `{n}`, e.g. `%rna{10}`.
 Unknown `%` tokens are kept as text. Old `{random}`-style templates in
 `config.toml` are converted when it loads.
 
-`/` in a template creates nested folders, e.g. sub-folder `%pn/%y/%mo`
+`/` in a sub-folder or object key template creates nested folders (in a file
+name it becomes `_`), e.g. sub-folder `%pn/%y/%mo`
 gives `chrome/2026/10/k3M9x2P7qa.png`. Substituted values are sanitized and
 can't escape the base folder, and existing files are never overwritten.
 
@@ -254,10 +273,11 @@ encoder starts (FFmpeg or the graphics card can take a second), green once
 it's recording, and amber while paused. The timer starts when it turns green.
 
 If [FFmpeg](https://ffmpeg.org) is installed, *Encoder: FFmpeg* (Windows and
-macOS) records MP4 with x264 and WebM with libvpx instead. They're sharper
-for the file size, especially on text, but use more CPU. FFmpeg isn't
-bundled; snapr finds it on `PATH`, or use the path set in Settings, where
-**Test** checks that it runs and has the encoder it needs. Without it,
+macOS) records MP4 with x264 and (on Windows) WebM with libvpx instead.
+They're sharper for the file size, especially on text, but use more CPU.
+FFmpeg isn't bundled; snapr finds it on `PATH`, or use the path set in
+Settings, where **Test** checks that it runs and which encoders it has (an
+FFmpeg without x264 uses another H.264 encoder, less sharp). Without it,
 recordings use the system's encoder and say so. AV1 and HDR recordings
 are still made by the graphics card.
 
@@ -277,8 +297,9 @@ on older devices. An HDR display is still recorded as HDR10 HEVC.
 in full range and mapped to SDR, with your *SDR content brightness* as white,
 so they look like the screen. Recordings of an HDR display are HDR10 MP4s
 (10-bit HEVC, made by the graphics card; they start about a second late
-while it gets ready). Turn off *Record in HDR* for SDR recordings instead.
-A region spanning more than one display is recorded in SDR.
+while it gets ready). Turn off *Record in HDR when the display is in HDR
+mode* for SDR recordings instead. WebM recordings, and a region spanning more
+than one display, are recorded in SDR.
 
 ## Updates
 
@@ -286,32 +307,38 @@ snapr looks for a new release on GitHub 15 seconds after it starts and every
 12 hours after that. When there is one, it downloads this platform's build,
 checks it against the release's `SHA256SUMS`, and puts it in place of the
 program file; the running copy carries on, and the new version runs from the
-next start (or straight away with *Restart now*). *Settings → General →
-Updates* has *Do not check for updates* and *Check for updates now*, which
-works either way. Pre-releases aren't offered, and development (debug)
-builds only check when asked, and say what's available without installing
-it.
+next start (or straight away with *Restart now*). The *About* tab has
+*Check for updates automatically* (on) and *Check for updates*, which works
+either way. Pre-releases aren't offered, and development (debug) builds only
+check when asked, and say what's available without installing it. The Linux
+.deb checks as usual but also only says what's available: it's updated by
+installing the newer .deb.
 
 The program has to be able to replace its own file: a copy installed
-somewhere only an administrator can write to (e.g. `/usr/bin`) reports
-*Couldn't update* instead.
+somewhere only an administrator can write to (e.g. `C:\Program Files`)
+reports *Couldn't update* instead. On macOS, move snapr to Applications
+first: opened straight from the disk image or Downloads, it can't update
+itself.
 
 ## Command line
 
 ```
 snapr --once       # capture immediately with the saved settings, then exit
 snapr --settings   # open the settings window on start
+snapr --uninstall  # Windows: uninstall, as Settings › Apps does
+snapr --help       # these options
 snapr upload shot.png log.txt         # upload files, print a link for each
-snapr upload -d "My R2" shot.png      # to a particular destination
-snapr upload --list                   # the destinations, and which is the default
+snapr upload -d "My R2" shot.png      # to a particular destination (--destination)
+snapr upload --list                   # the destinations, and which is the default (-l)
 ```
 
 `snapr upload` is for scripts and AI agents: it uploads to a destination from
 *Destinations* using the key in the credential store, so neither needs the
-key itself. Each file goes to the *Link from* destination (or the first
-ticked one) unless `-d` names another, by name or id, ticked or not. Links
-go to stdout, one per line in the order given; errors go to stderr, and the
-exit status is 1 if any file failed. Files are added to Recent, as dropped
+key itself. Each file goes to the *Link from* destination if it's ticked (or
+else the first ticked one) unless `-d` names another, by name or id, ticked
+or not. Links go to stdout, one per line in the order given; errors go to
+stderr, and the exit status is 1 if any file failed (2 for a mistake in the
+command). Files are added to Recent, as dropped
 files are. It works while snapr is running in the tray. On Windows snapr is a
 windowed app, which PowerShell doesn't wait for unless its output is piped:
 use `snapr upload shot.png | Out-String` there (Git Bash and cmd scripts
@@ -319,7 +346,9 @@ that capture the output wait anyway).
 
 ## Platform notes
 
-- **Windows**: works out of the box, from wherever it was downloaded, though
+- **Windows**: download `snapr-windows-x86_64.exe` (or
+  `snapr-windows-aarch64.exe` for Windows on ARM). It works out of the box,
+  from wherever it was downloaded, though
   first-time setup offers to move it to your Programs folder
   (`%LOCALAPPDATA%\Programs\snapr`) without needing an administrator.
   Either way it lists itself in *Settings › Apps*, pointed at its file again
@@ -357,6 +386,6 @@ that capture the output wait anyway).
   asks before snapr can take screenshots, but only while snapr's window is
   focused, so until it's allowed snapr opens its window with an **Allow
   screenshots** button. Screen recording and video previews need
-  [FFmpeg](https://ffmpeg.org) (on `PATH`, or set its path in Settings; the
-  .deb installs it); Windows and macOS encode and play videos with the
+  [FFmpeg](https://ffmpeg.org) (on `PATH`, or set its path in Settings; apt
+  installs it with the .deb, which recommends it); Windows and macOS encode and play videos with the
   system's own codecs.
