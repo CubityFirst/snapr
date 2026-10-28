@@ -11,7 +11,7 @@ use image::RgbaImage;
 
 use crate::qr;
 use crate::settings::{ColorFormat, ColorPicker, ToolAction, ToolHotkey};
-use crate::settings_ui::{ERROR, block, card, heading};
+use crate::settings_ui::{ERROR, block, card, heading, row};
 use crate::theme;
 
 /// Side of the square the scanned region is shown in, in points.
@@ -141,91 +141,92 @@ impl Tools {
     }
 
     fn pin_ui(&mut self, ui: &mut egui::Ui, hotkeys: &[ToolHotkey], actions: &mut Vec<Action>) {
-        ui.label(RichText::new("Pin an image to the screen").strong());
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            let pin = theme::primary("Pin region\u{2026}");
-            if ui.add(pin).clicked() {
-                self.pin_error = None;
-                actions.push(Action::PinRegion);
-            }
-            ui.label(
-                RichText::new(
-                    "Drag a region (or click a window); it stays on top of everything, right where it was.",
-                )
-                .weak(),
-            );
-        });
-        hotkey_line(ui, hotkeys, ToolAction::PinRegion, actions);
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            if ui
-                .button("Pin from clipboard")
-                .on_hover_text("Pin the image on the clipboard")
-                .clicked()
-            {
-                match clipboard_image() {
-                    Ok(image) => {
+        heading(ui, "Pin an image to the screen", None);
+        card(ui, |ui| {
+            block(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.add(theme::primary("Pin region\u{2026}")).clicked() {
                         self.pin_error = None;
-                        actions.push(Action::PinImage(image));
+                        actions.push(Action::PinRegion);
                     }
-                    Err(e) => self.pin_error = Some(e),
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(
+                                "Drag a region (or click a window); it stays on top of everything, right where it was.",
+                            )
+                            .weak(),
+                        )
+                        .wrap(),
+                    );
+                });
+                hotkey_line(ui, hotkeys, ToolAction::PinRegion, actions);
+            });
+            block(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if ui
+                        .button("Pin from clipboard")
+                        .on_hover_text("Pin the image on the clipboard")
+                        .clicked()
+                    {
+                        match clipboard_image() {
+                            Ok(image) => {
+                                self.pin_error = None;
+                                actions.push(Action::PinImage(image));
+                            }
+                            Err(e) => self.pin_error = Some(e),
+                        }
+                    }
+                    if ui.button("Pin image file\u{2026}").clicked()
+                        && let Some(path) = rfd::FileDialog::new()
+                            .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp", "bmp"])
+                            .pick_file()
+                    {
+                        self.pin_error = None;
+                        actions.push(Action::PinFile(path));
+                    }
+                });
+                if let Some(e) = &self.pin_error {
+                    ui.colored_label(ERROR, e);
                 }
+                ui.add(
+                    egui::Label::new(
+                        RichText::new("Screenshots on the Recent page can be pinned too: right-click one.")
+                            .weak(),
+                    )
+                    .wrap(),
+                );
+            });
+        });
+
+        heading(ui, "Pinned images", None);
+        card(ui, |ui| {
+            if self.pinned > 0 {
+                let n = self.pinned;
+                let pinned = if n == 1 {
+                    "1 image is pinned".to_string()
+                } else {
+                    format!("{n} images are pinned")
+                };
+                row(ui, "pinned", pinned, None, false, |ui| {
+                    if ui.button("Close all").clicked() {
+                        actions.push(Action::ClosePins);
+                    }
+                });
             }
-            if ui.button("Pin image file\u{2026}").clicked()
-                && let Some(path) = rfd::FileDialog::new()
-                    .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp", "bmp"])
-                    .pick_file()
-            {
-                self.pin_error = None;
-                actions.push(Action::PinFile(path));
+            for (what, how) in [
+                ("Move it", "Drag"),
+                ("Make it bigger or smaller", "Scroll, or drag a corner"),
+                ("Back to its real size", "Double-click, or 0"),
+                ("Keep it on top of other windows, or not", "T, or the pin button"),
+                ("Copy it", "Ctrl+C"),
+                ("Save it as a PNG", "Ctrl+S"),
+                ("Close it", "Right-click, or Esc"),
+            ] {
+                row(ui, what, what, None, false, |ui| {
+                    ui.label(RichText::new(how).weak());
+                });
             }
         });
-        if let Some(e) = &self.pin_error {
-            ui.colored_label(ERROR, e);
-        }
-        ui.label(
-            RichText::new("Screenshots on the Recent page can be pinned too: right-click one.")
-                .weak(),
-        );
-
-        ui.add_space(16.0);
-        ui.separator();
-        ui.add_space(8.0);
-        ui.label(RichText::new("Pinned images").strong());
-        ui.add_space(4.0);
-        egui::Grid::new("pin-help")
-            .num_columns(2)
-            .spacing([16.0, 4.0])
-            .show(ui, |ui| {
-                for (how, what) in [
-                    ("Drag", "move it"),
-                    ("Scroll, or drag a corner", "make it bigger or smaller"),
-                    ("Double-click, or 0", "back to its real size"),
-                    ("T, or the pin button", "keep it on top of other windows, or not"),
-                    ("Ctrl+C", "copy it"),
-                    ("Ctrl+S", "save it as a PNG"),
-                    ("Right-click, or Esc", "close it"),
-                ] {
-                    ui.label(how);
-                    ui.label(RichText::new(what).weak());
-                    ui.end_row();
-                }
-            });
-        if self.pinned > 0 {
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                let n = self.pinned;
-                ui.label(if n == 1 {
-                    "1 image is pinned.".to_string()
-                } else {
-                    format!("{n} images are pinned.")
-                });
-                if ui.button("Close all").clicked() {
-                    actions.push(Action::ClosePins);
-                }
-            });
-        }
     }
 
     fn color_ui(
@@ -235,88 +236,64 @@ impl Tools {
         picker: &mut ColorPicker,
         actions: &mut Vec<Action>,
     ) {
-        ui.label(RichText::new(crate::locale::spelled!("Pick a colour from the screen")).strong());
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            let pick = theme::primary(crate::locale::spelled!("Pick colour\u{2026}"));
-            if ui.add(pick).clicked() {
-                actions.push(Action::PickColor);
-            }
-            ui.label(
-                RichText::new(crate::locale::spelled!(
-                    "Click any pixel to copy its colour. Arrow keys move one pixel, Esc cancels."
-                ))
-                    .weak(),
-            );
-        });
-        hotkey_line(ui, hotkeys, ToolAction::PickColor, actions);
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.label("Copy as");
-            // Shown with the last colour picked, or snapr's blue.
-            let example = self.color.unwrap_or([0x3d, 0x9b, 0xff]);
-            theme::segmented_wrapped(ui, |ui| {
-                for format in ColorFormat::ALL {
-                    ui.selectable_value(
-                        &mut picker.copy_as,
-                        format,
-                        RichText::new(color_text(format, example)).monospace(),
+        heading(ui, crate::locale::spelled!("Pick a colour from the screen"), None);
+        card(ui, |ui| {
+            block(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.add(theme::primary(crate::locale::spelled!("Pick colour\u{2026}"))).clicked() {
+                        actions.push(Action::PickColor);
+                    }
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(crate::locale::spelled!(
+                                "Click any pixel to copy its colour. Arrow keys move one pixel, Esc cancels."
+                            ))
+                            .weak(),
+                        )
+                        .wrap(),
                     );
-                }
-            });
-        });
-        theme::switch(
-            ui,
-            &mut picker.show_window,
-            "Open this tab after picking with a hotkey or from the tray",
-        )
-        .on_hover_text(crate::locale::spelled!(
-            "Otherwise the colour is just copied, with a sound to say so"
-        ));
-        let Some(rgb) = self.color else {
-            return;
-        };
-        ui.add_space(12.0);
-        ui.horizontal_top(|ui| {
-            let (rect, _) = ui.allocate_exact_size(vec2(96.0, 96.0), Sense::hover());
-            let [r, g, b] = rgb;
-            ui.painter()
-                .rect_filled(rect, 6.0, Color32::from_rgb(r, g, b));
-            ui.painter().rect_stroke(
-                rect,
-                6.0,
-                Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
-                egui::StrokeKind::Inside,
-            );
-            ui.add_space(8.0);
-            egui::Grid::new("color-formats")
-                .num_columns(3)
-                .spacing([12.0, 6.0])
-                .show(ui, |ui| {
-                    ui.label(RichText::new("Name").weak())
-                        .on_hover_text(crate::locale::spelled!(
-                            "The closest named colour, from Name that Color (credited on Settings \u{2192} About)"
-                        ));
-                    let name = crate::color_names::name(rgb);
-                    ui.label(name);
-                    if ui.button("Copy").clicked() {
-                        actions.push(Action::CopyText(name.into()));
-                    }
-                    ui.end_row();
-                    for (name, text) in formats(rgb) {
-                        ui.label(RichText::new(name).weak());
-                        ui.label(RichText::new(&text).monospace());
-                        if ui.button("Copy").clicked() {
-                            actions.push(Action::CopyText(text));
-                        }
-                        ui.end_row();
-                    }
                 });
+                hotkey_line(ui, hotkeys, ToolAction::PickColor, actions);
+            });
+            if let Some(rgb) = self.color {
+                block(ui, |ui| color_formats_ui(ui, rgb, actions));
+                block(ui, |ui| self.recent_ui(ui));
+            }
         });
 
-        ui.add_space(16.0);
+        heading(ui, "After picking", None);
+        card(ui, |ui| {
+            row(ui, "copy-as", "Copy as", None, false, |ui| {
+                // Shown with the last colour picked, or snapr's blue.
+                let example = self.color.unwrap_or([0x3d, 0x9b, 0xff]);
+                theme::segmented_wrapped(ui, |ui| {
+                    for format in ColorFormat::ALL {
+                        ui.selectable_value(
+                            &mut picker.copy_as,
+                            format,
+                            RichText::new(color_text(format, example)).monospace(),
+                        );
+                    }
+                });
+            });
+            row(
+                ui,
+                "show-window",
+                "Open this tab after picking with a hotkey or from the tray",
+                Some(crate::locale::spelled!(
+                    "Otherwise the colour is just copied, with a sound to say so"
+                )),
+                false,
+                |ui| {
+                    theme::switch(ui, &mut picker.show_window, "");
+                },
+            );
+        });
+    }
+
+    /// The colours picked lately; clicking one shows it in full.
+    fn recent_ui(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new("Recent").weak());
-        ui.add_space(2.0);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
             for c in &self.colors {
@@ -482,6 +459,41 @@ impl Tools {
         });
         self.notice = None;
     }
+}
+
+/// A picked colour's swatch, beside its name and the ways it's written,
+/// each with a button to copy it.
+fn color_formats_ui(ui: &mut egui::Ui, rgb: [u8; 3], actions: &mut Vec<Action>) {
+    let p = theme::palette(ui);
+    ui.horizontal_top(|ui| {
+        let (rect, _) = ui.allocate_exact_size(vec2(REGION_PREVIEW, REGION_PREVIEW), Sense::hover());
+        let [r, g, b] = rgb;
+        ui.painter().rect(rect, 8.0, Color32::from_rgb(r, g, b), Stroke::new(1.0, p.divider), egui::StrokeKind::Inside);
+        ui.add_space(12.0);
+        egui::Grid::new("color-formats")
+            .num_columns(3)
+            .spacing([12.0, 6.0])
+            .show(ui, |ui| {
+                ui.label(RichText::new("Name").weak())
+                    .on_hover_text(crate::locale::spelled!(
+                        "The closest named colour, from Name that Color (credited on Settings \u{2192} About)"
+                    ));
+                let name = crate::color_names::name(rgb);
+                ui.label(name);
+                if ui.button("Copy").clicked() {
+                    actions.push(Action::CopyText(name.into()));
+                }
+                ui.end_row();
+                for (name, text) in formats(rgb) {
+                    ui.label(RichText::new(name).weak());
+                    ui.label(RichText::new(&text).monospace());
+                    if ui.button("Copy").clicked() {
+                        actions.push(Action::CopyText(text));
+                    }
+                    ui.end_row();
+                }
+            });
+    });
 }
 
 /// The tool's global hotkeys, with a link to add one.
@@ -725,7 +737,7 @@ mod tests {
         ] {
             tools.picked(c);
         }
-        crate::preview::render("tools-color-preview", [920, 420], 1.0, |root| {
+        crate::preview::render("tools-color-preview", [920, 680], 1.0, |root| {
             crate::theme::apply(root.ctx());
             let hotkeys = [crate::settings::ToolHotkey {
                 action: ToolAction::PickColor,
@@ -743,7 +755,7 @@ mod tests {
         let mut tools = Tools::new();
         tools.tool = Tool::Pin;
         tools.pinned = 2;
-        crate::preview::render("tools-pin-preview", [920, 520], 1.0, |root| {
+        crate::preview::render("tools-pin-preview", [920, 720], 1.0, |root| {
             crate::theme::apply(root.ctx());
             egui::CentralPanel::default().show(root, |ui| tools.ui(ui, &[], &mut ColorPicker::default(), &mut Vec::new()));
         });
