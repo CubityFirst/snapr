@@ -2,9 +2,13 @@
 //! its messages lives on the main thread, so winit's message loop drives it.
 
 use std::cell::RefCell;
+use std::ffi::OsString;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::path::PathBuf;
 use std::ptr::null;
 
 use windows_sys::Win32::Foundation::{ERROR_SUCCESS, HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows_sys::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
 use windows_sys::Win32::UI::Shell::{
@@ -15,8 +19,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIcon, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
     DestroyMenu, DestroyWindow, FindWindowW, GetCursorPos, GetSystemMetrics, HICON, MF_POPUP,
     MF_SEPARATOR, MF_STRING, PostMessageW, RegisterClassW, RegisterWindowMessageW, SM_CXSMICON,
-    SetForegroundWindow, SetMenuDefaultItem, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
-    WM_APP, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WM_SETTINGCHANGE, WNDCLASSW,
+    SendMessageW, SetForegroundWindow, SetMenuDefaultItem, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    TrackPopupMenu, WM_APP, WM_COPYDATA, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WM_SETTINGCHANGE,
+    WNDCLASSW,
 };
 
 use super::{Callback, TrayAction, capture_label};
@@ -28,6 +33,9 @@ const WM_TRAY: u32 = WM_APP + 1;
 const WM_SHOW_SETTINGS: u32 = WM_APP + 2;
 /// Sent by `snapr --uninstall` to ask this one to quit.
 const WM_QUIT_SNAPR: u32 = WM_APP + 3;
+/// Marks a `WM_COPYDATA` from `snapr --upload` (Explorer's "Upload with
+/// Snapr"): files to upload, NUL-separated UTF-16.
+const UPLOAD_FILES: usize = 0x736e_7570;
 
 const MENU: &[(usize, TrayAction)] = &[
     (1, TrayAction::Capture),
@@ -54,7 +62,11 @@ struct State {
     taskbar_created: u32,
     /// What a left-click does.
     click: TrayClick,
+    /// Gets the files another instance was asked to upload.
+    on_files: Option<FilesCallback>,
 }
+
+pub type FilesCallback = std::sync::Arc<dyn Fn(Vec<PathBuf>) + Send + Sync>;
 
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
@@ -114,6 +126,7 @@ impl Tray {
             callback,
             taskbar_created: unsafe { RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()) },
             click: TrayClick::default(),
+            on_files: None,
         };
         let added = notify(&state, NIM_ADD);
         STATE.with(|s| *s.borrow_mut() = Some(state));
@@ -129,6 +142,14 @@ impl Tray {
                 state.tooltip = tooltip(hotkey);
                 state.capture_label = capture_label(hotkey);
                 notify(state, NIM_MODIFY);
+            }
+        });
+    }
+
+    pub fn on_files(&self, callback: FilesCallback) {
+        STATE.with(|s| {
+            if let Some(state) = s.borrow_mut().as_mut() {
+                state.on_files = Some(callback);
             }
         });
     }
@@ -225,6 +246,25 @@ pub fn signal_running_instance() -> bool {
     unsafe {
         let hwnd = FindWindowW(wide(CLASS_NAME).as_ptr(), null());
         !hwnd.is_null() && PostMessageW(hwnd, WM_SHOW_SETTINGS, 0, 0) != 0
+    }
+}
+
+/// Hands files to a running snapr to upload. Returns whether one took them.
+pub fn send_files(paths: &[PathBuf]) -> bool {
+    let data: Vec<u16> = paths
+        .iter()
+        .flat_map(|p| p.as_os_str().encode_wide().chain(Some(0)))
+        .collect();
+    let copy = COPYDATASTRUCT {
+        dwData: UPLOAD_FILES,
+        cbData: (data.len() * 2) as u32,
+        lpData: data.as_ptr() as *mut _,
+    };
+    // SAFETY: `copy` and its data outlive the call, which returns once the
+    // other instance has read them.
+    unsafe {
+        let hwnd = FindWindowW(wide(CLASS_NAME).as_ptr(), null());
+        !hwnd.is_null() && SendMessageW(hwnd, WM_COPYDATA, 0, &raw const copy as LPARAM) != 0
     }
 }
 
@@ -386,6 +426,26 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_QUIT_SNAPR => {
             dispatch(TrayAction::Quit);
             0
+        }
+        WM_COPYDATA => {
+            // SAFETY: for WM_COPYDATA, `lparam` points to a COPYDATASTRUCT
+            // whose data is readable for the duration of the message.
+            let copy = unsafe { &*(lparam as *const COPYDATASTRUCT) };
+            let callback = STATE.with(|s| s.borrow().as_ref().and_then(|st| st.on_files.clone()));
+            let Some(callback) = callback.filter(|_| copy.dwData == UPLOAD_FILES && !copy.lpData.is_null()) else {
+                return 0;
+            };
+            // SAFETY: as above; `cbData` is its length in bytes.
+            let data = unsafe {
+                std::slice::from_raw_parts(copy.lpData as *const u16, copy.cbData as usize / 2)
+            };
+            let paths = data
+                .split(|&c| c == 0)
+                .filter(|p| !p.is_empty())
+                .map(|p| PathBuf::from(OsString::from_wide(p)))
+                .collect();
+            callback(paths);
+            1
         }
         // Among other things, the light or dark mode was changed.
         WM_SETTINGCHANGE => {

@@ -99,6 +99,8 @@ pub struct Settings {
     pub start_with_windows: bool,
     /// Keep a shortcut to snapr in the Start menu (Windows).
     pub start_menu: bool,
+    /// "Upload with Snapr" on File Explorer's right-click menu (Windows).
+    pub explorer_menu: bool,
     /// First-time setup was finished or skipped. Config files from before
     /// it existed don't have it, which counts as done.
     pub setup_done: bool,
@@ -464,6 +466,7 @@ impl Default for Settings {
             check_for_updates: true,
             start_with_windows: false,
             start_menu: true,
+            explorer_menu: false,
             setup_done: true,
         }
     }

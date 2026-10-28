@@ -17,6 +17,8 @@ mod destinations_ui;
 #[cfg(windows)]
 mod dxgi;
 mod encode;
+#[cfg(windows)]
+mod explorer_menu;
 mod fonts;
 mod gallery;
 mod gpu;
@@ -135,6 +137,9 @@ enum UserEvent {
     UpdateDue,
     /// Checking for or installing an update got further.
     Update(update::Status),
+    /// Files to upload from File Explorer's "Upload with Snapr".
+    #[cfg(windows)]
+    UploadFiles(Vec<PathBuf>),
     /// The desktop couldn't bind the hotkeys (Wayland binds them later).
     HotkeyProblem(String),
     /// The keys the desktop has bound to the hotkeys changed.
@@ -293,6 +298,10 @@ struct App {
     /// window on Settings if true: snapr's been moved to the Programs folder.
     #[cfg(windows)]
     moved_to: Option<(PathBuf, bool)>,
+    /// Files to upload once started, from File Explorer's "Upload with
+    /// Snapr" when snapr wasn't running.
+    #[cfg(windows)]
+    upload_on_start: Vec<PathBuf>,
 }
 
 impl App {
@@ -825,6 +834,12 @@ impl App {
         #[cfg(windows)]
         if new.start_menu != self.settings.start_menu
             && let Err(e) = start_menu::set(new.start_menu)
+        {
+            return self.report(event_loop, e, true);
+        }
+        #[cfg(windows)]
+        if new.explorer_menu != self.settings.explorer_menu
+            && let Err(e) = explorer_menu::set(new.explorer_menu)
         {
             return self.report(event_loop, e, true);
         }
@@ -1372,6 +1387,13 @@ impl ApplicationHandler<UserEvent> for App {
             Ok(t) => {
                 t.set_click(self.settings.tray_click);
                 t.set_style(self.settings.tray_icon);
+                #[cfg(windows)]
+                {
+                    let proxy = Mutex::new(self.proxy.clone());
+                    t.on_files(Arc::new(move |paths| {
+                        let _ = proxy.lock().unwrap().send_event(UserEvent::UploadFiles(paths));
+                    }));
+                }
                 self.tray = Some(t);
             }
             Err(e) => {
@@ -1392,6 +1414,11 @@ impl ApplicationHandler<UserEvent> for App {
                 Page::Settings
             };
             self.open_main_window(event_loop, page);
+        }
+        #[cfg(windows)]
+        if !self.upload_on_start.is_empty() {
+            let paths = std::mem::take(&mut self.upload_on_start);
+            self.upload_files(event_loop, paths);
         }
     }
 
@@ -1430,6 +1457,8 @@ impl ApplicationHandler<UserEvent> for App {
                 output::reveal(&PathBuf::from(&self.settings.folder))
             }
             UserEvent::Tray(TrayAction::Quit) => event_loop.exit(),
+            #[cfg(windows)]
+            UserEvent::UploadFiles(paths) => self.upload_files(event_loop, paths),
             UserEvent::Output(output::Event::Copied) => {
                 println!("copied to clipboard");
                 if std::mem::take(&mut self.chime_on_copy) {
@@ -1828,7 +1857,9 @@ COMMANDS:
 
 /// Holds an exclusive lock on a file in the config folder for as long as
 /// snapr runs, so only one instance handles the hotkey.
-fn single_instance() -> Option<std::fs::File> {
+/// `uploads` are files from File Explorer's "Upload with Snapr", handed to
+/// the running snapr if there is one.
+fn single_instance(#[cfg(windows)] uploads: &[PathBuf]) -> Option<std::fs::File> {
     let dir = Settings::config_dir()?;
     std::fs::create_dir_all(&dir).ok()?;
     let file = std::fs::File::create(dir.join("snapr.lock")).ok()?;
@@ -1836,7 +1867,22 @@ fn single_instance() -> Option<std::fs::File> {
         Ok(()) => Some(file),
         Err(std::fs::TryLockError::WouldBlock) => {
             #[cfg(windows)]
-            tray::signal_running_instance();
+            if uploads.is_empty() {
+                tray::signal_running_instance();
+            } else {
+                // Explorer starts one snapr per file selected, so the one
+                // that got the lock may not have its window yet.
+                let sent = (0..50).any(|i| {
+                    if i > 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                    tray::send_files(uploads)
+                });
+                if !sent {
+                    eprintln!("couldn't hand the files to the running snapr");
+                    std::process::exit(1);
+                }
+            }
             eprintln!("snapr is already running");
             std::process::exit(0);
         }
@@ -1867,12 +1913,20 @@ fn main() {
     // The copy snapr was moved from, to remove (`install::relaunch`).
     #[cfg_attr(not(windows), allow(unused_mut))]
     let mut moved_from: Option<PathBuf> = None;
+    // From File Explorer's "Upload with Snapr".
+    #[cfg(windows)]
+    let mut uploads: Vec<PathBuf> = Vec::new();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--once" => once = true,
             "--settings" => open_settings = true,
             #[cfg(windows)]
             "--moved-from" if args.peek().is_some() => moved_from = args.next().map(PathBuf::from),
+            #[cfg(windows)]
+            "--upload" if args.peek().is_some() => {
+                let path = PathBuf::from(args.next().unwrap_or_default());
+                uploads.push(std::path::absolute(&path).unwrap_or(path));
+            }
             "--help" | "-h" => {
                 println!("{HELP}");
                 return;
@@ -1890,7 +1944,14 @@ fn main() {
     }
     // Ready for the text tool's font list by the time it's opened.
     fonts::preload();
-    let lock = if once { None } else { single_instance() };
+    let lock = if once {
+        None
+    } else {
+        single_instance(
+            #[cfg(windows)]
+            &uploads,
+        )
+    };
 
     #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
     let (mut settings, loaded) = Settings::load();
@@ -1914,6 +1975,14 @@ fn main() {
         && !once
         && !cfg!(debug_assertions)
         && let Err(e) = start_menu::refresh()
+    {
+        eprintln!("{e}");
+    }
+    #[cfg(windows)]
+    if settings.explorer_menu
+        && !once
+        && !cfg!(debug_assertions)
+        && let Err(e) = explorer_menu::refresh()
     {
         eprintln!("{e}");
     }
@@ -2072,6 +2141,8 @@ fn main() {
         restart: false,
         #[cfg(windows)]
         moved_to: None,
+        #[cfg(windows)]
+        upload_on_start: uploads,
     };
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("event loop error: {e}");

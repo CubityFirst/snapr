@@ -307,6 +307,10 @@ impl Form {
                             Some("To open it by searching for it, or pin it"), false, |ui| {
                             theme::switch(ui, &mut self.draft.start_menu, "");
                         });
+                        row(ui, "explorer-menu", "Add Upload with Snapr to the right-click menu",
+                            Some("On files in File Explorer, under Show more options on Windows 11"), false, |ui| {
+                            theme::switch(ui, &mut self.draft.explorer_menu, "");
+                        });
                     }
                     #[cfg(windows)]
                     self.install_row(ui, actions);

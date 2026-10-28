@@ -243,8 +243,8 @@ fn message(text: &str, style: MESSAGEBOX_STYLE) -> i32 {
 /// are left alone. Returns the exit code.
 pub fn uninstall() -> i32 {
     let ok = message(
-        "Uninstall snapr?\n\nIt's taken out of the Start menu and stops starting with Windows. \
-         Your screenshots and recordings stay where they are.",
+        "Uninstall snapr?\n\nIt's taken out of the Start menu and the right-click menu and stops \
+         starting with Windows. Your screenshots and recordings stay where they are.",
         MB_OKCANCEL | MB_ICONQUESTION,
     );
     if ok != IDOK {
@@ -262,7 +262,11 @@ pub fn uninstall() -> i32 {
         );
         return 1;
     }
-    for result in [crate::autostart::set(false), crate::start_menu::set(false)] {
+    for result in [
+        crate::autostart::set(false),
+        crate::start_menu::set(false),
+        crate::explorer_menu::set(false),
+    ] {
         if let Err(e) = result {
             eprintln!("{e}");
         }
