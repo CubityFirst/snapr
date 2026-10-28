@@ -103,6 +103,14 @@ fn node_hit(node: (f32, f32), p: (f64, f64)) -> bool {
     (node.0 as f64 - p.0).hypot(node.1 as f64 - p.1) <= NODE_RADIUS
 }
 
+/// Whether a key is one of the arrow keys, which move the cursor a pixel.
+fn is_arrow(key: &NamedKey) -> bool {
+    matches!(
+        key,
+        NamedKey::ArrowLeft | NamedKey::ArrowRight | NamedKey::ArrowUp | NamedKey::ArrowDown
+    )
+}
+
 /// Whether a region is too small to be a drag, so it was meant as a click.
 fn is_click(r: &Rect) -> bool {
     r.w < 4 && r.h < 4
@@ -753,11 +761,13 @@ impl Session {
                         self.keys_down.remove(&key);
                         self.stale_keys.remove(&key);
                     }
-                    // Holding a key down repeats it into text.
+                    // Holding a key down repeats it into text, or keeps an
+                    // arrow key moving the cursor.
                     ElementState::Pressed
                         if event.repeat
                             && !*is_synthetic
-                            && self.grab == Grab::Type
+                            && (self.grab == Grab::Type
+                                || matches!(&event.logical_key, Key::Named(k) if is_arrow(k)))
                             && self.keys_down.contains(&key) =>
                     {
                         return self.on_key(event);
@@ -926,9 +936,11 @@ impl Session {
             return;
         };
         let r = o.global_rect();
+        // A whole pixel: Windows rounds the position, so half a pixel more
+        // (to aim at its middle) went two pixels right, and none left.
         let local = winit::dpi::PhysicalPosition::new(
-            c.0.floor() + 0.5 + dx - r.x as f64,
-            c.1.floor() + 0.5 + dy - r.y as f64,
+            c.0.floor() + dx - r.x as f64,
+            c.1.floor() + dy - r.y as f64,
         );
         let _ = o.window.set_cursor_position(local);
     }
@@ -1184,7 +1196,9 @@ impl Session {
             Key::Named(NamedKey::Enter) if self.purpose == Purpose::PickColor => {
                 return self.pick_color();
             }
-            Key::Named(arrow) if self.purpose == Purpose::PickColor => {
+            // Placing the cursor (a region's corners, or the pixel to pick)
+            // exactly.
+            Key::Named(arrow) if is_arrow(arrow) => {
                 let step = if self.modifiers.shift_key() {
                     10.0
                 } else {
@@ -1194,8 +1208,7 @@ impl Session {
                     NamedKey::ArrowLeft => self.nudge(-step, 0.0),
                     NamedKey::ArrowRight => self.nudge(step, 0.0),
                     NamedKey::ArrowUp => self.nudge(0.0, -step),
-                    NamedKey::ArrowDown => self.nudge(0.0, step),
-                    _ => {}
+                    _ => self.nudge(0.0, step),
                 }
             }
             Key::Named(NamedKey::Enter) if self.annotate => return self.finish_monitor(true),

@@ -7,7 +7,8 @@ Everything snapr does, in detail. For an overview see the [README](../README.md)
 Press the hotkey (`Alt + Shift + S` by default) and every monitor freezes.
 **Drag** a region and let go to take the screenshot (works across
 monitors). **Shift** keeps the region square, holding **Ctrl** moves the region
-while you drag it, and a plain **click** takes the window under the cursor
+while you drag it, the **arrow keys** move the cursor one pixel (Shift: ten;
+hold one to keep going) to place each corner exactly, and a plain **click** takes the window under the cursor
 (highlighted as you move; the part of it on that monitor), or the whole
 monitor if there's no window there. **Right-click** / **Esc** cancels (in the
 middle of a drag, just that drag; right-clicking an annotation deletes it).
