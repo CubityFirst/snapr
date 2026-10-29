@@ -44,6 +44,10 @@ pub struct Settings {
     pub sound_volume: u8,
     /// Pop up a preview in the corner of the screen after each capture.
     pub show_toast: bool,
+    /// How big that preview is.
+    pub toast_size: ToastSize,
+    /// Draw the mouse buttons in that preview, rather than naming them.
+    pub toast_icons: bool,
     /// Overlay frame-rate limit; 0 matches each monitor's refresh rate.
     pub overlay_fps: u32,
     /// What's shown beside the crosshair while selecting a region.
@@ -394,6 +398,28 @@ impl TrayIconStyle {
     }
 }
 
+/// How big the preview in the corner is.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToastSize {
+    /// The picture, with what clicking does under it.
+    #[default]
+    Large,
+    /// A thumbnail, with the link and what clicking does beside it.
+    Compact,
+}
+
+impl ToastSize {
+    pub const ALL: [ToastSize; 2] = [ToastSize::Large, ToastSize::Compact];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ToastSize::Large => "Large",
+            ToastSize::Compact => "Compact",
+        }
+    }
+}
+
 /// The theme snapr's windows are in.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -442,6 +468,8 @@ impl Default for Settings {
             play_sounds: true,
             sound_volume: 100,
             show_toast: true,
+            toast_size: ToastSize::default(),
+            toast_icons: false,
             overlay_fps: 0,
             crosshair_info: CrosshairInfo::default(),
             color_picker: ColorPicker::default(),

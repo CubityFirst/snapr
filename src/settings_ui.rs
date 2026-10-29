@@ -15,7 +15,7 @@ use crate::output;
 use crate::secrets;
 use crate::settings_search::found;
 use crate::settings::{
-    MagnifierScroll, Settings, Theme, ToolAction, ToolHotkey, TrayClick, TrayIconStyle, Upload, parse_hotkey,
+    MagnifierScroll, Settings, Theme, ToastSize, ToolAction, ToolHotkey, TrayClick, TrayIconStyle, Upload, parse_hotkey,
 };
 use crate::sound::{self, Sound};
 use crate::theme;
@@ -344,6 +344,21 @@ impl Form {
                     Some("Click it to open the link or the image, middle-click to copy the image, right-click to close it"),
                     false, |ui| {
                     theme::switch(ui, &mut self.draft.show_toast, "");
+                });
+                ui.add_enabled_ui(self.draft.show_toast, |ui| {
+                    row(ui, "toast-size", "Size", None, true, |ui| {
+                        theme::segmented(ui, |ui| {
+                            for size in ToastSize::ALL {
+                                ui.selectable_value(&mut self.draft.toast_size, size, size.label());
+                            }
+                        });
+                    });
+                    row(ui, "toast-icons", "Mouse buttons", None, true, |ui| {
+                        theme::segmented(ui, |ui| {
+                            ui.selectable_value(&mut self.draft.toast_icons, false, "Words");
+                            ui.selectable_value(&mut self.draft.toast_icons, true, "Icons");
+                        });
+                    });
                 });
             });
 

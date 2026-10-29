@@ -1258,6 +1258,8 @@ impl App {
             path,
             image,
             link,
+            self.settings.toast_size,
+            self.settings.toast_icons,
             #[cfg(target_os = "linux")]
             send_x11,
         ) {
