@@ -835,9 +835,7 @@ impl Gallery {
                 centered_row(ui, "empty-hotkey", |ui| {
                     ui.spacing_mut().item_spacing.x = 5.0;
                     ui.weak("Press");
-                    for key in hotkey.split('+').map(str::trim) {
-                        key_cap(ui, key);
-                    }
+                    key_caps(ui, hotkey);
                     ui.weak("anywhere to capture a region.");
                 });
             }
@@ -967,30 +965,53 @@ fn centered_row(ui: &mut egui::Ui, id_salt: &str, add: impl FnOnce(&mut egui::Ui
     }
 }
 
-/// One key of a hotkey, drawn as a key cap: `KeyS` as *S*.
-fn key_cap(ui: &mut egui::Ui, key: &str) {
-    let name = key
-        .strip_prefix("Key")
-        .or_else(|| key.strip_prefix("Digit"))
-        .filter(|k| k.len() == 1)
-        .unwrap_or(key);
+/// A hotkey drawn as key caps, `KeyS` as *S*. They press down together
+/// under the mouse, just for show.
+fn key_caps(ui: &mut egui::Ui, hotkey: &str) {
     let palette = theme::palette(ui);
-    let text = ui.painter().layout_no_wrap(
-        name.to_owned(),
-        egui::FontId::proportional(12.0),
-        palette.text_strong,
-    );
-    let size = vec2((text.size().x + 14.0).max(24.0), 22.0);
-    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let caps: Vec<_> = hotkey
+        .split('+')
+        .map(|key| {
+            let key = key.trim();
+            let name = key
+                .strip_prefix("Key")
+                .or_else(|| key.strip_prefix("Digit"))
+                .filter(|k| k.len() == 1)
+                .unwrap_or(key);
+            let text = ui.painter().layout_no_wrap(
+                name.to_owned(),
+                egui::FontId::proportional(12.0),
+                palette.text_strong,
+            );
+            let size = vec2((text.size().x + 14.0).max(24.0), 22.0);
+            let (_, response) = ui.allocate_exact_size(size, Sense::click());
+            (response, text)
+        })
+        .collect();
+    let hovered = caps.iter().any(|(r, _)| r.hovered());
+    let down = caps.iter().any(|(r, _)| r.is_pointer_button_down_on());
     let p = ui.painter();
-    // A thicker edge along the bottom, like a key.
-    p.rect_filled(rect, 5.0, palette.stroke);
-    p.rect_filled(rect.with_max_y(rect.bottom() - 2.0).shrink(1.0), 4.0, palette.control);
-    p.galley(
-        rect.center() - vec2(0.0, 1.0) - text.size() / 2.0,
-        text,
-        palette.text_strong,
-    );
+    for (response, text) in caps {
+        let rect = response.rect;
+        let face = if down {
+            palette.control_pressed
+        } else if hovered {
+            palette.control_hover
+        } else {
+            palette.control
+        };
+        // A thicker edge along the bottom, like a key; held, the key sinks
+        // onto it.
+        let sink = if down { 2.0 } else { 0.0 };
+        let key = rect.with_min_y(rect.top() + sink);
+        p.rect_filled(key, 5.0, palette.stroke);
+        p.rect_filled(key.with_max_y(rect.bottom() - 2.0 + sink).shrink(1.0), 4.0, face);
+        p.galley(
+            rect.center() - vec2(0.0, 1.0 - sink) - text.size() / 2.0,
+            text,
+            palette.text_strong,
+        );
+    }
 }
 
 /// The size of a `size` picture shrunk to fit `max`, as the loader does.
