@@ -1239,6 +1239,11 @@ impl Annotation {
                     id,
                     None,
                 );
+                // A faint edge goes with the shadow; without it the clip is
+                // just its pixels.
+                if shadow == 0 {
+                    return;
+                }
                 if let Some(r) =
                     tiny_skia::Rect::from_xywh(x as f32 + 0.5, y as f32 + 0.5, w - 1.0, h - 1.0)
                 {
@@ -2655,7 +2660,8 @@ mod tests {
 
     #[test]
     fn clip_shadow_can_be_turned_off() {
-        let below_clip = |clip_shadow| {
+        // The pixels just below the clip and on its top edge.
+        let around_clip = |clip_shadow| {
             let mut c = canvas();
             let style = Style {
                 clip_shadow,
@@ -2664,11 +2670,15 @@ mod tests {
             c.begin(Annotation::new(Tool::Clip, style, (1005.0, 505.0)).unwrap());
             c.drag_to((1035.0, 535.0), false);
             c.commit();
-            c.image().get_pixel(20, 37).0
+            let img = c.image();
+            [img.get_pixel(20, 37).0, img.get_pixel(20, 5).0]
         };
         let untouched = [200, 200, 200, 255];
-        assert_ne!(below_clip(true), untouched);
-        assert_eq!(below_clip(false), untouched);
+        let [below, edge] = around_clip(true);
+        assert_ne!(below, untouched);
+        assert_ne!(edge, untouched);
+        // No shadow, and no dark edge either.
+        assert_eq!(around_clip(false), [untouched, untouched]);
     }
 
     #[test]
