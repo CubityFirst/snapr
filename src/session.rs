@@ -197,6 +197,7 @@ impl Session {
         tool: Tool,
         style: Style,
         snap_to: &[&winit::window::Window],
+        cursor: bool,
     ) -> Result<Self, String> {
         // Grab every monitor first so the "frozen" frame is from the moment
         // the hotkey was pressed, before any of our windows appear.
@@ -221,7 +222,7 @@ impl Session {
                 Some((m.position(), window))
             })
             .collect();
-        let shots = match capture::capture_all() {
+        let shots = match capture::capture_all(cursor) {
             Ok(s) if !s.is_empty() => s,
             Ok(_) => return Err("no monitors found".into()),
             Err(e) => return Err(capture::failure(e)),

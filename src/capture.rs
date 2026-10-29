@@ -79,7 +79,28 @@ pub struct PlacedShot<'a> {
     pub rect: Rect,
 }
 
-pub fn capture_all() -> Result<Vec<Shot>, xcap::XCapError> {
+/// Draws the mouse pointer, if it's showing, into `image`, whose top-left
+/// corner is at `origin` (global physical pixels). Only Windows can tell.
+fn draw_cursor(cursors: &mut crate::cursor::Cursors, image: &mut RgbaImage, origin: (i32, i32)) {
+    if let Some((at, cursor)) = cursors.current() {
+        let (w, h) = image.dimensions();
+        crate::cursor::blend(image, w, h, cursor, (at.0 - origin.0, at.1 - origin.1));
+    }
+}
+
+/// Every monitor, with the mouse pointer drawn in if `cursor`.
+pub fn capture_all(cursor: bool) -> Result<Vec<Shot>, xcap::XCapError> {
+    let mut shots = capture_monitors()?;
+    if cursor {
+        let mut cursors = crate::cursor::Cursors::new();
+        for shot in &mut shots {
+            draw_cursor(&mut cursors, &mut shot.image, shot.pos);
+        }
+    }
+    Ok(shots)
+}
+
+fn capture_monitors() -> Result<Vec<Shot>, xcap::XCapError> {
     // Displays in HDR mode are captured in full range and mapped to SDR.
     #[cfg(windows)]
     let hdr = crate::hdr::displays();
@@ -486,8 +507,8 @@ pub fn failure(e: impl std::fmt::Display) -> String {
 }
 
 /// Captures `target` straight away, with the naming details of what was
-/// captured (process and title).
-pub fn grab(target: &Target) -> Result<(RgbaImage, Option<String>, Option<String>), String> {
+/// captured (process and title), and the mouse pointer drawn in if `cursor`.
+pub fn grab(target: &Target, cursor: bool) -> Result<(RgbaImage, Option<String>, Option<String>), String> {
     #[cfg(target_os = "macos")]
     if !crate::macos::screen_recording_allowed() {
         return Err(crate::macos::SCREEN_RECORDING_OFF.into());
@@ -499,7 +520,10 @@ pub fn grab(target: &Target) -> Result<(RgbaImage, Option<String>, Option<String
                 .into_iter()
                 .find(|w| w.id().is_ok_and(|i| i == *id))
                 .ok_or("that window has closed")?;
-            let image = window.capture_image().map_err(failure)?;
+            let mut image = window.capture_image().map_err(failure)?;
+            if cursor && let (Ok(x), Ok(y)) = (window.x(), window.y()) {
+                draw_cursor(&mut crate::cursor::Cursors::new(), &mut image, (x, y));
+            }
             let process = window
                 .pid()
                 .ok()
@@ -515,13 +539,16 @@ pub fn grab(target: &Target) -> Result<(RgbaImage, Option<String>, Option<String
                 .into_iter()
                 .find(|m| m.id().is_ok_and(|i| i == *id))
                 .ok_or("that display is no longer connected")?;
-            let image = monitor.capture_image().map_err(failure)?;
+            let mut image = monitor.capture_image().map_err(failure)?;
+            if cursor && let (Ok(x), Ok(y)) = (monitor.x(), monitor.y()) {
+                draw_cursor(&mut crate::cursor::Cursors::new(), &mut image, (x, y));
+            }
             let (process, title) = foreground_window();
             Ok((image, process, title))
         }
         Target::Region(_) | Target::Everything => {
             let (process, title) = foreground_window();
-            let shots = capture_all().map_err(failure)?;
+            let shots = capture_all(cursor).map_err(failure)?;
             let placed: Vec<_> = shots
                 .iter()
                 .map(|s| PlacedShot {

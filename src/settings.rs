@@ -78,6 +78,8 @@ pub struct Settings {
     pub record_system_audio: bool,
     /// Draw the mouse pointer into recordings.
     pub record_cursor: bool,
+    /// Draw the mouse pointer into screenshots (Windows).
+    pub screenshot_cursor: bool,
     /// Record a microphone along with the screen.
     pub record_microphone: bool,
     /// The microphone's name; empty for the system default.
@@ -482,6 +484,7 @@ impl Default for Settings {
             ffmpeg_path: String::new(),
             ffmpeg: FfmpegOptions::default(),
             record_cursor: true,
+            screenshot_cursor: true,
             record_system_audio: false,
             record_microphone: false,
             microphone: String::new(),

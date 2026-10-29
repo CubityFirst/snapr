@@ -434,6 +434,14 @@ impl Form {
                     .weak(),
             );
 
+            if cfg!(windows) {
+                group(ui, "Screenshots", |ui| {
+                    row(ui, "screenshot-cursor", "Show the mouse pointer", None, false, |ui| {
+                        theme::switch(ui, &mut self.draft.screenshot_cursor, "");
+                    });
+                });
+            }
+
             group(ui, "While picking a region", |ui| {
                 row(ui, "annotate", "Show the annotation toolbar",
                     Some("Arrows, text, boxes and more, to draw on the capture before it's taken"), false, |ui| {

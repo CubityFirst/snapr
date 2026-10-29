@@ -69,6 +69,9 @@ static INDEX: LazyLock<Vec<Entry>> = LazyLock::new(|| {
     add(Settings, "run-setup", "Run setup again", "first-time setup welcome wizard onboarding");
 
     // Capture
+    if cfg!(windows) {
+        add(Capture, "screenshot-cursor", "Show the mouse pointer in screenshots", "cursor mouse pointer screenshot");
+    }
     add(Capture, "annotate", "Show the annotation toolbar while capturing", "draw annotate arrows pen text toolbar");
     add(Capture, "overlay-fps", "Overlay frame rate", "fps refresh rate hz monitor smooth");
     add(Capture, "crosshair", "Beside the crosshair", "cursor position pixel coordinates colour color magnifier zoom");

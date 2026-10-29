@@ -568,6 +568,8 @@ impl App {
             Tool::Select,
             style,
             &snap_to,
+            // A pointer in the frozen screen would get in the way of the tools.
+            s.screenshot_cursor && purpose == Purpose::Screenshot,
         ) {
             Ok(mut session) => {
                 #[cfg(target_os = "macos")]
@@ -901,7 +903,7 @@ impl App {
     /// away, with no overlay to pick or annotate on.
     fn grab(&mut self, event_loop: &ActiveEventLoop, target: capture::Target) {
         let time = chrono::Local::now();
-        match capture::grab(&target) {
+        match capture::grab(&target, self.settings.screenshot_cursor) {
             Ok((image, process, title)) => {
                 self.play(Sound::Capture);
                 self.count(|s| s.count(stats::Kind::Screenshot, time));
