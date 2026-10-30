@@ -724,7 +724,7 @@ mod tests {
     }
 
     /// Renders the colour picker after a few picks to
-    /// `target/tools-color-preview.png`: `cargo test tools_preview -- --ignored`.
+    /// `target/tools-color-preview.png`: `cargo test tools_color_preview -- --ignored`.
     #[test]
     #[ignore]
     fn tools_color_preview() {

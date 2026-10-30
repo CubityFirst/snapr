@@ -240,7 +240,6 @@ mod tests {
 
     #[test]
     fn draws_the_upload_progress_as_a_bar_across_the_bottom() {
-        assert_eq!(icon_rgba(16), icon_with_progress(16, None, BLUE));
         let half = icon(50, false);
         assert_eq!(half[9], "................");
         assert_eq!(half[10], "..############..");

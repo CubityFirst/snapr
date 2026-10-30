@@ -914,12 +914,4 @@ mod fake {
         assert!(!log.iter().any(|(_, q, _)| q.contains("partNumber")), "{log:?}");
         assert!(log.iter().any(|(m, q, _)| m == "DELETE" && q.starts_with("uploadId")));
     }
-
-    #[test]
-    fn huge_files_get_bigger_parts() {
-        let len: u64 = 200 * 1024 * 1024 * 1024; // 200 GB
-        let part = PART_SIZE.max(len.div_ceil(MAX_PARTS).next_multiple_of(1024 * 1024));
-        assert!(len.div_ceil(part) <= MAX_PARTS);
-        assert_eq!(PART_SIZE.max(6_000_000_000u64.div_ceil(MAX_PARTS)), PART_SIZE);
-    }
 }

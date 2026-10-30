@@ -2911,9 +2911,7 @@ mod tests {
 
     #[test]
     fn text_uses_an_installed_font() {
-        while crate::fonts::installed().is_none() {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
+        crate::fonts::find(""); // waits for the fonts to be found
         if crate::fonts::installed().unwrap().is_empty() {
             return; // none to try
         }
@@ -3450,7 +3448,9 @@ mod tests {
             },
             ..Default::default()
         };
-        c.begin(Annotation::new(Tool::Pixelate, style, (0.0, 0.0)).unwrap());
+        let mut a = Annotation::new(Tool::Pixelate, style, (0.0, 0.0)).unwrap();
+        a.seed = 1; // one that moves blocks, so the test can't fail by chance
+        c.begin(a);
         c.drag_to((80.0, 8.0), false);
         c.commit();
         let out = c.image();
@@ -3460,7 +3460,7 @@ mod tests {
         assert_ne!(
             tops,
             (0..10).map(|i| if i % 2 == 0 { 0 } else { 255 }).collect::<Vec<u8>>(),
-            "blocks should be shuffled (1 in 252 chance of a false failure)"
+            "blocks should be shuffled"
         );
         // Undo and redo redraws it identically.
         c.undo();
@@ -3497,10 +3497,28 @@ mod tests {
     }
 
     #[test]
-    fn blur_keeps_flat_areas_flat() {
+    fn blur_softens_edges_but_keeps_flat_areas_flat() {
         let mut c = canvas();
         draw(&mut c, Tool::Blur, (1000.0, 500.0), (1100.0, 560.0));
         assert_eq!(c.image().get_pixel(50, 30).0, [200, 200, 200, 255]);
+
+        // Black on the left, white on the right: the edge turns grey.
+        let img = RgbaImage::from_fn(100, 60, |x, _| {
+            let v = if x < 50 { 0 } else { 255 };
+            image::Rgba([v, v, v, 255])
+        });
+        let mut c = Canvas::new(
+            Rect {
+                x: 1000,
+                y: 500,
+                w: 100,
+                h: 60,
+            },
+            img,
+        );
+        draw(&mut c, Tool::Blur, (1000.0, 500.0), (1100.0, 560.0));
+        let edge = c.image().get_pixel(49, 30).0[0];
+        assert!(edge > 0 && edge < 255, "{edge}");
     }
 
     #[test]

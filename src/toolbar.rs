@@ -1504,8 +1504,6 @@ fn draw_icon(p: &egui::Painter, r: Rect, icon: Icon, color: Color32, bg: Color32
 mod tests {
     use super::*;
 
-    /// Renders the toolbar offscreen to `target/toolbar-preview.png` for a
-    /// visual check: `cargo test toolbar_preview -- --ignored`.
     #[test]
     fn reset_puts_back_only_that_tools_settings() {
         let d = Style::default();
@@ -1527,6 +1525,8 @@ mod tests {
         assert!(reset_options(Tool::Clip, &style).is_empty());
     }
 
+    /// Renders the toolbar offscreen to `target/toolbar-preview.png` for a
+    /// visual check: `cargo test toolbar_preview -- --ignored`.
     #[test]
     #[ignore]
     fn toolbar_preview() {
