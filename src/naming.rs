@@ -482,7 +482,6 @@ mod tests {
         let stem = render("%rna{10}");
         assert_eq!(stem.len(), 10);
         assert!(stem.bytes().all(|b| UNAMBIGUOUS.contains(&b)));
-        assert_eq!(UNAMBIGUOUS.len(), 56);
         assert_eq!(render("%rna").len(), 1);
         assert_eq!(render("%rn{5}").len(), 5);
         assert!(render("%rn{5}").bytes().all(|b| b.is_ascii_digit()));

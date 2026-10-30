@@ -289,27 +289,26 @@ mod tests {
 
     #[test]
     fn clock_leaves_out_pauses() {
-        let mut c = Clock::default();
-        c.start();
-        thread::sleep(Duration::from_millis(30));
-        c.set_paused(true);
-        let at_pause = c.elapsed();
-        thread::sleep(Duration::from_millis(50));
-        assert_eq!(c.elapsed(), at_pause);
+        let ms = Duration::from_millis;
+        let now = Instant::now();
+        // Started 80 ms ago, and paused for the last 30.
+        let mut c = Clock {
+            start: Some(now - ms(80)),
+            paused_at: Some(now - ms(30)),
+            paused_for: Duration::ZERO,
+        };
+        assert_eq!(c.elapsed(), ms(50));
         c.set_paused(false);
-        thread::sleep(Duration::from_millis(20));
         let total = c.elapsed();
-        assert!(
-            total >= Duration::from_millis(50) && total < Duration::from_millis(90),
-            "{total:?}"
-        );
+        assert!(total >= ms(50) && total < ms(80), "{total:?}");
     }
 
     /// No data at all (silence on a loopback device) still gives a track as
     /// long as the recording.
     #[test]
     fn fills_silence() {
-        let (tx, rx) = mpsc::channel::<Vec<f32>>();
+        // The sender stays open, as the stream's does until the recording ends.
+        let (_tx, rx) = mpsc::channel::<Vec<f32>>();
         let clock = Mutex::new(Clock::default());
         clock.lock().unwrap().start();
         let stop = AtomicBool::new(false);
@@ -318,7 +317,6 @@ mod tests {
             s.spawn(|| {
                 thread::sleep(Duration::from_millis(250));
                 stop.store(true, Ordering::Relaxed);
-                drop(tx);
             });
             let collect = |samples: Vec<f32>| {
                 out.extend(samples);
@@ -326,7 +324,12 @@ mod tests {
             };
             write_samples(rx, collect, &clock, &stop, 1000, 2).unwrap();
         });
-        let frames = out.len() / 2;
-        assert!((200..=320).contains(&frames), "{frames} frames");
+        // A frame a millisecond: silence from the start until it stopped.
+        let frames = (out.len() / 2) as u128;
+        let elapsed = clock.lock().unwrap().elapsed().as_millis();
+        assert!(
+            frames >= 250 && frames <= elapsed,
+            "{frames} frames in {elapsed} ms"
+        );
     }
 }

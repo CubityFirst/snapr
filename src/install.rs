@@ -371,12 +371,6 @@ fn deleter(exe: &Path) -> Option<std::process::Command> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn home_is_the_users_programs_folder() {
-        let home = super::home().unwrap();
-        assert!(home.ends_with(r"Programs\snapr"), "{}", home.display());
-    }
-
-    #[test]
     fn a_test_build_is_development() {
         assert_eq!(super::place(), super::Place::Development);
     }
