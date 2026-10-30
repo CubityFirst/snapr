@@ -300,7 +300,9 @@ mod tests {
         assert_eq!(c.elapsed(), ms(50));
         c.set_paused(false);
         let total = c.elapsed();
-        assert!(total >= ms(50) && total < ms(80), "{total:?}");
+        // However long that took, the 30 ms pause is left out.
+        let since_start = now.elapsed() + ms(80);
+        assert!(total >= ms(50) && total + ms(30) <= since_start, "{total:?}");
     }
 
     /// No data at all (silence on a loopback device) still gives a track as
