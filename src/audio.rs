@@ -299,6 +299,7 @@ mod tests {
         };
         assert_eq!(c.elapsed(), ms(50));
         c.set_paused(false);
+        assert!(!c.paused());
         let total = c.elapsed();
         // However long that took, the 30 ms pause is left out.
         let since_start = now.elapsed() + ms(80);
