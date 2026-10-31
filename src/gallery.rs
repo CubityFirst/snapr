@@ -721,23 +721,20 @@ impl Gallery {
                 }
                 ui.separator();
             }
-            if let Some(link) = &entry.link
-                && ui.button("Copy link").clicked()
-            {
-                actions.push(Action::CopyLink(link.clone()));
-                ui.close();
-            }
             for (label, action) in [
-                ("Open", Action::Open(path.to_owned())),
-                ("Copy", Action::Copy(path.to_owned())),
-                ("Pin to screen", Action::Pin(path.to_owned())),
-                ("Show in folder", Action::ShowInFolder(path.to_owned())),
-                ("Delete", Action::Delete(path.to_owned())),
+                ("Open", Some(Action::Open(path.to_owned()))),
+                ("Copy", Some(Action::Copy(path.to_owned()))),
+                ("Copy link", entry.link.clone().map(Action::CopyLink)),
+                ("Pin to screen", Some(Action::Pin(path.to_owned()))),
+                ("Show in folder", Some(Action::ShowInFolder(path.to_owned()))),
+                ("Delete", Some(Action::Delete(path.to_owned()))),
             ] {
+                let Some(action) = action else { continue };
                 if matches!(label, "Copy" | "Pin to screen") && !is_image {
                     continue;
                 }
                 let button = if label == "Delete" {
+                    ui.separator();
                     theme::danger(ui, label)
                 } else {
                     egui::Button::new(label)
