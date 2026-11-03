@@ -298,16 +298,14 @@ impl MainWindow {
         stats: crate::stats::Stats,
     ) -> Result<Self, String> {
         let icon = Icon::from_rgba(crate::tray::icon_rgba(64), 64, 64).ok();
-        let attrs = Window::default_attributes()
+        // Named as `snapr.desktop`'s, so GNOME knows it's snapr's: it only
+        // shows the dialog for a permission to the focused app's request
+        // (see `portal`).
+        let attrs = crate::app_id::window_attributes()
             .with_title("snapr")
             .with_inner_size(opening_size(event_loop))
             .with_min_inner_size(MIN_SIZE)
             .with_window_icon(icon);
-        // Names it as `snapr.desktop`'s, so GNOME knows it's snapr's: it
-        // only shows the dialog for a permission to the focused app's
-        // request (see `portal`). On X11 it's the window class.
-        #[cfg(target_os = "linux")]
-        let attrs = winit::platform::wayland::WindowAttributesExtWayland::with_name(attrs, "snapr", "snapr");
         let window = Arc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
 
         let ctx = egui::Context::default();

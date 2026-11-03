@@ -204,7 +204,7 @@ impl Toast {
         size: LogicalSize<f64>,
     ) -> Result<Backend, String> {
         #[allow(unused_mut)]
-        let mut attrs = Window::default_attributes()
+        let mut attrs = crate::app_id::window_attributes()
             .with_title("snapr")
             .with_decorations(false)
             .with_resizable(false)

@@ -325,6 +325,7 @@ itself.
 
 ```
 snapr --once       # capture immediately with the saved settings, then exit
+snapr --record     # pick a region to record; exits once it's saved (stop it on the bar)
 snapr --settings   # open the settings window on start
 snapr --uninstall  # Windows: uninstall, as Settings › Apps does
 snapr --help       # these options
@@ -383,7 +384,12 @@ that capture the output wait anyway).
   on) to the keys set in snapr, again after each config reload, and unbinds
   them when it quits. Keys Hyprland already binds to something else are left
   alone, and snapr says so. Without the portal they need the user in the
-  `input` group, or bind `snapr --once` to a compositor shortcut. GNOME also
+  `input` group, or bind `snapr --once` and `snapr --record` to compositor
+  shortcuts. On wlroots compositors (Wayfire, Sway, river, labwc) snapr
+  asks the compositor which window is focused, for naming, and records
+  through its screencopy, without the ScreenCast portal. Its windows go by
+  the app id (X11: class) `snapr`, for window rules such as leaving the
+  capture overlay unanimated. GNOME also
   asks before snapr can take screenshots, but only while snapr's window is
   focused, so until it's allowed snapr opens its window with an **Allow
   screenshots** button. Screen recording and video previews need

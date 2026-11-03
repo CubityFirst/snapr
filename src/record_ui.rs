@@ -444,7 +444,7 @@ fn egui_button(button: MouseButton) -> Option<egui::PointerButton> {
 
 fn base_attributes() -> WindowAttributes {
     #[allow(unused_mut)]
-    let mut attrs = Window::default_attributes()
+    let mut attrs = crate::app_id::window_attributes()
         .with_title("snapr recording")
         .with_decorations(false)
         .with_resizable(false)

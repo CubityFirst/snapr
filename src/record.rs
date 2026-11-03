@@ -1,5 +1,6 @@
 //! Screen recording of a region: frames from each monitor it's on (snapr's
-//! own duplication on Windows, see `dxgi`; xcap's recorders elsewhere),
+//! own duplication on Windows, see `dxgi`; the compositor's screencopy on
+//! wlroots ones, see `wayland`; xcap's recorders elsewhere),
 //! cropped, put together and handed to an encoder (see `encode`) along with the sound
 //! (see `audio`), mixed as it arrives.
 
@@ -111,8 +112,7 @@ impl Recording {
         out: PathBuf,
         done: Done,
     ) -> Result<Self, String> {
-        let area = area_for(rect)?;
-        let region = area.rect;
+        let mut area = area_for(rect)?;
         if let Some(dir) = out.parent() {
             std::fs::create_dir_all(dir)
                 .map_err(|e| format!("couldn't create {}: {e}", dir.display()))?;
@@ -132,7 +132,14 @@ impl Recording {
         // it is now. HDR capture starts on the recording thread (its
         // objects stay on one thread).
         let hdr = hdr_display.is_some();
-        let screen = if hdr { None } else { Some(ScreenFrames::start(&area)?) };
+        let screen = if hdr {
+            None
+        } else {
+            let (started, screen) = start_screen(area, rect, fps, show_cursor)?;
+            area = started;
+            Some(screen)
+        };
+        let region = area.rect;
         drop(area);
 
         // Open the audio devices before the video starts, so a missing
@@ -201,7 +208,7 @@ impl Recording {
                                 if area.rect != region {
                                     return Err("the screens changed".into());
                                 }
-                                ScreenFrames::start(&area)?
+                                ScreenFrames::start(&area, fps, show_cursor)?
                             }
                         };
                         let first = screen.picture();
@@ -349,13 +356,22 @@ struct Area {
 
 /// The part of a recording on one monitor.
 struct Piece {
-    /// For xcap (Windows has its own capture; see `dxgi`).
+    /// Not on Windows, which has its own capture (see `dxgi`).
     #[cfg_attr(windows, allow(dead_code))]
-    monitor: Monitor,
+    screen: Screen,
     /// The monitor's top-left corner.
     origin: (i32, i32),
     /// The part, relative to the monitor.
     region: Rect,
+}
+
+/// Where a monitor's pictures come from.
+enum Screen {
+    #[cfg_attr(windows, allow(dead_code))]
+    Xcap(Monitor),
+    /// A wlroots compositor's output, by name (see `wayland`).
+    #[cfg(target_os = "linux")]
+    Wlr(String),
 }
 
 impl Piece {
@@ -369,10 +385,25 @@ impl Piece {
 }
 
 /// `rect` clipped to the monitors, and the part of it on each. Gaps
-/// between monitors inside it come out black.
+/// between monitors inside it come out black. On a wlroots compositor the
+/// monitors are its outputs, placed as the overlays were (xcap's come from
+/// XWayland, which has them elsewhere when any is scaled).
 fn area_for(rect: Rect) -> Result<Area, String> {
+    #[cfg(target_os = "linux")]
+    if let Some(outputs) = crate::wayland::screencopy_outputs() {
+        let bounds = outputs.into_iter().map(|o| (Screen::Wlr(o.name), o.rect)).collect();
+        match area_in(rect, bounds) {
+            Ok(area) => return Ok(area),
+            Err(e) => eprintln!("recording: {e} by the compositor's account; asking xcap"),
+        }
+    }
+    xcap_area_for(rect)
+}
+
+/// `area_for` with xcap's monitors.
+fn xcap_area_for(rect: Rect) -> Result<Area, String> {
     let monitors = Monitor::all().map_err(|e| format!("couldn't list monitors: {e}"))?;
-    let bounds: Vec<(Monitor, Rect)> = monitors
+    let bounds = monitors
         .into_iter()
         .filter_map(|m| {
             let bounds = Rect {
@@ -381,9 +412,14 @@ fn area_for(rect: Rect) -> Result<Area, String> {
                 w: m.width().ok()?,
                 h: m.height().ok()?,
             };
-            Some((m, bounds))
+            Some((Screen::Xcap(m), bounds))
         })
         .collect();
+    area_in(rect, bounds)
+}
+
+/// `area_for` with these monitors and their bounds.
+fn area_in(rect: Rect, bounds: Vec<(Screen, Rect)>) -> Result<Area, String> {
     let clipped = bounds
         .iter()
         .filter_map(|(_, b)| rect.intersect(b))
@@ -399,10 +435,10 @@ fn area_for(rect: Rect) -> Result<Area, String> {
     }
     let pieces = bounds
         .into_iter()
-        .filter_map(|(monitor, b)| {
+        .filter_map(|(screen, b)| {
             let c = rect.intersect(&b)?;
             Some(Piece {
-                monitor,
+                screen,
                 origin: (b.x, b.y),
                 region: Rect {
                     x: c.x - b.x,
@@ -413,6 +449,26 @@ fn area_for(rect: Rect) -> Result<Area, String> {
         })
         .collect();
     Ok(Area { rect, pieces })
+}
+
+/// Starts capturing `area` (frame 0 now). Where the compositor's
+/// screencopy doesn't work out, the selection `rect` through xcap instead.
+#[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
+fn start_screen(area: Area, rect: Rect, fps: u32, cursor: bool) -> Result<(Area, ScreenFrames), String> {
+    match ScreenFrames::start(&area, fps, cursor) {
+        Ok(screen) => Ok((area, screen)),
+        #[cfg(target_os = "linux")]
+        Err(e) if area.pieces.iter().any(|p| matches!(p.screen, Screen::Wlr(_))) => {
+            eprintln!("recording through screencopy failed: {e}; trying xcap");
+            let fallback = || -> Result<(Area, ScreenFrames), String> {
+                let area = xcap_area_for(rect)?;
+                let screen = ScreenFrames::start(&area, fps, cursor)?;
+                Ok((area, screen))
+            };
+            fallback().map_err(|x| format!("{e} (and through xcap: {x})"))
+        }
+        Err(e) => Err(e),
+    }
 }
 
 #[cfg(not(windows))]
@@ -473,19 +529,32 @@ struct Part {
 
 /// Where a part's pictures come from.
 enum Feed {
-    /// Whole-monitor frames from xcap's recorder, with the recorder and its
-    /// monitor's id to hand back when done (`None` when the frames come
+    /// Whole-monitor frames, with what sends them (`None` when they come
     /// from elsewhere, in tests).
     #[cfg_attr(all(windows, not(test)), allow(dead_code))]
-    Xcap(Option<(Recorder, u32)>, Receiver<Frame>),
+    Frames(Option<Producer>, Receiver<Frame>),
     /// The region, from snapr's own duplication of the display (see `dxgi`).
     #[cfg(windows)]
     Dxgi(crate::dxgi::Duplicator),
 }
 
+/// What sends a part's frames, to stop once done.
+#[cfg_attr(windows, allow(dead_code))]
+enum Producer {
+    /// xcap's recorder, with its monitor's id to hand it back under.
+    Xcap(Recorder, u32),
+    /// The compositor's screencopy, which stops when dropped.
+    #[cfg(target_os = "linux")]
+    Wlr(crate::wayland::Recorder),
+}
+
 impl ScreenFrames {
-    /// Captures the area now (frame 0) and starts capturing its monitors.
-    fn start(area: &Area) -> Result<Self, String> {
+    /// Captures the area now (frame 0) and starts capturing its monitors,
+    /// at up to `fps` frames a second where that's up to snapr. With
+    /// `cursor`, the capture draws in the mouse pointer where it can (a
+    /// wlroots compositor's); elsewhere `pump` does.
+    #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
+    fn start(area: &Area, fps: u32, cursor: bool) -> Result<Self, String> {
         let size = (area.rect.w, area.rect.h);
         // Opaque black, which is what's left in gaps between monitors.
         let mut first: Vec<u8> = [0, 0, 0, 255].repeat((size.0 * size.1) as usize);
@@ -502,21 +571,29 @@ impl ScreenFrames {
                     Feed::Dxgi(duplicator)
                 };
                 #[cfg(not(windows))]
-                let feed = {
-                    let shot = piece
-                        .monitor
-                        .capture_region(region.x as u32, region.y as u32, region.w, region.h)
-                        .map_err(crate::capture::failure)?;
-                    crop_into(&shot, (region.w, region.h), whole, &mut first, size.0, at);
-                    let id = piece.monitor.id().map_err(|e| e.to_string())?;
-                    let (recorder, frames) = take_recorder(&piece.monitor, id)?;
-                    // Frames left over from the last recording on this monitor.
-                    while frames.try_recv().is_ok() {}
-                    if let Err(e) = recorder.0.start() {
-                        put_recorder(id, recorder, frames);
-                        return Err(format!("couldn't start recording: {e}"));
+                let feed = match &piece.screen {
+                    Screen::Xcap(monitor) => {
+                        let shot = monitor
+                            .capture_region(region.x as u32, region.y as u32, region.w, region.h)
+                            .map_err(crate::capture::failure)?;
+                        crop_into(&shot, (region.w, region.h), whole, &mut first, size.0, at);
+                        let id = monitor.id().map_err(|e| e.to_string())?;
+                        let (recorder, frames) = take_recorder(monitor, id)?;
+                        // Frames left over from the last recording on this monitor.
+                        while frames.try_recv().is_ok() {}
+                        if let Err(e) = recorder.0.start() {
+                            put_recorder(id, recorder, frames);
+                            return Err(format!("couldn't start recording: {e}"));
+                        }
+                        Feed::Frames(Some(Producer::Xcap(recorder, id)), frames)
                     }
-                    Feed::Xcap(Some((recorder, id)), frames)
+                    #[cfg(target_os = "linux")]
+                    Screen::Wlr(name) => {
+                        let (recorder, frames, shot) = crate::wayland::Recorder::start(name, fps, cursor)
+                            .map_err(|e| format!("couldn't record {name}: {e}"))?;
+                        crop_into(&shot.raw, (shot.width, shot.height), region, &mut first, size.0, at);
+                        Feed::Frames(Some(Producer::Wlr(recorder)), frames)
+                    }
                 };
                 parts.push(Part { feed, region, at });
             }
@@ -548,9 +625,15 @@ impl ScreenFrames {
 
     fn release(self) {
         for part in self.parts {
-            if let Feed::Xcap(Some((recorder, id)), frames) = part.feed {
-                let _ = recorder.0.stop();
-                put_recorder(id, recorder, frames);
+            match part.feed {
+                Feed::Frames(Some(Producer::Xcap(recorder, id)), frames) => {
+                    let _ = recorder.0.stop();
+                    put_recorder(id, recorder, frames);
+                }
+                // It stops as it's dropped.
+                #[cfg(target_os = "linux")]
+                Feed::Frames(Some(Producer::Wlr(recorder)), _) => drop(recorder),
+                _ => {}
             }
         }
     }
@@ -560,7 +643,7 @@ impl Frames for ScreenFrames {
     fn update(&mut self) -> Result<(), String> {
         for part in &mut self.parts {
             match &mut part.feed {
-                Feed::Xcap(_, frames) => {
+                Feed::Frames(_, frames) => {
                     if let Some(frame) = frames.try_iter().last() {
                         let frame_size = (frame.width, frame.height);
                         crop_into(&frame.raw, frame_size, part.region, &mut self.latest, self.size.0, part.at);
@@ -583,7 +666,7 @@ impl Frames for ScreenFrames {
         // Keep up with the screen, so frames nobody wants don't pile up.
         for part in &mut self.parts {
             match &mut part.feed {
-                Feed::Xcap(_, frames) => while frames.try_recv().is_ok() {},
+                Feed::Frames(_, frames) => while frames.try_recv().is_ok() {},
                 #[cfg(windows)]
                 Feed::Dxgi(duplicator) => {
                     let _ = duplicator.poll();
@@ -791,7 +874,7 @@ mod tests {
         let pumping = thread::spawn(move || {
             let mut encoder = encode::open(&pump_out, format, None, &Default::default()).unwrap();
             let part = Part {
-                feed: Feed::Xcap(None, frames),
+                feed: Feed::Frames(None, frames),
                 region,
                 at: (0, 0),
             };
@@ -864,8 +947,8 @@ mod tests {
         let (tx2, frames2) = std::sync::mpsc::channel();
         let region = Rect { x: 0, y: 0, w: 2, h: 2 };
         let parts = vec![
-            Part { feed: Feed::Xcap(None, frames1), region, at: (0, 0) },
-            Part { feed: Feed::Xcap(None, frames2), region, at: (2, 0) },
+            Part { feed: Feed::Frames(None, frames1), region, at: (0, 0) },
+            Part { feed: Feed::Frames(None, frames2), region, at: (2, 0) },
         ];
         let mut source = ScreenFrames::new(parts, (4, 2), vec![0; 4 * 2 * 4]);
         tx1.send(Frame::new(2, 2, [1, 0, 0, 255].repeat(4))).unwrap();
