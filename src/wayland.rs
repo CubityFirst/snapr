@@ -5,8 +5,9 @@
 //!
 //! - `zwlr_foreign_toplevel_management_v1`: the focused window's app id and
 //!   title, for naming screenshots.
-//! - `zwlr_screencopy_v1` (with `xdg_output` for the layout): frames of an
-//!   output, for recording.
+//! - `zwlr_screencopy_v1` (with `xdg_output` for the layout): pictures of
+//!   the outputs, for screenshots (xcap asks the Screenshot portal for the
+//!   whole desktop once per monitor), and frames of one, for recording.
 //!
 //! Each call makes its own connection, so it works from any thread. Where
 //! there's no Wayland compositor or it lacks a protocol, they return `None`
@@ -166,6 +167,38 @@ pub fn screencopy_outputs() -> Option<Vec<Output>> {
     (!outputs.is_empty()).then_some(outputs)
 }
 
+/// A picture of each output now, placed as `screencopy_outputs` places
+/// them, with the mouse pointer in if `cursor`. `None` if the compositor
+/// can't screencopy, or can't one of them, so xcap takes them all instead;
+/// rotated or flipped outputs are left to xcap too, as screencopy gives
+/// their pictures untransformed.
+pub fn screenshot(cursor: bool) -> Option<Vec<(Rect, Frame)>> {
+    let mut screens = Screens::connect().ok()?;
+    screens.cursor = cursor;
+    let outputs: Option<Vec<_>> = screens
+        .state
+        .outputs
+        .iter()
+        .map(|o| {
+            if o.transform != wl_output::Transform::Normal {
+                return None;
+            }
+            Some((o.output.clone(), o.placed()?))
+        })
+        .collect();
+    let outputs = outputs.filter(|o| !o.is_empty())?;
+    outputs
+        .into_iter()
+        .map(|(output, placed)| match screens.capture(&output, false, Some(FIRST_FRAME_TIMEOUT), &|| false) {
+            Ok(frame) => Some((placed.rect, frame?)),
+            Err(e) => {
+                eprintln!("screencopy of {}: {e}; asking xcap", placed.name);
+                None
+            }
+        })
+        .collect()
+}
+
 /// Frames of one output, captured on a thread of its own.
 pub struct Recorder {
     stop: Arc<AtomicBool>,
@@ -301,6 +334,7 @@ struct OutputState {
     logical: Option<(i32, i32)>,
     scale: i32,
     mode: Option<(i32, i32)>,
+    transform: wl_output::Transform,
 }
 
 impl OutputState {
@@ -535,6 +569,7 @@ fn bind_outputs(
                 logical: None,
                 scale: 1,
                 mode: None,
+                transform: wl_output::Transform::Normal,
             }
         })
         .collect()
@@ -567,6 +602,7 @@ impl Dispatch<wl_output::WlOutput, ()> for ScreenState {
         match event {
             wl_output::Event::Name { name } => o.name = Some(name),
             wl_output::Event::Scale { factor } => o.scale = factor.max(1),
+            wl_output::Event::Geometry { transform: WEnum::Value(transform), .. } => o.transform = transform,
             wl_output::Event::Mode { flags: WEnum::Value(flags), width, height, .. }
                 if flags.contains(wl_output::Mode::Current) =>
             {
@@ -745,6 +781,9 @@ mod tests {
         println!("focused window: {:?}", active_window());
         let outputs = screencopy_outputs().expect("screencopy and xdg-output");
         println!("outputs: {outputs:?}");
+        let began = Instant::now();
+        let shots = screenshot(true).expect("a screenshot");
+        println!("screenshot of {} outputs in {:?}", shots.len(), began.elapsed());
         for output in outputs {
             let began = Instant::now();
             let (recorder, frames, first) = Recorder::start(&output.name, 30, true).unwrap();

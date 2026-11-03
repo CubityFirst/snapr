@@ -90,6 +90,21 @@ fn draw_cursor(cursors: &mut crate::cursor::Cursors, image: &mut RgbaImage, orig
 
 /// Every monitor, with the mouse pointer drawn in if `cursor`.
 pub fn capture_all(cursor: bool) -> Result<Vec<Shot>, xcap::XCapError> {
+    // wlroots compositors copy their outputs to us themselves, pointer and
+    // all, and place them as the overlays are placed.
+    #[cfg(target_os = "linux")]
+    if let Some(outputs) = crate::wayland::screenshot(cursor) {
+        let shots = outputs
+            .into_iter()
+            .filter_map(|(rect, f)| {
+                Some(Shot {
+                    image: RgbaImage::from_raw(f.width, f.height, f.raw)?,
+                    pos: (rect.x, rect.y),
+                })
+            })
+            .collect();
+        return Ok(shots);
+    }
     let mut shots = capture_monitors()?;
     if cursor {
         let mut cursors = crate::cursor::Cursors::new();
