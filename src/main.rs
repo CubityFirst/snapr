@@ -229,7 +229,10 @@ struct ActiveRecording {
 struct App {
     proxy: EventLoopProxy<UserEvent>,
     settings: Settings,
+    /// `--once` or `--record`: one capture, then quit.
     once: bool,
+    /// `--record`: that capture is a recording.
+    once_record: bool,
     gpu: Result<Gpu, String>,
     hotkeys: Option<Hotkeys>,
     record_hotkeys: Option<Hotkeys>,
@@ -455,7 +458,9 @@ impl App {
                     selection: rect,
                     context: ctx,
                 });
+                // `--record` has no hotkeys.
                 let stop = match self.settings.record_hotkey.trim() {
+                    _ if self.once => " \u{2014} stop it on the recording bar".into(),
                     "" => String::new(),
                     hk => format!(" \u{2014} press {hk} to stop"),
                 };
@@ -463,7 +468,8 @@ impl App {
             }
             Err(e) => {
                 self.show_main_window_again();
-                self.report_on(event_loop, format!("recording failed: {e}"), true, Page::Recording)
+                self.report_on(event_loop, format!("recording failed: {e}"), true, Page::Recording);
+                self.quit_if_once_done(event_loop);
             }
         }
     }
@@ -522,7 +528,7 @@ impl App {
         if let Some(w) = &mut self.main_window {
             w.gallery.add(path.clone());
         }
-        if self.settings.show_toast {
+        if self.settings.show_toast && !self.once {
             let preview = toast::preview_of(first_frame);
             if uploading {
                 self.toast_after_upload.insert(path, Some(preview));
@@ -541,7 +547,10 @@ impl App {
         }
         let gpu = match &self.gpu {
             Ok(g) => g,
-            Err(e) => return self.report(event_loop, e.clone(), true),
+            Err(e) => {
+                self.report(event_loop, e.clone(), true);
+                return self.quit_if_once_done(event_loop);
+            }
         };
         if let Some(family) = self.font_pending.take() {
             self.style.text.font = fonts::find(&family);
@@ -587,9 +596,7 @@ impl App {
             }
             Err(e) => {
                 self.report(event_loop, e, true);
-                if self.once {
-                    event_loop.exit();
-                }
+                self.quit_if_once_done(event_loop);
             }
         }
     }
@@ -690,7 +697,13 @@ impl App {
         {
             macos::give_focus_to(&app);
         }
-        if self.once {
+        self.quit_if_once_done(event_loop);
+    }
+
+    /// With `--once` or `--record`, quits once there's nothing left to do:
+    /// no capture open, and no recording to start or finish.
+    fn quit_if_once_done(&mut self, event_loop: &ActiveEventLoop) {
+        if self.once && self.sessions.is_empty() && self.record_at.is_none() && self.recording.is_none() {
             // Give the output thread a chance to finish before quitting.
             self.output.flush();
             event_loop.exit();
@@ -1376,6 +1389,9 @@ impl ApplicationHandler<UserEvent> for App {
         if cause != StartCause::Init {
             return;
         }
+        if self.once_record {
+            return self.open_session(event_loop, Purpose::Record);
+        }
         if self.once {
             return self.start_capture(event_loop);
         }
@@ -1442,7 +1458,8 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             UserEvent::RecordingDone(id, result, ctx) => {
-                self.recording_done(event_loop, id, result, ctx)
+                self.recording_done(event_loop, id, result, ctx);
+                self.quit_if_once_done(event_loop);
             }
             UserEvent::Tray(TrayAction::Click) => match self.settings.tray_click {
                 // `Menu` never gets here: the tray shows the menu itself.
@@ -1856,6 +1873,7 @@ USAGE: snapr [OPTIONS]
 
 OPTIONS:
       --once       Capture immediately with the saved settings, then exit
+      --record     Pick a region to record, then exit once it's saved
       --settings   Open the settings window on start
   -h, --help       Show this help
 
@@ -1916,7 +1934,7 @@ fn main() {
     if args.next_if_eq("--uninstall").is_some() {
         std::process::exit(install::uninstall());
     }
-    let (mut once, mut open_settings) = (false, false);
+    let (mut once, mut once_record, mut open_settings) = (false, false, false);
     // The copy snapr was moved from, to remove (`install::relaunch`).
     #[cfg_attr(not(windows), allow(unused_mut))]
     let mut moved_from: Option<PathBuf> = None;
@@ -1926,6 +1944,8 @@ fn main() {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--once" => once = true,
+            // `--once`, for a recording.
+            "--record" => (once, once_record) = (true, true),
             "--settings" => open_settings = true,
             #[cfg(windows)]
             "--moved-from" if args.peek().is_some() => moved_from = args.next().map(PathBuf::from),
@@ -2113,6 +2133,7 @@ fn main() {
         proxy,
         settings,
         once,
+        once_record,
         gpu,
         hotkeys,
         record_hotkeys,
