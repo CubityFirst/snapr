@@ -10,6 +10,8 @@ mod autostart;
 mod audio;
 mod capture;
 mod cli;
+#[cfg(target_os = "linux")]
+mod clipboard_holder;
 mod color_names;
 mod combine;
 mod cursor;
@@ -1928,6 +1930,11 @@ fn main() {
     if args.next_if_eq("upload").is_some() {
         std::process::exit(cli::upload(args));
     }
+    // What a one-off capture's copies are handed to.
+    #[cfg(target_os = "linux")]
+    if args.next_if_eq(clipboard_holder::ARG).is_some() {
+        std::process::exit(clipboard_holder::run(args));
+    }
     // What Settings > Apps runs.
     #[cfg(windows)]
     if args.next_if_eq("--uninstall").is_some() {
@@ -1970,6 +1977,12 @@ fn main() {
     }
     // Ready for the text tool's font list by the time it's opened.
     fonts::preload();
+    // snapr quits after a one-off capture, which would take its copies with
+    // it (see `clipboard_holder`).
+    #[cfg(target_os = "linux")]
+    if once {
+        clipboard_holder::enable();
+    }
     let lock = if once {
         None
     } else {
@@ -2175,6 +2188,9 @@ fn main() {
         eprintln!("event loop error: {e}");
     }
     app.output.flush();
+    // After the last copy, with `--once` or `--record`.
+    #[cfg(target_os = "linux")]
+    clipboard_holder::hand_off();
     hotkey::release();
     #[cfg(windows)]
     let moved_to = app.moved_to.take();

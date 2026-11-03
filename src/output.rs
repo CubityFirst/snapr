@@ -539,7 +539,10 @@ fn copy_text(clipboard: &mut Option<arboard::Clipboard>, text: &str) -> Result<(
         .as_mut()
         .expect("just set")
         .set_text(text)
-        .map_err(|e| format!("failed to copy to clipboard: {e}"))
+        .map_err(|e| format!("failed to copy to clipboard: {e}"))?;
+    #[cfg(target_os = "linux")]
+    crate::clipboard_holder::remember(|| crate::clipboard_holder::Clip::Text(text.to_owned()));
+    Ok(())
 }
 
 /// Puts the file on the clipboard (`CF_HDROP` on Windows, a file URL on
@@ -554,7 +557,10 @@ fn copy_files(clipboard: &mut Option<arboard::Clipboard>, path: &Path) -> Result
         .expect("just set")
         .set()
         .file_list(&[path])
-        .map_err(|e| format!("failed to copy to clipboard: {e}"))
+        .map_err(|e| format!("failed to copy to clipboard: {e}"))?;
+    #[cfg(target_os = "linux")]
+    crate::clipboard_holder::remember(|| crate::clipboard_holder::Clip::File(path.to_owned()));
+    Ok(())
 }
 
 fn save(path: &Path, img: &RgbaImage) -> Result<PathBuf, String> {
@@ -602,7 +608,10 @@ fn copy_image(clipboard: &mut Option<arboard::Clipboard>, img: &RgbaImage) -> Re
         .as_mut()
         .expect("just set")
         .set_image(data)
-        .map_err(|e| format!("failed to copy to clipboard: {e}"))
+        .map_err(|e| format!("failed to copy to clipboard: {e}"))?;
+    #[cfg(target_os = "linux")]
+    crate::clipboard_holder::remember(|| crate::clipboard_holder::Clip::Image(img.clone()));
+    Ok(())
 }
 
 /// Opens a file with its default app.
