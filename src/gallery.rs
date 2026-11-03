@@ -323,11 +323,13 @@ impl Gallery {
                 {
                     actions.push(Action::Pin(selected.clone()));
                 }
-                if thumbnail::kind(&selected) == Kind::Image
-                    && ui
-                        .button("Copy")
-                        .on_hover_text("Copy the image to the clipboard")
-                        .clicked()
+                let copies = match thumbnail::kind(&selected) {
+                    Kind::Image => Some("Copy the image to the clipboard"),
+                    Kind::Video => Some("Copy the video to the clipboard"),
+                    Kind::File => None,
+                };
+                if let Some(hover) = copies
+                    && ui.button("Copy").on_hover_text(hover).clicked()
                 {
                     actions.push(Action::Copy(selected.clone()));
                 }
@@ -730,7 +732,12 @@ impl Gallery {
                 ("Delete", Some(Action::Delete(path.to_owned()))),
             ] {
                 let Some(action) = action else { continue };
-                if matches!(label, "Copy" | "Pin to screen") && !is_image {
+                let skip = match label {
+                    "Copy" => thumbnail::kind(path) == Kind::File,
+                    "Pin to screen" => !is_image,
+                    _ => false,
+                };
+                if skip {
                     continue;
                 }
                 let button = if label == "Delete" {

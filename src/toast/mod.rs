@@ -509,7 +509,7 @@ impl Contents<'_> {
     /// What the middle and right buttons do; from the right in a
     /// right-to-left layout.
     fn hints(&self, ui: &mut egui::Ui) {
-        let copies = if self.video { "copy link" } else { "copy" };
+        let copies = "copy";
         if !self.icons {
             let text = format!("middle: {copies} \u{00b7} right: close");
             ui.add(egui::Label::new(RichText::new(text).weak().size(11.0)).truncate());

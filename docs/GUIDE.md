@@ -133,7 +133,7 @@ first finger acts as the mouse.
 ## Destinations
 
 The *Destinations* tab of Settings sets where each screenshot goes: **Save to folder**,
-**Copy image to clipboard**, and any number of **S3-compatible uploads**
+**Copy to clipboard** (a recording goes on as the file, to paste into a folder or chat), and any number of **S3-compatible uploads**
 (Cloudflare R2, Amazon S3, MinIO, Backblaze B2, ...). Add one with
 *+ Add S3 upload*, fill in the endpoint (for R2,
 `https://<account>.r2.cloudflarestorage.com`, region `auto`), bucket and

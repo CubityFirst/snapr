@@ -25,7 +25,7 @@ impl Form {
                     row(ui, "save-to-folder", "Save to folder", Some(&note), false, |ui| {
                         theme::switch(ui, &mut self.draft.save_to_folder, "");
                     });
-                    row(ui, "copy-to-clipboard", "Copy image to clipboard", None, false, |ui| {
+                    row(ui, "copy-to-clipboard", "Copy to clipboard", Some("Screenshots, and recordings as the file"), false, |ui| {
                         theme::switch(ui, &mut self.draft.copy_to_clipboard, "");
                     });
                 });

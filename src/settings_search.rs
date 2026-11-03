@@ -112,7 +112,7 @@ static INDEX: LazyLock<Vec<Entry>> = LazyLock::new(|| {
 
     // Destinations
     add(Destinations, "save-to-folder", "Save to folder", "disk save screenshots");
-    add(Destinations, "copy-to-clipboard", "Copy image to clipboard", "paste clipboard");
+    add(Destinations, "copy-to-clipboard", "Copy to clipboard", "paste clipboard image video recording");
     add(Destinations, "uploads", "Add S3 upload", "upload destination r2 cloudflare amazon s3 minio backblaze b2 bucket");
     add(Destinations, "uploads", "Add Pomf upload", "upload destination pomf uguu lain file host");
     add(Destinations, "uploads", "Test upload", "upload try check destination");

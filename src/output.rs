@@ -303,9 +303,15 @@ impl Output {
                     }
                     Job::Configure(c) => config = *c,
                     Job::CopyFile(path) => {
-                        let result = image::open(&path)
-                            .map_err(|e| format!("couldn't read {}: {e}", path.display()))
-                            .and_then(|img| copy_image(&mut clipboard, &img.to_rgba8()));
+                        // A video goes on as the file, as a file manager
+                        // copies it, to paste into a folder or a chat.
+                        let result = if crate::thumbnail::kind(&path) == crate::thumbnail::Kind::Video {
+                            copy_files(&mut clipboard, &path)
+                        } else {
+                            image::open(&path)
+                                .map_err(|e| format!("couldn't read {}: {e}", path.display()))
+                                .and_then(|img| copy_image(&mut clipboard, &img.to_rgba8()))
+                        };
                         notify(match result {
                             Ok(()) => Event::Copied,
                             Err(e) => Event::Failed(e),
@@ -533,6 +539,21 @@ fn copy_text(clipboard: &mut Option<arboard::Clipboard>, text: &str) -> Result<(
         .as_mut()
         .expect("just set")
         .set_text(text)
+        .map_err(|e| format!("failed to copy to clipboard: {e}"))
+}
+
+/// Puts the file on the clipboard (`CF_HDROP` on Windows, a file URL on
+/// macOS, `text/uri-list` on Linux).
+fn copy_files(clipboard: &mut Option<arboard::Clipboard>, path: &Path) -> Result<(), String> {
+    if clipboard.is_none() {
+        *clipboard =
+            Some(arboard::Clipboard::new().map_err(|e| format!("clipboard unavailable: {e}"))?);
+    }
+    clipboard
+        .as_mut()
+        .expect("just set")
+        .set()
+        .file_list(&[path])
         .map_err(|e| format!("failed to copy to clipboard: {e}"))
 }
 

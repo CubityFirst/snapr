@@ -509,6 +509,10 @@ impl App {
         self.play(Sound::Done);
         self.count(|s| s.count(stats::Kind::Recording, chrono::Local::now()));
         self.last_capture = Some(path.clone());
+        // Before uploading, so a copied link replaces it, as for screenshots.
+        if self.settings.copy_to_clipboard {
+            self.output.copy_file(path.clone());
+        }
         let uploading = !policy::uploads_disabled() && self.settings.uploads.iter().any(|u| u.enabled);
         if uploading {
             self.output.upload_file(path.clone(), ctx);
@@ -1305,14 +1309,6 @@ impl App {
                     None => output::open(&t.path),
                 }
                 self.toast = None;
-            }
-            Some(toast::Action::CopyImage) if t.video => {
-                // There's no image to copy; copy the link once there is one.
-                if let Some(link) = &t.link {
-                    self.chime_on_copy = true;
-                    self.output.copy_text(link.clone());
-                    self.toast = None;
-                }
             }
             Some(toast::Action::CopyImage) => {
                 self.chime_on_copy = true;
