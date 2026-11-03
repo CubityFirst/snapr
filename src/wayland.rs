@@ -236,7 +236,7 @@ fn capture_loop(mut screens: Screens, output: wl_output::WlOutput, interval: Dur
         match screens.capture(&output, true, None, &stopped) {
             Ok(Some(frame)) => {
                 failures = 0;
-                if let Err(TrySendError::Disconnected(_)) = tx.try_send(frame) {
+                if !deliver(&tx, frame, &stopped) {
                     return;
                 }
             }
@@ -256,6 +256,22 @@ fn capture_loop(mut screens: Screens, output: wl_output::WlOutput, interval: Dur
             }
         }
         thread::sleep(interval.saturating_sub(began.elapsed()));
+    }
+}
+
+/// Hands `frame` to the recording, waiting while it hasn't taken the last
+/// one yet: the screen may not change again, so a dropped frame might never
+/// be replaced. `false` once the recording is gone or `stopped`.
+fn deliver(tx: &SyncSender<Frame>, mut frame: Frame, stopped: &dyn Fn() -> bool) -> bool {
+    loop {
+        match tx.try_send(frame) {
+            Ok(()) => return true,
+            Err(TrySendError::Full(f)) if !stopped() => {
+                frame = f;
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(_) => return false,
+        }
     }
 }
 
@@ -344,7 +360,8 @@ impl Screens {
         let (globals, mut queue) = registry_queue_init::<ScreenState>(&conn).map_err(|e| e.to_string())?;
         let qh = queue.handle();
         let missing = |what: &str| format!("the compositor doesn't support {what}");
-        let manager = globals.bind(&qh, 1..=3, ()).map_err(|_| missing("wlr-screencopy"))?;
+        // Version 2 for `copy_with_damage`.
+        let manager = globals.bind(&qh, 2..=3, ()).map_err(|_| missing("wlr-screencopy"))?;
         let shm = globals.bind(&qh, 1..=1, ()).map_err(|_| missing("wl_shm"))?;
         let xdg: zxdg_output_manager_v1::ZxdgOutputManagerV1 =
             globals.bind(&qh, 1..=3, ()).map_err(|_| missing("xdg-output"))?;
@@ -753,6 +770,28 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_frame_waits_for_room_rather_than_being_dropped() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        // The recording hasn't taken the last frame yet.
+        tx.send(Frame::new(1, 1, vec![1; 4])).unwrap();
+        let recording = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            let old = rx.recv().unwrap();
+            let new = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            (old.raw[0], new.raw[0])
+        });
+        assert!(deliver(&tx, Frame::new(1, 1, vec![2; 4]), &|| false));
+        assert_eq!(recording.join().unwrap(), (1, 2));
+    }
+
+    #[test]
+    fn a_waiting_frame_is_given_up_once_stopped() {
+        let (tx, _rx) = mpsc::sync_channel(1);
+        tx.send(Frame::new(1, 1, vec![1; 4])).unwrap();
+        assert!(!deliver(&tx, Frame::new(1, 1, vec![2; 4]), &|| true));
     }
 
     #[test]
