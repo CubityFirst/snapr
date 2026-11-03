@@ -7,7 +7,11 @@ license = "PolyForm-Noncommercial-1.0.0"
 repository = "https://github.com/CubityFirst/snapr"
 
 [dependencies]
-arboard = "3.6.1"
+# wayland-data-control: on Wayland desktops that have it (KDE, wlroots ones
+# like Sway and Wayfire, Hyprland), the clipboard is the desktop's own rather
+# than XWayland's, which wlroots ignores while no X11 window is focused.
+# Elsewhere (GNOME) it falls back to X11.
+arboard = { version = "3.6.1", features = ["wayland-data-control"] }
 chrono = "0.4.45"
 cpal = "0.18.2"
 dirs = "7.0.0"
