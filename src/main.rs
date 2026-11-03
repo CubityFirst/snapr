@@ -399,7 +399,10 @@ impl App {
     ) {
         let naming = match self.settings.naming() {
             Ok(n) => n,
-            Err(e) => return self.report_on(event_loop, e, true, Page::Naming),
+            Err(e) => {
+                self.report_on(event_loop, e, true, Page::Naming);
+                return self.quit_if_once_done(event_loop);
+            }
         };
         let out = naming
             .path_for(&ctx)
