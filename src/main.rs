@@ -72,6 +72,8 @@ mod tray;
 mod update;
 mod upload;
 #[cfg(target_os = "linux")]
+mod wayland;
+#[cfg(target_os = "linux")]
 mod x11;
 
 use std::collections::HashMap;

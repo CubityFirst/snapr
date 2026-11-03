@@ -345,6 +345,12 @@ mod win32_windows {
 /// Process name (e.g. `chrome`) and title of the focused window. Must be
 /// called before our overlay windows take focus.
 pub fn foreground_window() -> (Option<String>, Option<String>) {
+    // xcap only sees XWayland's windows; wlroots compositors say which of
+    // all of them is focused (its app id stands in for the process).
+    #[cfg(target_os = "linux")]
+    if let Some(found) = crate::wayland::active_window() {
+        return found;
+    }
     let Some(window) = xcap::Window::all()
         .ok()
         .and_then(|all| all.into_iter().find(|w| w.is_focused().unwrap_or(false)))
