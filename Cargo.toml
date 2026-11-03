@@ -88,8 +88,10 @@ zbus = { version = "5.19", default-features = false, features = ["async-io", "bl
 # XWayland (the same x11rb as winit).
 x11rb = { version = "0.13", default-features = false, features = ["allow-unsafe-code", "dl-libxcb", "randr", "resource_manager", "shape"] }
 # wlroots compositors' own protocols (see `wayland`): the focused window, for
-# naming. Already in the tree through winit.
+# naming, and screencopy, for recording. Already in the tree through winit.
+rustix = { version = "1", features = ["event", "fs"] }
 wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
