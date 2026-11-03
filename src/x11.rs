@@ -205,6 +205,10 @@ impl Screen {
                 &[kind],
             );
         }
+        // Named as snapr's (instance and class), before it's mapped, so the
+        // compositor's per-app rules apply to it.
+        let class = format!("{0}\0{0}\0", crate::app_id::APP_ID);
+        let _ = conn.change_property8(PropMode::REPLACE, id, AtomEnum::WM_CLASS, AtomEnum::STRING, class.as_bytes());
         Ok(window)
     }
 }

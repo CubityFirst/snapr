@@ -3,6 +3,7 @@
 
 mod about;
 mod annotate;
+mod app_id;
 mod atomic;
 #[cfg(any(windows, target_os = "linux"))]
 mod autostart;

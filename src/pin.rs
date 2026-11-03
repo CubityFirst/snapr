@@ -175,7 +175,7 @@ impl Pin {
         );
 
         #[allow(unused_mut)]
-        let mut attrs = Window::default_attributes()
+        let mut attrs = crate::app_id::window_attributes()
             .with_title("snapr pin")
             .with_decorations(false)
             .with_resizable(false)
