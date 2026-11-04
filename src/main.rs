@@ -51,6 +51,7 @@ mod preview;
 mod qr;
 mod record;
 mod record_ui;
+mod recording_lock;
 mod remembered;
 mod secrets;
 mod session;
@@ -246,6 +247,9 @@ struct App {
     tool_hotkeys: Vec<Hotkeys>,
     /// The screen recording in progress.
     recording: Option<ActiveRecording>,
+    /// Held while recording (all along with `--record`), so `snapr --record`
+    /// can stop it (see `recording_lock`).
+    recording_lock: Option<std::fs::File>,
     tray: Option<Tray>,
     /// How far the uploads have got, as last shown on the tray icon.
     tray_progress: Option<tray::Progress>,
@@ -342,6 +346,17 @@ impl App {
     fn toggle_recording(&mut self, event_loop: &ActiveEventLoop) {
         if self.recording.is_some() {
             return self.recording_action(event_loop, record_ui::Action::Stop);
+        }
+        // A `snapr --record` is recording (or picking a region to): stop it
+        // rather than start another (see `recording_lock`).
+        if !self.once
+            && self.recording_lock.is_none()
+            && matches!(recording_lock::claim(), recording_lock::Claim::Busy)
+        {
+            if let Err(e) = recording_lock::request_stop() {
+                eprintln!("{e}");
+            }
+            return;
         }
         if self.sessions.is_empty() && self.record_at.is_none() {
             self.open_session(event_loop, Purpose::Record);
@@ -474,9 +489,18 @@ impl App {
                     selection: rect,
                     context: ctx,
                 });
+                if self.recording_lock.is_none() {
+                    if let recording_lock::Claim::Held(lock) = recording_lock::claim() {
+                        self.recording_lock = Some(lock);
+                    }
+                } else {
+                    // Asked before it started, say while the region was
+                    // picked: the record hotkey does nothing then either.
+                    recording_lock::stop_requested();
+                }
                 // `--record` has no hotkeys.
                 let stop = match self.settings.record_hotkey.trim() {
-                    _ if self.once => " \u{2014} stop it on the recording bar".into(),
+                    _ if self.once => " \u{2014} stop it on the recording bar, or run snapr --record again".into(),
                     "" => String::new(),
                     hk => format!(" \u{2014} press {hk} to stop"),
                 };
@@ -1763,6 +1787,19 @@ impl ApplicationHandler<UserEvent> for App {
                 wake = Some(wake.map_or(t, |w| w.min(t)));
             }
         }
+        // `snapr --record` asks the recording to stop by leaving a request.
+        if self.recording.is_some() && self.recording_lock.is_some() {
+            if recording_lock::stop_requested() {
+                self.recording_action(event_loop, record_ui::Action::Stop);
+            } else {
+                let t = now + Duration::from_millis(100);
+                wake = Some(wake.map_or(t, |w| w.min(t)));
+            }
+        }
+        // `--record` holds it until it quits.
+        if self.recording.is_none() && !self.once {
+            self.recording_lock = None;
+        }
         if let Some(tray) = &self.tray {
             let progress = output::percent_done(&self.output.transfers().lock().unwrap())
                 .map(|percent| tray::Progress {
@@ -1907,7 +1944,8 @@ USAGE: snapr [OPTIONS]
 
 OPTIONS:
       --once       Capture immediately with the saved settings, then exit
-      --record     Pick a region to record, then exit once it's saved
+      --record     Pick a region to record, then exit once it's saved; run it
+                   again to stop the recording in progress
       --monitor    Capture the display the focused window is on, then exit
       --settings   Open the settings window on start
   -h, --help       Show this help
@@ -2007,6 +2045,26 @@ fn main() {
             }
         }
     }
+    // A second `--record` stops the recording in progress, as the record
+    // hotkey does, rather than starting another.
+    let recording_lock = if once_record {
+        match recording_lock::claim() {
+            recording_lock::Claim::Held(lock) => Some(lock),
+            recording_lock::Claim::Busy => match recording_lock::request_stop() {
+                Ok(()) => {
+                    println!("Stopping the recording in progress");
+                    std::process::exit(0);
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            },
+            recording_lock::Claim::Unknown => None,
+        }
+    } else {
+        None
+    };
     update::init();
     #[cfg(windows)]
     if let Some(old) = moved_from.clone() {
@@ -2202,6 +2260,7 @@ fn main() {
         record_hotkeys,
         tool_hotkeys,
         recording: None,
+        recording_lock,
         tray: None,
         tray_progress: None,
         output,
