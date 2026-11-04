@@ -186,6 +186,14 @@ pub struct Session {
 }
 
 impl Session {
+    /// Blanks the overlays before they close (see `Overlay::clear`).
+    #[cfg(target_os = "linux")]
+    pub fn clear(&mut self, gpu: &Gpu) {
+        for overlay in self.overlays.values_mut() {
+            overlay.clear(gpu);
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         event_loop: &ActiveEventLoop,

@@ -646,7 +646,14 @@ impl App {
         let back_to_app = matches!(outcome, Outcome::Cancel | Outcome::Done { .. } | Outcome::Record(_));
         {
             // Its windows close at the end of this block.
-            let session = self.sessions.remove(index);
+            #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+            let mut session = self.sessions.remove(index);
+            // So a compositor animating the overlays closing doesn't put
+            // them at the start of the recording.
+            #[cfg(target_os = "linux")]
+            if let (Outcome::Record(_), Ok(gpu)) = (&outcome, &self.gpu) {
+                session.clear(gpu);
+            }
             self.style = session.style;
             self.magnifier = session.magnifier;
             let remembered = remembered::Remembered::new(self.style, self.magnifier);

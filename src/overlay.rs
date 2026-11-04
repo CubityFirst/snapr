@@ -588,6 +588,35 @@ impl Overlay {
         actions
     }
 
+    /// Shows nothing, for a moment before closing: compositors that animate
+    /// a window closing (Wayfire, Hyprland) animate its last picture, which
+    /// would otherwise put the frozen screen at the start of a recording.
+    #[cfg(target_os = "linux")]
+    pub fn clear(&mut self, gpu: &Gpu) {
+        let surface_texture = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
+            _ => return,
+        };
+        let view = surface_texture.texture.create_view(&Default::default());
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("overlay cleared"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        gpu.queue.submit([encoder.finish()]);
+        self.window.pre_present_notify();
+        gpu.queue.present(surface_texture);
+    }
+
     fn free_textures(&mut self, ids: &[egui::TextureId]) {
         for id in ids {
             self.ui.renderer.free_texture(id);
