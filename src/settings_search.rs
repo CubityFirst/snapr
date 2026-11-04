@@ -47,6 +47,7 @@ static INDEX: LazyLock<Vec<Entry>> = LazyLock::new(|| {
     }
     if cfg!(windows) {
         add(Settings, "start-menu", "Show snapr in the Start menu", "shortcut start menu programs pin search launch open windows");
+        add(Settings, "desktop-shortcut", "Put a shortcut to snapr on the desktop", "shortcut desktop icon link launch open double click windows");
         add(Settings, "explorer-menu", "Add Upload with Snapr to the right-click menu", "context menu explorer file share send upload right click shell");
     }
     #[cfg(windows)]

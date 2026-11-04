@@ -58,9 +58,9 @@ mod settings;
 mod settings_search;
 mod settings_ui;
 mod setup;
-mod sound;
 #[cfg(windows)]
-mod start_menu;
+mod shortcut;
+mod sound;
 mod stats;
 mod stats_ui;
 mod theme;
@@ -99,6 +99,8 @@ use crate::session::{Outcome, Purpose, Session};
 use crate::settings::{Loaded, RecordFormat, Settings, ToolAction, ToolHotkey, TrayClick, Upload};
 use crate::settings_ui::Form;
 use crate::settings_ui::Test;
+#[cfg(windows)]
+use crate::shortcut::Shortcut;
 use crate::sound::Sound;
 use crate::toast::Toast;
 use crate::tray::{Tray, TrayAction};
@@ -739,6 +741,11 @@ impl App {
         {
             self.settings.start_with_windows = autostart::enabled();
         }
+        // Or the shortcut deleted from the desktop.
+        #[cfg(windows)]
+        {
+            self.settings.desktop_shortcut = shortcut::exists(Shortcut::Desktop);
+        }
         let mut form = Form::new(&self.settings);
         form.status = self.status.clone();
         form.last_capture = self.last_capture.clone();
@@ -867,7 +874,13 @@ impl App {
         }
         #[cfg(windows)]
         if new.start_menu != self.settings.start_menu
-            && let Err(e) = start_menu::set(new.start_menu)
+            && let Err(e) = shortcut::set(Shortcut::StartMenu, new.start_menu)
+        {
+            return self.report(event_loop, e, true);
+        }
+        #[cfg(windows)]
+        if new.desktop_shortcut != self.settings.desktop_shortcut
+            && let Err(e) = shortcut::set(Shortcut::Desktop, new.desktop_shortcut)
         {
             return self.report(event_loop, e, true);
         }
@@ -1999,7 +2012,7 @@ fn main() {
         )
     };
 
-    #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+    #[cfg_attr(not(any(windows, target_os = "linux")), allow(unused_mut))]
     let (mut settings, loaded) = Settings::load();
     theme::pick(settings.theme);
     // On Linux the desktop's settings can turn it on or off too.
@@ -2020,7 +2033,20 @@ fn main() {
     if settings.start_menu
         && !once
         && !cfg!(debug_assertions)
-        && let Err(e) = start_menu::refresh()
+        && let Err(e) = shortcut::refresh(Shortcut::StartMenu)
+    {
+        eprintln!("{e}");
+    }
+    // One deleted from the desktop stays deleted: the switch follows it.
+    #[cfg(windows)]
+    {
+        settings.desktop_shortcut = shortcut::exists(Shortcut::Desktop);
+    }
+    #[cfg(windows)]
+    if settings.desktop_shortcut
+        && !once
+        && !cfg!(debug_assertions)
+        && let Err(e) = shortcut::refresh(Shortcut::Desktop)
     {
         eprintln!("{e}");
     }

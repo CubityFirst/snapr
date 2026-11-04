@@ -117,8 +117,9 @@ or *Display*, *Fullscreen*, or *Record region…*.
   *Tool use* (QR scans, codes read, colours picked, images pinned). It's kept
   in `stats.toml` next to the settings.
 - **First-time setup** greets you on first run: where screenshots are saved,
-  whether snapr starts when you sign in (Windows and Linux), whether it plays
-  sounds and, on Windows, whether to move it to your Programs folder. *Skip
+  whether snapr starts when you sign in (Windows and Linux), whether to put
+  a shortcut to it on the desktop (Windows), whether it plays sounds and, on
+  Windows, whether to move it to your Programs folder. *Skip
   setup* keeps the defaults; everything can be changed later in Settings,
   and *Run setup again* in Settings › General goes back through it.
 - **Settings** opens by itself whenever something needs attention (e.g. the
@@ -224,6 +225,7 @@ key are turned off until one is entered.
 | Check for updates automatically | on; on the *About* tab (see [Updates](#updates)) |
 | Start when you sign in | Windows and Linux; off. On Windows it can also be turned off in Task Manager's *Startup apps*; on Linux it's `~/.config/autostart/snapr.desktop`, which the desktop's own startup settings (e.g. GNOME Settings' *Apps* › *Autostart*) also turn on and off, and snapr's switch follows them |
 | Show snapr in the Start menu | Windows; on. A shortcut to snapr's file in your Start menu's programs, `%APPDATA%\Microsoft\Windows\Start Menu\Programs\snapr.lnk`, pointed at the file again each time snapr starts in case it was moved. Turning it off removes the shortcut |
+| Put a shortcut to snapr on the desktop | Windows; off. `snapr.lnk` on your desktop (the one OneDrive keeps, if it does), pointed at snapr's file again each time snapr starts in case it was moved. Deleting it from the desktop turns this off; first-time setup asks |
 | Install snapr in your Programs folder | Windows; says *Installed* once snapr is there. Otherwise *Move it there* copies snapr to `%LOCALAPPDATA%\Programs\snapr` and starts it again from there, removing the copy it was run from; no administrator rights needed. First-time setup asks the same |
 
 ## Naming templates
@@ -355,7 +357,7 @@ that capture the output wait anyway).
   (`%LOCALAPPDATA%\Programs\snapr`) without needing an administrator.
   Either way it lists itself in *Settings › Apps*, pointed at its file again
   each time it starts. *Uninstall* there (or `snapr --uninstall`) quits it,
-  takes it out of the Start menu and startup, asks whether to delete its
+  takes it out of the Start menu, the desktop and startup, asks whether to delete its
   settings, recent captures and saved upload keys, and deletes the program
   (and its Programs folder); your screenshots stay where they are.
 - **macOS**: open `snapr-macos-aarch64.dmg` and drag snapr to Applications.

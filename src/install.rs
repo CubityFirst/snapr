@@ -238,12 +238,12 @@ fn message(text: &str, style: MESSAGEBOX_STYLE) -> i32 {
 }
 
 /// `snapr --uninstall`, which Settings > Apps runs: asks first, quits a
-/// running snapr, takes it out of the Start menu, startup and Settings >
-/// Apps, deletes its settings if asked to, then its own file. Screenshots
+/// running snapr, takes it out of the Start menu, the desktop, startup and
+/// Settings > Apps, deletes its settings if asked to, then its own file. Screenshots
 /// are left alone. Returns the exit code.
 pub fn uninstall() -> i32 {
     let ok = message(
-        "Uninstall snapr?\n\nIt's taken out of the Start menu and the right-click menu and stops \
+        "Uninstall snapr?\n\nIt's taken out of the Start menu, off the desktop and out of the right-click menu, and stops \
          starting with Windows. Your screenshots and recordings stay where they are.",
         MB_OKCANCEL | MB_ICONQUESTION,
     );
@@ -264,7 +264,8 @@ pub fn uninstall() -> i32 {
     }
     for result in [
         crate::autostart::set(false),
-        crate::start_menu::set(false),
+        crate::shortcut::set(crate::shortcut::Shortcut::StartMenu, false),
+        crate::shortcut::set(crate::shortcut::Shortcut::Desktop, false),
         crate::explorer_menu::set(false),
     ] {
         if let Err(e) = result {

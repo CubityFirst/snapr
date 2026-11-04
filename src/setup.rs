@@ -1,7 +1,7 @@
 //! First-time setup: a few questions on snapr's first start, in the main
 //! window before its usual pages. Where screenshots are saved, whether snapr
 //! starts with Windows, whether it plays sounds, and on Windows whether it
-//! moves to the Programs folder. Each answer but the last is a setting, so
+//! puts a shortcut on the desktop and moves to the Programs folder. Each answer but the last is a setting, so
 //! the form saves it as it's picked; finishing (or skipping) marks setup as
 //! done.
 
@@ -20,6 +20,9 @@ enum Step {
     Folder,
     /// Windows and Linux: snapr can't start itself on macOS yet.
     StartWithOs,
+    /// Windows: a shortcut on the desktop?
+    #[cfg_attr(not(windows), allow(dead_code))]
+    Desktop,
     Sounds,
     /// Windows, run from wherever it was downloaded: move it to the Programs
     /// folder? Done once setup's finished, as snapr starts again from there.
@@ -33,6 +36,9 @@ impl Step {
         let mut all = vec![Step::Folder];
         if cfg!(any(windows, target_os = "linux")) {
             all.push(Step::StartWithOs);
+        }
+        if cfg!(windows) {
+            all.push(Step::Desktop);
         }
         all.push(Step::Sounds);
         #[cfg(windows)]
@@ -96,6 +102,7 @@ impl Setup {
                     let ready = match step {
                         Step::Folder => folder(ui, form),
                         Step::StartWithOs => start_with_os(ui, form),
+                        Step::Desktop => desktop(ui, form),
                         Step::Sounds => sounds(ui, form),
                         Step::Install => install(ui, &mut self.stay_put),
                         Step::Done => done(ui, form, actions),
@@ -197,6 +204,26 @@ fn start_with_os(ui: &mut egui::Ui, form: &mut Form) -> bool {
         on,
         (yes, "It's ready whenever you sign in."),
         ("No, I'll start it myself", no),
+    );
+    true
+}
+
+/// Whether to put a shortcut to snapr on the desktop (Windows).
+fn desktop(ui: &mut egui::Ui, form: &mut Form) -> bool {
+    heading(ui, "Add a shortcut to your desktop?");
+    ui.add(
+        Label::new(
+            RichText::new("Double-click it to open snapr's window, or to start snapr if it isn't running.")
+                .weak(),
+        )
+        .wrap(),
+    );
+    ui.add_space(14.0);
+    yes_no(
+        ui,
+        &mut form.draft.desktop_shortcut,
+        ("Yes, add a shortcut", "snapr appears on your desktop."),
+        ("No, keep my desktop clear", "It's still in the Start menu."),
     );
     true
 }

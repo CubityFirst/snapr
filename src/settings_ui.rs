@@ -307,6 +307,10 @@ impl Form {
                             Some("To open it by searching for it, or pin it"), false, |ui| {
                             theme::switch(ui, &mut self.draft.start_menu, "");
                         });
+                        row(ui, "desktop-shortcut", "Put a shortcut to snapr on the desktop",
+                            Some("To open its window with a double-click"), false, |ui| {
+                            theme::switch(ui, &mut self.draft.desktop_shortcut, "");
+                        });
                         row(ui, "explorer-menu", "Add Upload with Snapr to the right-click menu",
                             Some("On files in File Explorer, under Show more options on Windows 11"), false, |ui| {
                             theme::switch(ui, &mut self.draft.explorer_menu, "");
