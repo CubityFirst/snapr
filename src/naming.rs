@@ -388,7 +388,7 @@ fn sanitize(s: &str) -> String {
 }
 
 /// Splits a rendered path into safe components, dropping empty, `.` and `..`.
-fn components(s: &str) -> impl Iterator<Item = &str> {
+pub(crate) fn components(s: &str) -> impl Iterator<Item = &str> {
     s.split(['/', '\\'])
         // Windows silently strips trailing dots and spaces.
         .map(|c| c.trim().trim_end_matches('.'))

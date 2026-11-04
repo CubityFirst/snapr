@@ -339,6 +339,8 @@ snapr --uninstall  # Windows: uninstall, as Settings › Apps does
 snapr --help       # these options
 snapr upload shot.png log.txt         # upload files, print a link for each
 snapr upload -d "My R2" shot.png      # to a particular destination (--destination)
+snapr upload -n docs/latest shot.png  # as docs/latest.png rather than by the key template (--name)
+snapr upload -n docs/latest -f shot.png  # ...replacing the one already there (--force)
 snapr upload --list                   # the destinations, and which is the default (-l)
 ```
 
@@ -346,7 +348,12 @@ snapr upload --list                   # the destinations, and which is the defau
 *Destinations* using the key in the credential store, so neither needs the
 key itself. Each file goes to the *Link from* destination if it's ticked (or
 else the first ticked one) unless `-d` names another, by name or id, ticked
-or not. Links go to stdout, one per line in the order given; errors go to
+or not. Files are named by the destination's *Object key* (or *File name*)
+template, unless `-n` gives one file a name of its own: `/` in it makes
+folders, and the file's extension is added if it has none. Pomf hosts are
+sent that name too, though most choose their own. A file already in the
+bucket under the same name is left alone and reported as an error, unless
+`-f` says to replace it (Pomf hosts never replace anything). Links go to stdout, one per line in the order given; errors go to
 stderr, and the exit status is 1 if any file failed (2 for a mistake in the
 command). Files are added to Recent, as dropped
 files are. It works while snapr is running in the tray. On Windows snapr is a

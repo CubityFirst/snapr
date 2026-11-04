@@ -22,6 +22,9 @@ const PART_SIZE: u64 = 8 * 1024 * 1024;
 const MAX_PARTS: u64 = 10_000;
 /// The error an upload ends with when it's cancelled.
 pub const CANCELLED: &str = "cancelled";
+/// The end of the error an upload fails with when it would have replaced
+/// an object and wasn't allowed to.
+pub const EXISTS: &str = "is already in the bucket";
 
 /// What to upload: bytes in memory, or a file, read a part at a time so
 /// big ones aren't loaded whole.
@@ -195,37 +198,66 @@ impl S3Target {
     }
 
     /// Uploads an object, as a multipart upload if it's large, following
-    /// along in `progress`.
+    /// along in `progress`. Unless `overwrite`, an object already at `key`
+    /// is left alone and the upload fails with an error ending in
+    /// [`EXISTS`].
     pub fn put_object(
         &self,
         key: &str,
         body: &Body,
         content_type: &str,
+        overwrite: bool,
         progress: &Progress,
     ) -> Result<(), String> {
         let len = body.len()?;
         progress.total.store(len, Ordering::Relaxed);
+        // Asked first, so a big file isn't sent only to be turned away. A
+        // key that may write but not read gets no answer; then the write
+        // itself is made conditional, which S3, R2 and MinIO honour.
+        let condition: &[(&str, &str)] = if overwrite {
+            &[]
+        } else {
+            match self.exists(key)? {
+                Some(true) => return Err(format!("{key} {EXISTS}")),
+                Some(false) => &[],
+                None => &[("if-none-match", "*")],
+            }
+        };
         let result = if len > MULTIPART_THRESHOLD {
             let part_size = PART_SIZE.max(len.div_ceil(MAX_PARTS).next_multiple_of(1024 * 1024));
-            self.put_multipart(key, body, len, content_type, part_size, progress)
+            self.put_multipart(key, body, len, content_type, part_size, condition, progress)
         } else {
             let data = body.read(0, len)?;
-            self.send("PUT", key, &[], &data, Some(content_type), Some(progress))
+            self.send("PUT", key, &[], condition, &data, Some(content_type), Some(progress))
                 .map(drop)
         };
         match result {
             Err(_) if progress.cancelled() => Err(CANCELLED.into()),
+            Err(e) if e == PRECONDITION_FAILED => Err(format!("{key} {EXISTS}")),
             r => r,
         }
     }
 
     pub fn delete_object(&self, key: &str) -> Result<(), String> {
-        self.send("DELETE", key, &[], &[], None, None).map(drop)
+        self.send("DELETE", key, &[], &[], &[], None, None).map(drop)
+    }
+
+    /// Whether there's an object at `key`, or `None` if the service won't
+    /// say (e.g. to a key that may only write).
+    fn exists(&self, key: &str) -> Result<Option<bool>, String> {
+        let r = self.send("HEAD", key, &[], &[], &[], None, None)?;
+        Ok(match r.status {
+            200..=299 => Some(true),
+            404 => Some(false),
+            _ => None,
+        })
     }
 
     /// Uploads `body` (`len` bytes) in `part_size` pieces, several at a
-    /// time. If it fails, the upload is aborted so its parts don't linger
-    /// (and get billed) in the bucket.
+    /// time; the `condition` headers go with the request that completes it.
+    /// If it fails, the upload is aborted so its parts don't linger (and get
+    /// billed) in the bucket.
+    #[allow(clippy::too_many_arguments)]
     fn put_multipart(
         &self,
         key: &str,
@@ -233,10 +265,18 @@ impl S3Target {
         len: u64,
         content_type: &str,
         part_size: u64,
+        condition: &[(&str, &str)],
         progress: &Progress,
     ) -> Result<(), String> {
-        let created =
-            self.send("POST", key, &[("uploads", "")], &[], Some(content_type), None)?;
+        let created = self.send(
+            "POST",
+            key,
+            &[("uploads", "")],
+            &[],
+            &[],
+            Some(content_type),
+            None,
+        )?;
         let upload_id = xml_tag(&created.body, "UploadId")
             .ok_or("starting multipart upload: no UploadId in the response")?;
         let result = (|| {
@@ -260,6 +300,7 @@ impl S3Target {
                 "POST",
                 key,
                 &[("uploadId", &upload_id)],
+                condition,
                 xml.as_bytes(),
                 Some("application/xml"),
                 None,
@@ -271,7 +312,7 @@ impl S3Target {
             Ok(())
         })();
         if result.is_err() {
-            let _ = self.send("DELETE", key, &[("uploadId", &upload_id)], &[], None, None);
+            let _ = self.send("DELETE", key, &[("uploadId", &upload_id)], &[], &[], None, None);
         }
         result
     }
@@ -337,7 +378,7 @@ impl S3Target {
         let query = [("partNumber", n.as_str()), ("uploadId", upload_id)];
         let mut attempt = 1;
         loop {
-            match self.send("PUT", key, &query, chunk, None, Some(progress)) {
+            match self.send("PUT", key, &query, &[], chunk, None, Some(progress)) {
                 Ok(r) => return r.etag.ok_or_else(|| format!("part {n}: no ETag")),
                 Err(_) if progress.cancelled() => return Err(CANCELLED.into()),
                 Err(_) if attempt < PART_ATTEMPTS => {
@@ -349,13 +390,17 @@ impl S3Target {
         }
     }
 
-    /// Sends one signed request. With `progress`, the body is counted into
-    /// it as it's sent (and taken back out if the request fails).
+    /// Sends one signed request, with the `extra` headers (lower-case
+    /// names). With `progress`, the body is counted into it as it's sent
+    /// (and taken back out if the request fails). A `HEAD` comes back
+    /// whatever its status, as it has no error body to explain it.
+    #[allow(clippy::too_many_arguments)]
     fn send(
         &self,
         method: &str,
         key: &str,
         query: &[(&str, &str)],
+        extra: &[(&str, &str)],
         body: &[u8],
         content_type: Option<&str>,
         progress: Option<&Progress>,
@@ -377,6 +422,7 @@ impl S3Target {
         if let Some(ct) = content_type {
             headers.push(("content-type".to_string(), ct.to_string()));
         }
+        headers.extend(extra.iter().map(|&(n, v)| (n.to_string(), v.to_string())));
         headers.sort();
         let auth = authorization(&Request {
             method,
@@ -406,7 +452,7 @@ impl S3Target {
             progress,
         });
         let response = match (method, &mut counting) {
-            ("DELETE", _) => agent.run(request.body(()).map_err(|e| e.to_string())?),
+            ("DELETE" | "HEAD", _) => agent.run(request.body(()).map_err(|e| e.to_string())?),
             // A set length, as S3 doesn't take chunked uploads.
             (_, Some(c)) => agent.run(
                 request
@@ -416,7 +462,7 @@ impl S3Target {
             ),
             (_, None) => agent.run(request.body(body).map_err(|e| e.to_string())?),
         };
-        let result = Self::read_response(response, &url.host);
+        let result = Self::read_response(response, &url.host, method == "HEAD");
         if result.is_err()
             && let Some(c) = &counting
         {
@@ -428,6 +474,7 @@ impl S3Target {
     fn read_response(
         response: Result<ureq::http::Response<ureq::Body>, ureq::Error>,
         host: &str,
+        any_status: bool,
     ) -> Result<Response, String> {
         let mut response = response.map_err(|e| format!("couldn't reach {host}: {e}"))?;
         let status = response.status();
@@ -437,8 +484,16 @@ impl S3Target {
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
         let text = response.body_mut().read_to_string().unwrap_or_default();
-        if status.is_success() {
-            return Ok(Response { etag, body: text });
+        if status.is_success() || any_status {
+            return Ok(Response {
+                status: status.as_u16(),
+                etag,
+                body: text,
+            });
+        }
+        // The only conditions sent are that nothing be replaced.
+        if status.as_u16() == 412 {
+            return Err(PRECONDITION_FAILED.into());
         }
         Err(format!(
             "{} {}: {}",
@@ -449,8 +504,12 @@ impl S3Target {
     }
 }
 
+/// What `send` fails with on a 412, for `put_object` to explain.
+const PRECONDITION_FAILED: &str = "412 Precondition Failed";
+
 /// What the request methods need from a successful response.
 struct Response {
+    status: u16,
     etag: Option<String>,
     body: String,
 }
@@ -763,7 +822,15 @@ mod live {
         let key = format!("snapr-live-test/{} file.txt", fastrand::u32(..));
         let body = Body::Bytes(Arc::new(b"hello from snapr".to_vec()));
         target
-            .put_object(&key, &body, "text/plain", &Progress::default())
+            .put_object(&key, &body, "text/plain", false, &Progress::default())
+            .unwrap();
+        // Kept unless it's to be replaced.
+        let err = target
+            .put_object(&key, &body, "text/plain", false, &Progress::default())
+            .unwrap_err();
+        assert!(err.ends_with(EXISTS), "{err}");
+        target
+            .put_object(&key, &body, "text/plain", true, &Progress::default())
             .unwrap();
         target.delete_object(&key).unwrap();
 
@@ -779,6 +846,7 @@ mod live {
                 len as u64,
                 "application/octet-stream",
                 5 * 1024 * 1024,
+                &[],
                 &progress,
             )
             .unwrap();
@@ -792,22 +860,27 @@ mod live {
 mod fake {
     use super::*;
 
-    /// Enough of S3 for uploads: multipart create/part/complete/abort and
-    /// plain PUTs. Records each request's method, query and body length,
-    /// and fails any body that isn't sent with a Content-Length.
     /// Each request: method, query, body length.
     type Log = Arc<Mutex<Vec<(String, String, usize)>>>;
 
-    fn fake_s3() -> (S3Target, Log) {
+    /// Enough of S3 for uploads: multipart create/part/complete/abort,
+    /// plain PUTs, and HEADs of what's been PUT, which `If-None-Match: *`
+    /// keeps from being replaced. Records each request's method, query and
+    /// body length, and fails any body that isn't sent with a
+    /// Content-Length. With `can_read` false, HEADs are forbidden, as to a
+    /// key that may only write.
+    fn fake_s3_with(can_read: bool) -> (S3Target, Log) {
         use std::io::{BufRead, BufReader, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let log = Arc::new(Mutex::new(Vec::new()));
         let requests = log.clone();
+        let stored = Arc::new(Mutex::new(std::collections::HashSet::<String>::new()));
         thread::spawn(move || {
             for conn in listener.incoming() {
                 let Ok(conn) = conn else { break };
                 let requests = requests.clone();
+                let stored = stored.clone();
                 thread::spawn(move || {
                     let mut out = conn.try_clone().unwrap();
                     let mut r = BufReader::new(conn);
@@ -819,8 +892,9 @@ mod fake {
                         let mut words = line.split_whitespace();
                         let method = words.next().unwrap_or("").to_string();
                         let target = words.next().unwrap_or("").to_string();
-                        let query = target.split_once('?').map_or("", |(_, q)| q).to_string();
-                        let (mut len, mut chunked) = (0usize, false);
+                        let (path, query) = target.split_once('?').unwrap_or((&target, ""));
+                        let (path, query) = (path.to_string(), query.to_string());
+                        let (mut len, mut chunked, mut if_none_match) = (0usize, false, false);
                         loop {
                             let mut h = String::new();
                             r.read_line(&mut h).unwrap();
@@ -832,12 +906,30 @@ mod fake {
                                 len = v.trim().parse().unwrap();
                             }
                             chunked |= h.starts_with("transfer-encoding:");
+                            if_none_match |= h.replace(' ', "") == "if-none-match:*";
                         }
                         let mut body = vec![0; len];
                         r.read_exact(&mut body).unwrap();
                         requests.lock().unwrap().push((method.clone(), query.clone(), len));
+                        let writes = method == "PUT" && query.is_empty()
+                            || method == "POST" && query.starts_with("uploadId");
+                        let mut stored = stored.lock().unwrap();
                         let (status, extra, text) = if chunked {
                             ("411 Length Required", String::new(), String::new())
+                        } else if method == "HEAD" {
+                            let status = if !can_read {
+                                "403 Forbidden"
+                            } else if stored.contains(&path) {
+                                "200 OK"
+                            } else {
+                                "404 Not Found"
+                            };
+                            // No body, as a HEAD has none.
+                            let _ = write!(out, "HTTP/1.1 {status}\r\nContent-Length: 0\r\n\r\n");
+                            continue;
+                        } else if writes && if_none_match && stored.contains(&path) {
+                            let xml = "<Error><Code>PreconditionFailed</Code></Error>";
+                            ("412 Precondition Failed", String::new(), xml.to_string())
                         } else if method == "POST" && query == "uploads=" {
                             let xml = "<InitiateMultipartUploadResult><UploadId>up1</UploadId></InitiateMultipartUploadResult>";
                             ("200 OK", String::new(), xml.to_string())
@@ -848,6 +940,10 @@ mod fake {
                         } else {
                             ("200 OK", String::new(), "<CompleteMultipartUploadResult/>".into())
                         };
+                        if writes && status.starts_with("200") {
+                            stored.insert(path);
+                        }
+                        drop(stored);
                         let _ = write!(
                             out,
                             "HTTP/1.1 {status}\r\n{extra}Content-Length: {}\r\n\r\n{text}",
@@ -870,6 +966,57 @@ mod fake {
         (target, log)
     }
 
+    fn fake_s3() -> (S3Target, Log) {
+        fake_s3_with(true)
+    }
+
+    /// Tells a fresh key, an existing one and one it can't see apart.
+    #[test]
+    fn keeps_or_replaces_an_existing_object() {
+        let body = Body::Bytes(Arc::new(vec![1; 1000]));
+        let put = |t: &S3Target, overwrite| {
+            t.put_object("a/x.png", &body, "image/png", overwrite, &Progress::default())
+        };
+        let (target, log) = fake_s3();
+        put(&target, false).unwrap();
+        let err = put(&target, false).unwrap_err();
+        assert_eq!(err, format!("a/x.png {EXISTS}"));
+        put(&target, true).unwrap();
+        let methods: Vec<_> = log.lock().unwrap().iter().map(|r| r.0.clone()).collect();
+        // Replacing asks nothing first.
+        assert_eq!(methods, ["HEAD", "PUT", "HEAD", "PUT"]);
+
+        // Unable to look, it lets the write's condition turn it away.
+        let (target, log) = fake_s3_with(false);
+        put(&target, false).unwrap();
+        let err = put(&target, false).unwrap_err();
+        assert_eq!(err, format!("a/x.png {EXISTS}"));
+        assert_eq!(log.lock().unwrap().len(), 4);
+        put(&target, true).unwrap();
+    }
+
+    /// A big file is turned away before any of it is sent, or if the HEAD
+    /// can't tell, when the upload is completed, which is then aborted.
+    #[test]
+    fn keeps_an_existing_object_from_a_multipart_upload() {
+        let body = Body::Bytes(Arc::new(vec![0; (MULTIPART_THRESHOLD + 1) as usize]));
+        let put = |t: &S3Target, overwrite| {
+            t.put_object("big.bin", &body, "x/y", overwrite, &Progress::default())
+        };
+        let (target, log) = fake_s3();
+        put(&target, false).unwrap();
+        log.lock().unwrap().clear();
+        assert!(put(&target, false).unwrap_err().ends_with(EXISTS));
+        assert_eq!(log.lock().unwrap().len(), 1, "only the HEAD");
+
+        let (target, log) = fake_s3_with(false);
+        put(&target, false).unwrap();
+        log.lock().unwrap().clear();
+        assert!(put(&target, false).unwrap_err().ends_with(EXISTS));
+        let log = log.lock().unwrap();
+        assert!(log.iter().any(|(m, q, _)| m == "DELETE" && q.starts_with("uploadId")), "{log:?}");
+    }
+
     #[test]
     fn streams_a_big_file_in_parts_with_progress() {
         let (target, log) = fake_s3();
@@ -877,7 +1024,7 @@ mod fake {
         let len = 3 * PART_SIZE + 12345;
         std::fs::write(&path, vec![7u8; len as usize]).unwrap();
         let progress = Progress::default();
-        let result = target.put_object("big.bin", &Body::File(path.clone()), "x/y", &progress);
+        let result = target.put_object("big.bin", &Body::File(path.clone()), "x/y", true, &progress);
         std::fs::remove_file(&path).unwrap();
         result.unwrap();
         assert_eq!(progress.total.load(Ordering::Relaxed), len);
@@ -898,7 +1045,7 @@ mod fake {
         let (target, _) = fake_s3();
         let progress = Progress::default();
         let body = Body::Bytes(Arc::new(vec![1; 300_000]));
-        target.put_object("small.png", &body, "image/png", &progress).unwrap();
+        target.put_object("small.png", &body, "image/png", true, &progress).unwrap();
         assert_eq!(progress.sent.load(Ordering::Relaxed), 300_000);
     }
 
@@ -908,7 +1055,7 @@ mod fake {
         let progress = Progress::default();
         progress.cancel.store(true, Ordering::Relaxed);
         let body = Body::Bytes(Arc::new(vec![0; (MULTIPART_THRESHOLD + 1) as usize]));
-        let err = target.put_object("big.bin", &body, "x/y", &progress).unwrap_err();
+        let err = target.put_object("big.bin", &body, "x/y", true, &progress).unwrap_err();
         assert_eq!(err, CANCELLED);
         let log = log.lock().unwrap();
         assert!(!log.iter().any(|(_, q, _)| q.contains("partNumber")), "{log:?}");

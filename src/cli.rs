@@ -19,9 +19,19 @@ Uploads each file to one destination from Settings and prints its link, one
 per line, in the order given. They're added to Recent, as dropped files are.
 Failures are reported on stderr, and the exit status is then 1.
 
+Files are named by the destination's object key or file name, unless
+--name is given. A file already in a bucket under that name is left alone
+and reported as a failure, unless --force is given.
+
 OPTIONS:
   -d, --destination <NAME>  Upload there (its name or id) instead of to the
                             Link from destination, or the first ticked one
+  -n, --name <KEY>          Upload the file (only one) as this, e.g.
+                            docs/shot.png; `/` makes folders, and the file's
+                            extension is added if it has none. Pomf hosts
+                            are sent it too, though most pick their own
+  -f, --force               Replace a file already in the bucket under the
+                            same name (Pomf hosts never replace anything)
   -l, --list                List the destinations, then exit
   -h, --help                Show this help";
 
@@ -29,12 +39,18 @@ OPTIONS:
 /// status.
 pub fn upload(mut args: impl Iterator<Item = String>) -> i32 {
     let (mut files, mut wanted, mut list) = (Vec::new(), None, false);
+    let (mut name, mut force) = (None, false);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-d" | "--destination" => match args.next() {
                 Some(name) => wanted = Some(name),
                 None => return usage("--destination needs a destination's name"),
             },
+            "-n" | "--name" => match args.next() {
+                Some(n) => name = Some(n),
+                None => return usage("--name needs a name to upload the file as"),
+            },
+            "-f" | "--force" => force = true,
             "-l" | "--list" => list = true,
             "-h" | "--help" => {
                 say(format_args!("{HELP}"));
@@ -58,6 +74,14 @@ pub fn upload(mut args: impl Iterator<Item = String>) -> i32 {
     }
     if files.is_empty() {
         return usage("no files given");
+    }
+    if name.is_some() && files.len() > 1 {
+        return usage("--name names one file, but more were given");
+    }
+    if let Some(n) = &name
+        && object_name(n, "").is_none()
+    {
+        return usage(&format!("--name {n:?} has no name in it"));
     }
     if policy::uploads_disabled() {
         return fail(policy::UPLOADS_OFF);
@@ -89,11 +113,16 @@ pub fn upload(mut args: impl Iterator<Item = String>) -> i32 {
     for file in files {
         let result = std::path::absolute(&file)
             .map_err(|e| e.to_string())
-            .and_then(|path| send(upload, &target, &key, &path));
+            .and_then(|path| send(upload, &target, &key, name.as_deref(), force, &path));
         match result {
             Ok(url) => say(format_args!("{url}")),
             Err(e) => {
-                warn(format_args!("snapr upload: {}: {e}", file.display()));
+                let hint = if e.ends_with(crate::upload::EXISTS) {
+                    " (--force replaces it)"
+                } else {
+                    ""
+                };
+                warn(format_args!("snapr upload: {}: {e}{hint}", file.display()));
                 status = 1;
             }
         }
@@ -101,36 +130,46 @@ pub fn upload(mut args: impl Iterator<Item = String>) -> i32 {
     status
 }
 
-/// Uploads one file, named as a dropped file would be; returns its link.
+/// Uploads one file, as `name` or else named as a dropped file would be,
+/// replacing what's there already if `force`; returns its link.
 fn send(
     upload: &Upload,
     target: &crate::upload::Target,
     key: &naming::Template,
+    name: Option<&str>,
+    force: bool,
     path: &Path,
 ) -> Result<String, String> {
     if !path.is_file() {
         return Err("not a file".into());
-    }
-    let mut ctx = naming::Context::new(chrono::Local::now());
-    ctx.title = path.file_stem().map(|s| s.to_string_lossy().into_owned());
-    if let Ok((w, h)) = image::image_dimensions(path) {
-        (ctx.width, ctx.height) = (w, h);
-    }
-    if key.uses_counter() {
-        ctx.counter = output::next_counter();
     }
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let object = key.render_key(&ctx, &ext);
+    let object = match name {
+        // Checked before anything was sent.
+        Some(n) => object_name(n, &ext).expect("a name"),
+        None => {
+            let mut ctx = naming::Context::new(chrono::Local::now());
+            ctx.title = path.file_stem().map(|s| s.to_string_lossy().into_owned());
+            if let Ok((w, h)) = image::image_dimensions(path) {
+                (ctx.width, ctx.height) = (w, h);
+            }
+            if key.uses_counter() {
+                ctx.counter = output::next_counter();
+            }
+            key.render_key(&ctx, &ext)
+        }
+    };
     let body = Body::File(path.to_owned());
     let url = upload.put(
         target,
         &object,
         &body,
         output::content_type(&ext),
+        force,
         &Progress::default(),
     )?;
     history::add(path);
@@ -140,6 +179,21 @@ fn send(
     });
     history::set_link(path, Some(&url), remote);
     Ok(url)
+}
+
+/// The object key for `--name`: its folders tidied as a key template's are
+/// (no empty ones or `..`), with `.ext` added if its last part has no
+/// extension. `None` if nothing's left.
+fn object_name(name: &str, ext: &str) -> Option<String> {
+    let key = naming::components(name).collect::<Vec<_>>().join("/");
+    if key.is_empty() {
+        return None;
+    }
+    let last = key.rsplit('/').next().unwrap_or(&key);
+    Some(match Path::new(last).extension() {
+        None if !ext.is_empty() => format!("{key}.{ext}"),
+        _ => key,
+    })
 }
 
 /// The destination asked for by name or id (ticked or not), or else the
@@ -240,6 +294,18 @@ mod tests {
         assert_eq!(picked(&s, None).unwrap(), "A");
         let s = settings(&[("Off", false)], "");
         assert!(picked(&s, None).is_err());
+    }
+
+    #[test]
+    fn names_objects() {
+        let name = |n, ext| object_name(n, ext);
+        assert_eq!(name("shot", "png").as_deref(), Some("shot.png"));
+        assert_eq!(name("shot.jpg", "png").as_deref(), Some("shot.jpg"));
+        assert_eq!(name("notes", "").as_deref(), Some("notes"));
+        assert_eq!(name("/docs//a b/x.png", "png").as_deref(), Some("docs/a b/x.png"));
+        assert_eq!(name(r"..\..\etc\x", "txt").as_deref(), Some("etc/x.txt"));
+        assert_eq!(name("v1.2/readme", "md").as_deref(), Some("v1.2/readme.md"));
+        assert_eq!(name(" / .. / ", "png"), None);
     }
 
     #[test]

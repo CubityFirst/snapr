@@ -777,13 +777,16 @@ impl Upload {
     }
 
     /// Uploads `body` to `target` (from [`Self::target`]) as `key`, following
-    /// along in `progress`. Returns its link.
+    /// along in `progress`. Returns its link. Unless `overwrite`, it fails
+    /// rather than replace what's at `key` in a bucket; Pomf hosts never
+    /// replace anything.
     pub fn put(
         &self,
         target: &Target,
         key: &str,
         body: &Body,
         content_type: &str,
+        overwrite: bool,
         progress: &Progress,
     ) -> Result<String, String> {
         if crate::policy::uploads_disabled() {
@@ -791,7 +794,7 @@ impl Upload {
         }
         match target {
             Target::S3(t) => {
-                t.put_object(key, body, content_type, progress)?;
+                t.put_object(key, body, content_type, overwrite, progress)?;
                 self.link(key)
             }
             Target::Pomf(t) => t.upload(key, body, content_type, progress),

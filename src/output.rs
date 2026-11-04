@@ -418,7 +418,7 @@ fn upload_all(
         transfers.lock().unwrap().push(transfer.clone());
         let transfers = transfers.clone();
         thread::spawn(move || {
-            let result = upload.put(&target, &key, &body, content_type, &transfer.progress);
+            let result = upload.put(&target, &key, &body, content_type, true, &transfer.progress);
             transfers
                 .lock()
                 .unwrap()

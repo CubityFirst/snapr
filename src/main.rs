@@ -1228,7 +1228,7 @@ impl App {
                     let key = template.render_key(&ctx, "png");
                     let body = crate::upload::Body::Bytes(Arc::new(png));
                     let progress = crate::upload::Progress::default();
-                    let link = upload.put(&target, &key, &body, "image/png", &progress)?;
+                    let link = upload.put(&target, &key, &body, "image/png", true, &progress)?;
                     return Ok(format!("Uploaded the icon: {link}"));
                 }
                 let crate::upload::Target::S3(target) = target else {
@@ -1240,7 +1240,7 @@ impl App {
                 );
                 let body = crate::upload::Body::Bytes(Arc::new(b"snapr upload test".to_vec()));
                 let progress = crate::upload::Progress::default();
-                target.put_object(&key, &body, "text/plain", &progress)?;
+                target.put_object(&key, &body, "text/plain", true, &progress)?;
                 let deleted = target.delete_object(&key);
                 let link = upload.link(&key)?;
                 Ok(match deleted {
