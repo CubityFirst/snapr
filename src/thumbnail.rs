@@ -52,10 +52,19 @@ pub fn save_poster(video: &Path, frame: &RgbaImage) {
     if let Some(dir) = poster.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    // Small enough for previews; full-size frames are big PNGs.
-    let small = DynamicImage::ImageRgba8(frame.clone()).thumbnail(1920, 1200);
-    if let Err(e) = small.save(&poster) {
+    if let Err(e) = poster_picture(frame).save(&poster) {
         eprintln!("couldn't save the video's preview: {e}");
+    }
+}
+
+/// `frame` small enough for previews (full-size frames are big PNGs), but
+/// never enlarged: Recent gives a video the size of its poster.
+fn poster_picture(frame: &RgbaImage) -> DynamicImage {
+    let frame = DynamicImage::ImageRgba8(frame.clone());
+    if frame.width() > 1920 || frame.height() > 1200 {
+        frame.thumbnail(1920, 1200)
+    } else {
+        frame
     }
 }
 
@@ -198,6 +207,16 @@ mod tests {
         assert_eq!(kind(Path::new("clip.mp4")), Kind::Video);
         assert_eq!(kind(Path::new("notes.txt")), Kind::File);
         assert_eq!(kind(Path::new("noext")), Kind::File);
+    }
+
+    #[test]
+    fn posters_shrink_but_never_grow() {
+        let poster = |w, h| {
+            let p = poster_picture(&RgbaImage::new(w, h));
+            (p.width(), p.height())
+        };
+        assert_eq!(poster(400, 200), (400, 200));
+        assert_eq!(poster(3840, 2160), (1920, 1080));
     }
 
     /// Renders a file icon to `target/file-icon-preview.png`:
