@@ -22,7 +22,13 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// How long after starting the first automatic check waits, so it doesn't
 /// slow down logging in.
 const FIRST_CHECK: Duration = Duration::from_secs(15);
+/// How often the automatic check runs, counted from the last check that
+/// finished, even in an earlier run: restarting doesn't check again.
 const CHECK_EVERY: Duration = Duration::from_secs(12 * 60 * 60);
+/// How soon the automatic check tries again after one that didn't finish
+/// (e.g. offline), and the longest it sleeps before looking at the clock
+/// again, which a sleeping computer leaves behind.
+const RETRY: Duration = Duration::from_secs(60 * 60);
 
 /// Where the updater is up to, shown in Settings.
 #[derive(Debug, Clone, Default)]
@@ -76,15 +82,53 @@ pub fn packaged() -> bool {
     cfg!(target_os = "linux") && exe().is_ok_and(|exe| exe.starts_with("/usr/bin"))
 }
 
-/// Calls `due` shortly after starting, then twice a day.
+/// Calls `due` whenever 12 hours have passed since the last check finished
+/// (`CHECK_EVERY`), in this run or an earlier one: shortly after starting
+/// if they have already, or if snapr has never checked.
 pub fn schedule(due: impl Fn() + Send + 'static) {
     std::thread::spawn(move || {
         std::thread::sleep(FIRST_CHECK);
         loop {
-            due();
-            std::thread::sleep(CHECK_EVERY);
+            let wait = until_due(last_checked(), std::time::SystemTime::now());
+            if wait.is_zero() {
+                due();
+                // The check marks itself done when it finishes; if it
+                // doesn't, it's tried again after this.
+                std::thread::sleep(RETRY);
+            } else {
+                std::thread::sleep(wait.min(RETRY));
+            }
         }
     });
+}
+
+/// How long until the next automatic check, given when the last one
+/// finished. A time ahead of `now` (the clock was turned back) counts as
+/// never.
+fn until_due(last: Option<std::time::SystemTime>, now: std::time::SystemTime) -> Duration {
+    last.and_then(|last| now.duration_since(last).ok())
+        .map_or(Duration::ZERO, |since| CHECK_EVERY.saturating_sub(since))
+}
+
+/// Where the time of the last finished check is kept, as seconds since 1970.
+fn checked_file() -> Option<PathBuf> {
+    Some(crate::settings::Settings::config_dir()?.join("update-checked"))
+}
+
+fn last_checked() -> Option<std::time::SystemTime> {
+    let text = std::fs::read_to_string(checked_file()?).ok()?;
+    let secs = text.trim().parse().ok()?;
+    std::time::UNIX_EPOCH.checked_add(Duration::from_secs(secs))
+}
+
+fn mark_checked() {
+    let (Some(file), Ok(now)) = (checked_file(), std::time::UNIX_EPOCH.elapsed()) else {
+        return;
+    };
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(file, now.as_secs().to_string());
 }
 
 /// Checks for a newer release and installs it, off the calling thread,
@@ -96,6 +140,11 @@ pub fn check(report: impl Fn(Status) + Send + 'static) {
     std::thread::spawn(move || {
         report(Status::Checking);
         let status = check_and_install(&report).unwrap_or_else(Status::Failed);
+        // Clicking "Check for updates" counts too: the automatic check
+        // waits another 12 hours from it.
+        if !matches!(status, Status::Failed(_)) {
+            mark_checked();
+        }
         BUSY.store(false, Ordering::Release);
         report(status);
     });
@@ -422,6 +471,17 @@ mod tests {
         assert!(!newer("0.1.0", "0.1.0"));
         assert!(!newer("0.1.0", "0.2.0"));
         assert!(!newer("0.1.0+build.5", "0.1.0"));
+    }
+
+    #[test]
+    fn checks_every_twelve_hours() {
+        let now = std::time::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        let hours = |h: u64| Duration::from_secs(h * 60 * 60);
+        assert_eq!(until_due(None, now), Duration::ZERO);
+        assert_eq!(until_due(Some(now - hours(3)), now), hours(9));
+        assert_eq!(until_due(Some(now - hours(12)), now), Duration::ZERO);
+        assert_eq!(until_due(Some(now - hours(40)), now), Duration::ZERO);
+        assert_eq!(until_due(Some(now + hours(1)), now), Duration::ZERO);
     }
 
     #[test]

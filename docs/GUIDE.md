@@ -306,11 +306,17 @@ than one display, are recorded in SDR.
 
 ## Updates
 
-snapr looks for a new release on GitHub 15 seconds after it starts and every
-12 hours after that. When there is one, it downloads this platform's build,
-checks it against the release's `SHA256SUMS`, and puts it in place of the
-program file; the running copy carries on, and the new version runs from the
-next start (or straight away with *Restart now*). The *About* tab has
+snapr looks for a new release on GitHub every 12 hours, counted from the
+last check even across restarts (kept in `update-checked` next to the
+settings): starting snapr again doesn't check again, and a check that
+couldn't reach GitHub is tried again an hour later. When there is one, it
+downloads this platform's build, checks it against the release's
+`SHA256SUMS`, and puts it in place of the program file; the running copy
+carries on, and the new version runs from the next start. The arrow button
+above the folder button at the bottom of the icon bar checks when clicked
+(it spins while it does); once there's a new version it turns blue, and its
+menu has *Restart now* and the release notes (when snapr can't install the
+release itself, it links to the release instead). The *About* tab has
 *Check for updates automatically* (on) and *Check for updates*, which works
 either way. Pre-releases aren't offered, and development (debug) builds only
 check when asked, and say what's available without installing it. The Linux

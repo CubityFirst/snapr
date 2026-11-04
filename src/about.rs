@@ -83,7 +83,7 @@ impl About {
                 });
                 update_status(ui, update, actions);
                 row(ui, "check-for-updates", "Check for updates automatically",
-                    Some("From GitHub, when snapr starts and twice a day. A new release installs to run from the next start"),
+                    Some("From GitHub, every 12 hours. A new release installs to run from the next start"),
                     false, |ui| {
                     theme::switch(ui, check_for_updates, "");
                 });

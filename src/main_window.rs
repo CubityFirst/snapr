@@ -229,6 +229,8 @@ enum NavIcon {
     Stats,
     Settings,
     Folder,
+    /// Checks for updates; `ready` (in the accent) once a newer snapr is.
+    Update { ready: bool },
 }
 
 pub struct MainWindow {
@@ -444,6 +446,7 @@ impl MainWindow {
                     if nav_button(ui, NavIcon::Folder, false, "Open screenshots folder").clicked() {
                         actions.push(Action::Reveal(self.folder.clone()));
                     }
+                    self.update_button_ui(ui, actions);
                 });
             });
         if self.page != Page::Recent {
@@ -557,6 +560,19 @@ impl MainWindow {
     /// The arrow under the capture button, and its menu of other things to
     /// capture: the last region, a window, a display, everything or a
     /// recording.
+    /// Above the folder button: checks for updates when clicked, spins while
+    /// it does, and once it has found a newer snapr turns blue, with a menu
+    /// to restart into the installed one or to the release snapr doesn't
+    /// install itself (the .deb's, or in a development build).
+    fn update_button_ui(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        let status = &self.form.update;
+        if let Some(menu) = update_button(ui, status) {
+            menu.show(|ui| update_menu(ui, status, actions));
+        } else if check_button(ui, status).clicked() && !status.busy() {
+            actions.push(Action::CheckForUpdates);
+        }
+    }
+
     fn capture_menu_ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         let chevron = chevron_button(ui);
         if chevron.clicked() {
@@ -785,14 +801,15 @@ fn settings_page(
         });
 }
 
-/// A button on the icon bar: Capture filled with the accent, the page
+/// A button on the icon bar: Capture and Update in the accent, the page
 /// that's showing tinted with it.
 fn nav_button(ui: &mut egui::Ui, icon: NavIcon, selected: bool, tip: &str) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::click());
     let palette = theme::palette(ui);
     let capture = matches!(icon, NavIcon::Capture);
-    let (fill, fg) = if capture {
-        // snapr's logo, in its blue.
+    let accent = capture || matches!(icon, NavIcon::Update { ready: true });
+    let (fill, fg) = if accent {
+        // snapr's logo, in its blue; an update, to catch the eye.
         if resp.hovered() {
             (palette.control_hover, theme::ACCENT_HOVER)
         } else {
@@ -812,6 +829,76 @@ fn nav_button(ui: &mut egui::Ui, icon: NavIcon, selected: bool, tip: &str) -> eg
     draw_icon(p, rect.shrink(inset), icon, fg);
     resp.on_hover_text(tip)
         .on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// What the update button says: `None` unless a newer snapr is installed
+/// or available.
+fn update_tip(status: &crate::update::Status) -> Option<String> {
+    use crate::update::Status;
+    match status {
+        Status::Installed(v, _) => Some(format!("snapr {v} is installed: restart to use it")),
+        Status::Available(v, _) => Some(format!("snapr {v} is available")),
+        _ => None,
+    }
+}
+
+/// The update button, if there's an update, and the menu it opens.
+fn update_button<'a>(ui: &mut egui::Ui, status: &crate::update::Status) -> Option<egui::Popup<'a>> {
+    let button = nav_button(ui, NavIcon::Update { ready: true }, false, &update_tip(status)?);
+    Some(egui::Popup::menu(&button).align(egui::RectAlign::RIGHT_END).gap(4.0))
+}
+
+/// The update button while no update is known: a spinner while checking
+/// or downloading, otherwise a grey arrow that checks.
+fn check_button(ui: &mut egui::Ui, status: &crate::update::Status) -> egui::Response {
+    use crate::update::Status;
+    let tip = match status {
+        Status::Checking => "Checking for updates\u{2026}".to_string(),
+        Status::Downloading(v) => format!("Downloading snapr {v}\u{2026}"),
+        Status::UpToDate(at) => format!("Up to date (checked {}). Click to check again", at.format("%H:%M")),
+        Status::Failed(e) => format!("Couldn't update: {e}. Click to try again"),
+        _ => "Check for updates".to_string(),
+    };
+    if !status.busy() {
+        return nav_button(ui, NavIcon::Update { ready: false }, false, &tip);
+    }
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::hover());
+    egui::Spinner::new()
+        .color(theme::palette(ui).text_weak)
+        .paint_at(ui, rect.shrink(10.0));
+    resp.on_hover_text(tip)
+}
+
+fn update_menu(ui: &mut egui::Ui, status: &crate::update::Status, actions: &mut Vec<Action>) {
+    use crate::update::{self, Status};
+    let (heading, page) = match status {
+        Status::Installed(v, page) => (format!("snapr {v} is installed"), page),
+        Status::Available(v, page) => (format!("snapr {v} is available"), page),
+        _ => return,
+    };
+    theme::compact_menu(ui);
+    ui.label(egui::RichText::new(heading).strong());
+    if matches!(status, Status::Installed(..)) {
+        ui.weak("It runs from the next start.");
+        if ui.button("Restart now").clicked() {
+            actions.push(Action::RestartToUpdate);
+            ui.close();
+        }
+        if ui.button("Release notes").clicked() {
+            actions.push(Action::OpenUrl(page.clone()));
+            ui.close();
+        }
+    } else {
+        ui.weak(if update::packaged() {
+            "Install its .deb from the release."
+        } else {
+            "Development builds don't install it."
+        });
+        if ui.button("Open the release").clicked() {
+            actions.push(Action::OpenUrl(page.clone()));
+            ui.close();
+        }
+    }
 }
 
 /// A small down arrow under the capture button, for its menu.
@@ -939,6 +1026,12 @@ fn draw_icon(p: &egui::Painter, r: Rect, icon: NavIcon, color: Color32) {
             ];
             p.add(Shape::closed_line(pts, s));
         }
+        NavIcon::Update { .. } => {
+            // An arrow pointing up out of a ring.
+            p.circle_stroke(r.center(), r.width() * 0.48, s);
+            p.line_segment([at(0.5, 0.74), at(0.5, 0.28)], s);
+            p.add(Shape::line(vec![at(0.3, 0.48), at(0.5, 0.28), at(0.7, 0.48)], s));
+        }
     }
 }
 
@@ -990,6 +1083,45 @@ mod tests {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::central_panel(root.style()).inner_margin(egui::Margin::symmetric(20, 16)))
                     .show(root, |ui| settings_page(ui, &mut page, &mut search, &mut form, &mut Vec::new()));
+            });
+        }
+    }
+
+    /// Renders the icon bar's bottom with the update button's menu open, in
+    /// both themes, to `target/update-button-<theme>-preview.png`:
+    /// `cargo test update_button_preview -- --ignored`.
+    #[test]
+    #[ignore]
+    fn update_button_preview() {
+        let installed = crate::update::Status::Installed("0.3.4".into(), "https://example.com".into());
+        let none = crate::update::Status::Idle;
+        let checking = crate::update::Status::Checking;
+        for (name, dark, status) in [
+            ("light", false, &installed),
+            ("dark", true, &installed),
+            ("none", true, &none),
+            ("checking", true, &checking),
+        ] {
+            crate::preview::render(&format!("update-button-{name}-preview"), [420, 260], 1.0, |root| {
+                crate::preview::themed(root, dark);
+                let nav = theme::palette(root).nav;
+                egui::Panel::left("nav")
+                    .exact_size(NAV_WIDTH)
+                    .resizable(false)
+                    .frame(egui::Frame::new().fill(nav).inner_margin(egui::Margin::symmetric(8, 12)))
+                    .show(root, |ui| {
+                        ui.spacing_mut().item_spacing = vec2(0.0, 6.0);
+                        ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                            nav_button(ui, NavIcon::Settings, false, "");
+                            nav_button(ui, NavIcon::Folder, false, "");
+                            if let Some(menu) = update_button(ui, status) {
+                                menu.open(true).show(|ui| update_menu(ui, status, &mut Vec::new()));
+                            } else {
+                                check_button(ui, status);
+                            }
+                        });
+                    });
+                egui::CentralPanel::default().show(root, |_| {});
             });
         }
     }
