@@ -290,21 +290,31 @@ impl ToolHotkey {
     }
 }
 
-/// A tool that can be given a hotkey.
+/// A tool, or a capture with nothing to pick, that can be given a hotkey.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolAction {
     PickColor,
     ScanQr,
     PinRegion,
+    /// Screenshot the display the focused window is on.
+    CaptureDisplay,
 }
 
 impl ToolAction {
+    /// The tools (the tray's Tools menu, the Tools hotkeys).
     pub const ALL: [ToolAction; 3] = [
         ToolAction::PickColor,
         ToolAction::ScanQr,
         ToolAction::PinRegion,
     ];
+
+    /// The captures that can have a hotkey besides region and record.
+    pub const CAPTURES: [ToolAction; 1] = [ToolAction::CaptureDisplay];
+
+    pub fn is_capture(self) -> bool {
+        Self::CAPTURES.contains(&self)
+    }
 
     /// Names the tool in its hotkey's id, which has to stay the same.
     pub fn id(self) -> &'static str {
@@ -312,6 +322,7 @@ impl ToolAction {
             ToolAction::PickColor => "pick-color",
             ToolAction::ScanQr => "scan-qr",
             ToolAction::PinRegion => "pin-region",
+            ToolAction::CaptureDisplay => "capture-display",
         }
     }
 
@@ -320,6 +331,7 @@ impl ToolAction {
             ToolAction::PickColor => crate::locale::spelled!("Pick a colour"),
             ToolAction::ScanQr => "Read a QR code",
             ToolAction::PinRegion => "Pin a region to the screen",
+            ToolAction::CaptureDisplay => "Capture active display",
         }
     }
 }
@@ -363,6 +375,7 @@ impl TrayClick {
             TrayClick::Tool(ToolAction::PickColor) => crate::locale::spelled!("Picks a colour"),
             TrayClick::Tool(ToolAction::ScanQr) => "Reads a QR code",
             TrayClick::Tool(ToolAction::PinRegion) => "Pins a region to the screen",
+            TrayClick::Tool(ToolAction::CaptureDisplay) => "Captures the active display",
         }
     }
 }

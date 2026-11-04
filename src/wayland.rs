@@ -36,33 +36,78 @@ use xcap::Frame;
 
 use crate::capture::Rect;
 
-/// The focused window's app id and title, as the compositor tells it
-/// (either may be missing; both are when nothing is focused). `None` if
-/// it doesn't (not a Wayland session, or no foreign-toplevel: GNOME, KDE).
-pub fn active_window() -> Option<(Option<String>, Option<String>)> {
+/// The focused window, as the compositor tells it. Every field may be
+/// missing; all are when nothing is focused.
+#[derive(Debug, Default)]
+pub struct Focused {
+    pub app_id: Option<String>,
+    pub title: Option<String>,
+    /// The output it's on, by name (e.g. `DP-1`): the first it entered, of
+    /// those it's still on.
+    pub output: Option<String>,
+}
+
+/// The focused window, as the compositor tells it. `None` if it doesn't
+/// (not a Wayland session, or no foreign-toplevel: GNOME, KDE).
+pub fn active_window() -> Option<Focused> {
     let conn = Connection::connect_to_env().ok()?;
     let (globals, mut queue) = registry_queue_init::<Toplevels>(&conn).ok()?;
     let qh = queue.handle();
+    // The outputs first, so the manager can say which a window is on as it
+    // announces it. Their names come from wl_output (version 4) or, before
+    // that, xdg-output.
+    let xdg: Option<zxdg_output_manager_v1::ZxdgOutputManagerV1> = globals.bind(&qh, 1..=3, ()).ok();
+    let mut state = Toplevels {
+        outputs: globals
+            .contents()
+            .clone_list()
+            .into_iter()
+            .filter(|g| g.interface == wl_output::WlOutput::interface().name)
+            .map(|g| {
+                let output: wl_output::WlOutput = globals.registry().bind(g.name, g.version.min(4), &qh, ());
+                NamedOutput {
+                    xdg: xdg.as_ref().map(|m| m.get_xdg_output(&output, &qh, ())),
+                    output,
+                    name: None,
+                }
+            })
+            .collect(),
+        ..Toplevels::default()
+    };
     let manager: toplevel_manager::ZwlrForeignToplevelManagerV1 = globals.bind(&qh, 1..=3, ()).ok()?;
-    let mut state = Toplevels::default();
     // Binding the manager announces every window, each followed by its
     // details and `done`.
     queue.roundtrip(&mut state).ok()?;
+    queue.roundtrip(&mut state).ok()?;
     manager.stop();
-    let found = state
+    let focused = state
         .windows
         .iter()
         .find(|w| w.done && w.current.activated)
         .map(|w| {
             let named = |s: &Option<String>| s.clone().filter(|s| !s.trim().is_empty());
-            (named(&w.current.app_id), named(&w.current.title))
+            Focused {
+                app_id: named(&w.current.app_id),
+                title: named(&w.current.title),
+                output: w.current.outputs.iter().find_map(|on| {
+                    state.outputs.iter().find(|o| o.output == *on).and_then(|o| named(&o.name))
+                }),
+            }
         });
-    Some(found.unwrap_or((None, None)))
+    Some(focused.unwrap_or_default())
 }
 
 #[derive(Default)]
 struct Toplevels {
     windows: Vec<Toplevel>,
+    /// Every output, to name the ones a window is on.
+    outputs: Vec<NamedOutput>,
+}
+
+struct NamedOutput {
+    output: wl_output::WlOutput,
+    xdg: Option<zxdg_output_v1::ZxdgOutputV1>,
+    name: Option<String>,
 }
 
 struct Toplevel {
@@ -79,6 +124,8 @@ struct Details {
     app_id: Option<String>,
     title: Option<String>,
     activated: bool,
+    /// The outputs it's on, in the order it entered them.
+    outputs: Vec<wl_output::WlOutput>,
 }
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Toplevels {
@@ -136,7 +183,22 @@ impl Dispatch<handle::ZwlrForeignToplevelHandleV1, ()> for Toplevels {
             handle::Event::State { state: states } => {
                 // An array of native-endian u32 enum values.
                 let activated = handle::State::Activated as u32;
-                window.pending.activated = states.as_chunks::<4>().0.iter().any(|s| u32::from_ne_bytes(*s) == activated);
+                window.pending.activated =
+                    states.as_chunks::<4>().0.iter().any(|s| u32::from_ne_bytes(*s) == activated);
+            }
+            // Applied straight away too, in case a compositor doesn't
+            // follow them with `done`.
+            handle::Event::OutputEnter { output } => {
+                for details in [&mut window.pending, &mut window.current] {
+                    if !details.outputs.contains(&output) {
+                        details.outputs.push(output.clone());
+                    }
+                }
+            }
+            handle::Event::OutputLeave { output } => {
+                for details in [&mut window.pending, &mut window.current] {
+                    details.outputs.retain(|o| *o != output);
+                }
             }
             handle::Event::Done => {
                 window.current = window.pending.clone();
@@ -149,6 +211,43 @@ impl Dispatch<handle::ZwlrForeignToplevelHandleV1, ()> for Toplevels {
         }
     }
 }
+
+impl Dispatch<wl_output::WlOutput, ()> for Toplevels {
+    fn event(
+        state: &mut Self,
+        proxy: &wl_output::WlOutput,
+        event: wl_output::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_output::Event::Name { name } = event
+            && let Some(o) = state.outputs.iter_mut().find(|o| o.output == *proxy)
+        {
+            o.name = Some(name);
+        }
+    }
+}
+
+impl Dispatch<zxdg_output_v1::ZxdgOutputV1, ()> for Toplevels {
+    fn event(
+        state: &mut Self,
+        proxy: &zxdg_output_v1::ZxdgOutputV1,
+        event: zxdg_output_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        // As in `ScreenState`: wl_output's name wins, where it has one.
+        if let zxdg_output_v1::Event::Name { name } = event
+            && let Some(o) = state.outputs.iter_mut().find(|o| o.xdg.as_ref() == Some(proxy))
+        {
+            o.name.get_or_insert(name);
+        }
+    }
+}
+
+delegate_noop!(Toplevels: ignore zxdg_output_manager_v1::ZxdgOutputManagerV1);
 
 /// A monitor as winit places it, so it lines up with a selection on the
 /// overlays: at the compositor's logical position times the output's
@@ -197,6 +296,34 @@ pub fn screenshot(cursor: bool) -> Option<Vec<(Rect, Frame)>> {
             }
         })
         .collect()
+}
+
+/// A picture of one output now, placed as `screencopy_outputs` places it,
+/// with the mouse pointer in if `cursor`: the one named `name`, else (no
+/// name, or no output by it) the one at the origin, else the first. `None`
+/// as for `screenshot`, so xcap takes it instead.
+pub fn screenshot_output(name: Option<&str>, cursor: bool) -> Option<(Output, Frame)> {
+    let mut screens = Screens::connect().ok()?;
+    screens.cursor = cursor;
+    let outputs = &screens.state.outputs;
+    let named = name.and_then(|n| outputs.iter().find(|o| o.name.as_deref() == Some(n)));
+    let at_origin = || {
+        outputs
+            .iter()
+            .find(|o| o.placed().is_some_and(|p| p.rect.contains((0.0, 0.0))))
+    };
+    let state = named.or_else(at_origin).or(outputs.first())?;
+    if state.transform != wl_output::Transform::Normal {
+        return None;
+    }
+    let (output, placed) = (state.output.clone(), state.placed()?);
+    match screens.capture(&output, false, Some(FIRST_FRAME_TIMEOUT), &|| false) {
+        Ok(frame) => Some((placed, frame?)),
+        Err(e) => {
+            eprintln!("screencopy of {}: {e}; asking xcap", placed.name);
+            None
+        }
+    }
 }
 
 /// Frames of one output, captured on a thread of its own.
@@ -778,12 +905,21 @@ mod tests {
     #[test]
     #[ignore]
     fn live() {
-        println!("focused window: {:?}", active_window());
+        let focused = active_window();
+        println!("focused window: {focused:?}");
         let outputs = screencopy_outputs().expect("screencopy and xdg-output");
         println!("outputs: {outputs:?}");
         let began = Instant::now();
         let shots = screenshot(true).expect("a screenshot");
         println!("screenshot of {} outputs in {:?}", shots.len(), began.elapsed());
+        let on = focused.and_then(|f| f.output);
+        let began = Instant::now();
+        let (output, frame) = screenshot_output(on.as_deref(), true).expect("the focused window's output");
+        println!("{} (focused window's: {on:?}) in {:?}", output.name, began.elapsed());
+        assert_eq!((frame.width, frame.height), (output.rect.w, output.rect.h));
+        if let Some(on) = on {
+            assert_eq!(output.name, on);
+        }
         for output in outputs {
             let began = Instant::now();
             let (recorder, frames, first) = Recorder::start(&output.name, 30, true).unwrap();

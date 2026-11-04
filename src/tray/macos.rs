@@ -149,6 +149,8 @@ impl Tray {
                 ToolAction::PickColor => sel!(pickColor:),
                 ToolAction::ScanQr => sel!(scanQr:),
                 ToolAction::PinRegion => sel!(pinRegion:),
+                // Not a tool: not in `ALL`.
+                ToolAction::CaptureDisplay => continue,
             };
             add_to(&tools, tool.label(), Some(action));
         }

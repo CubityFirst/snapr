@@ -116,23 +116,15 @@ pub fn capture_all(cursor: bool) -> Result<Vec<Shot>, xcap::XCapError> {
 }
 
 fn capture_monitors() -> Result<Vec<Shot>, xcap::XCapError> {
-    // Displays in HDR mode are captured in full range and mapped to SDR.
     #[cfg(windows)]
     let hdr = crate::hdr::displays();
     xcap::Monitor::all()?
         .iter()
         .map(|m| {
-            let (x, y) = (m.x()?, m.y()?);
             #[cfg(windows)]
-            let image = match hdr.iter().find(|d| (d.rect.x, d.rect.y) == (x, y)) {
-                Some(d) => d.capture().or_else(|e| {
-                    eprintln!("{e}; capturing it as SDR");
-                    m.capture_image()
-                })?,
-                None => m.capture_image()?,
-            };
+            let image = monitor_image(m, &hdr)?;
             #[cfg(not(windows))]
-            let image = m.capture_image()?;
+            let image = monitor_image(m)?;
             // macOS reports monitor positions in points rather than pixels.
             let scale = if cfg!(target_os = "macos") {
                 m.scale_factor()?
@@ -140,12 +132,43 @@ fn capture_monitors() -> Result<Vec<Shot>, xcap::XCapError> {
                 1.0
             };
             let pos = (
-                (x as f32 * scale).round() as i32,
-                (y as f32 * scale).round() as i32,
+                (m.x()? as f32 * scale).round() as i32,
+                (m.y()? as f32 * scale).round() as i32,
             );
             Ok(Shot { image, pos })
         })
         .collect()
+}
+
+/// One monitor's picture. On Windows, displays in HDR mode (`hdr`, from
+/// `hdr::displays`) are captured in full range and mapped to SDR.
+#[cfg(windows)]
+fn monitor_image(m: &xcap::Monitor, hdr: &[crate::hdr::HdrDisplay]) -> Result<RgbaImage, xcap::XCapError> {
+    let at = (m.x()?, m.y()?);
+    match hdr.iter().find(|d| (d.rect.x, d.rect.y) == at) {
+        Some(d) => d.capture().or_else(|e| {
+            eprintln!("{e}; capturing it as SDR");
+            m.capture_image()
+        }),
+        None => m.capture_image(),
+    }
+}
+
+#[cfg(not(windows))]
+fn monitor_image(m: &xcap::Monitor) -> Result<RgbaImage, xcap::XCapError> {
+    m.capture_image()
+}
+
+/// One monitor's picture, with the mouse pointer drawn in if `cursor`.
+fn grab_monitor(m: &xcap::Monitor, cursor: bool) -> Result<RgbaImage, String> {
+    #[cfg(windows)]
+    let mut image = monitor_image(m, &crate::hdr::displays()).map_err(failure)?;
+    #[cfg(not(windows))]
+    let mut image = monitor_image(m).map_err(failure)?;
+    if cursor && let (Ok(x), Ok(y)) = (m.x(), m.y()) {
+        draw_cursor(&mut crate::cursor::Cursors::new(), &mut image, (x, y));
+    }
+    Ok(image)
 }
 
 /// The mouse position in global physical pixels, where the platform makes
@@ -363,15 +386,22 @@ pub fn foreground_window() -> (Option<String>, Option<String>) {
     // xcap only sees XWayland's windows; wlroots compositors say which of
     // all of them is focused (its app id stands in for the process).
     #[cfg(target_os = "linux")]
-    if let Some(found) = crate::wayland::active_window() {
-        return found;
+    if let Some(focused) = crate::wayland::active_window() {
+        return (focused.app_id, focused.title);
     }
-    let Some(window) = xcap::Window::all()
-        .ok()
-        .and_then(|all| all.into_iter().find(|w| w.is_focused().unwrap_or(false)))
-    else {
-        return (None, None);
-    };
+    focused_window().map_or((None, None), |w| names(&w))
+}
+
+/// The focused window, as xcap sees it: not snapr's own on Windows.
+fn focused_window() -> Option<xcap::Window> {
+    xcap::Window::all()
+        .ok()?
+        .into_iter()
+        .find(|w| w.is_focused().unwrap_or(false))
+}
+
+/// A window's process name and title, for naming.
+fn names(window: &xcap::Window) -> (Option<String>, Option<String>) {
     let by_pid = window.pid().ok().and_then(process_name);
     let process = by_pid
         .or_else(|| window.app_name().ok())
@@ -434,6 +464,9 @@ pub enum Target {
     Window(u32),
     /// One monitor, by its xcap id.
     Display(u32),
+    /// The monitor the focused window is on, as it is when it's captured
+    /// (see `active_display`).
+    ActiveDisplay,
     /// Every monitor, stitched together.
     Everything,
 }
@@ -560,13 +593,11 @@ pub fn grab(target: &Target, cursor: bool) -> Result<(RgbaImage, Option<String>,
                 .into_iter()
                 .find(|m| m.id().is_ok_and(|i| i == *id))
                 .ok_or("that display is no longer connected")?;
-            let mut image = monitor.capture_image().map_err(failure)?;
-            if cursor && let (Ok(x), Ok(y)) = (monitor.x(), monitor.y()) {
-                draw_cursor(&mut crate::cursor::Cursors::new(), &mut image, (x, y));
-            }
+            let image = grab_monitor(&monitor, cursor)?;
             let (process, title) = foreground_window();
             Ok((image, process, title))
         }
+        Target::ActiveDisplay => active_display(cursor),
         Target::Region(_) | Target::Everything => {
             let (process, title) = foreground_window();
             let shots = capture_all(cursor).map_err(failure)?;
@@ -594,6 +625,77 @@ pub fn grab(target: &Target, cursor: bool) -> Result<(RgbaImage, Option<String>,
             Ok((image, process, title))
         }
     }
+}
+
+/// The monitor the focused window is on, with that window's naming details.
+/// Where there's no telling (nothing focused, snapr's own window on Windows,
+/// GNOME and KDE on Wayland), the one under the mouse pointer (Windows),
+/// else the primary one.
+fn active_display(cursor: bool) -> Result<(RgbaImage, Option<String>, Option<String>), String> {
+    // wlroots compositors say which output the focused window is on, and
+    // copy just that one.
+    #[cfg(target_os = "linux")]
+    let wayland = crate::wayland::active_window();
+    #[cfg(target_os = "linux")]
+    if let Some(focused) = &wayland
+        && let Some((_, frame)) = crate::wayland::screenshot_output(focused.output.as_deref(), cursor)
+    {
+        let image = RgbaImage::from_raw(frame.width, frame.height, frame.raw)
+            .ok_or("the compositor's picture was the wrong size")?;
+        return Ok((image, focused.app_id.clone(), focused.title.clone()));
+    }
+    let monitors = xcap::Monitor::all().map_err(failure)?;
+    let displays: Vec<DisplayInfo> = monitors
+        .iter()
+        .filter_map(|m| {
+            Some(DisplayInfo {
+                id: m.id().ok()?,
+                name: m.name().unwrap_or_default(),
+                rect: Rect {
+                    x: m.x().ok()?,
+                    y: m.y().ok()?,
+                    w: m.width().ok()?,
+                    h: m.height().ok()?,
+                },
+                primary: m.is_primary().unwrap_or(false),
+            })
+        })
+        .collect();
+    let window = focused_window();
+    let (process, title) = window.as_ref().map_or((None, None), names);
+    let on = window
+        .as_ref()
+        .and_then(|w| w.current_monitor().ok())
+        .and_then(|m| m.id().ok());
+    // The compositor named the output, but couldn't copy it.
+    #[cfg(target_os = "linux")]
+    let (on, process, title) = match wayland {
+        Some(f) => (
+            on.or_else(|| displays.iter().find(|d| f.output.as_ref() == Some(&d.name)).map(|d| d.id)),
+            f.app_id,
+            f.title,
+        ),
+        None => (on, process, title),
+    };
+    let id = pick_display(&displays, on, cursor_position()).ok_or("no displays found")?;
+    let monitor = monitors
+        .iter()
+        .find(|m| m.id().is_ok_and(|i| i == id))
+        .ok_or("that display is no longer connected")?;
+    Ok((grab_monitor(monitor, cursor)?, process, title))
+}
+
+/// Which of `displays` is the active one: `focused` (the focused window's),
+/// else the one under `pointer`, else the primary one, else the first.
+fn pick_display(displays: &[DisplayInfo], focused: Option<u32>, pointer: Option<(f64, f64)>) -> Option<u32> {
+    let focused = focused.filter(|id| displays.iter().any(|d| d.id == *id));
+    focused
+        .or_else(|| {
+            let p = pointer?;
+            displays.iter().find(|d| d.rect.contains(p)).map(|d| d.id)
+        })
+        .or_else(|| displays.iter().find(|d| d.primary).map(|d| d.id))
+        .or_else(|| displays.first().map(|d| d.id))
 }
 
 /// Builds the final screenshot for `region`, stitching together every monitor
@@ -659,6 +761,23 @@ mod tests {
         assert_eq!(out.dimensions(), (4, 2));
         assert_eq!(out.get_pixel(1, 0), &Rgba([255, 0, 0, 255]));
         assert_eq!(out.get_pixel(2, 1), &Rgba([0, 0, 255, 255]));
+    }
+
+    #[test]
+    fn active_display_is_the_focused_windows_then_the_pointers_then_the_primary() {
+        let display = |id, x, primary| DisplayInfo {
+            id,
+            name: String::new(),
+            rect: Rect { x, y: 0, w: 100, h: 100 },
+            primary,
+        };
+        let displays = [display(1, 0, false), display(2, 100, true), display(3, 200, false)];
+        assert_eq!(pick_display(&displays, Some(3), Some((150.0, 50.0))), Some(3));
+        assert_eq!(pick_display(&displays, None, Some((50.0, 50.0))), Some(1));
+        // A display that's gone, and a pointer off every display.
+        assert_eq!(pick_display(&displays, Some(9), Some((-5.0, 50.0))), Some(2));
+        assert_eq!(pick_display(&displays[..1], None, None), Some(1));
+        assert_eq!(pick_display(&[], Some(1), None), None);
     }
 
     #[test]

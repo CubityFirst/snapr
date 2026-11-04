@@ -19,7 +19,7 @@ use crate::capture::{self, DisplayInfo, WindowInfo};
 use crate::gallery::{self, Gallery};
 use crate::gpu::Gpu;
 use crate::output::{Transfer, Transfers};
-use crate::settings::{Settings, SpeedUnit, Upload};
+use crate::settings::{Settings, SpeedUnit, ToolAction, Upload};
 use crate::settings_ui::{self, Form};
 use crate::theme::{self, ACCENT};
 use crate::tools::{self, Tools};
@@ -611,6 +611,26 @@ impl MainWindow {
                     theme::compact_menu(ui);
                     if displays.is_empty() {
                         ui.weak("No displays");
+                    } else {
+                        // Its hotkey, if it has one; where the desktop picks
+                        // the keys, snapr doesn't know them.
+                        let hotkey = self
+                            .form
+                            .saved
+                            .tool_hotkeys
+                            .iter()
+                            .find(|h| h.action == ToolAction::CaptureDisplay)
+                            .map_or("", |h| h.hotkey.as_str());
+                        let active = egui::Button::new("Active display").shortcut_text(hotkey);
+                        if ui
+                            .add(active)
+                            .on_hover_text("The display the focused window is on")
+                            .clicked()
+                        {
+                            actions.push(Action::CaptureTarget(capture::Target::ActiveDisplay));
+                            ui.close();
+                        }
+                        ui.separator();
                     }
                     for (i, d) in displays.iter().enumerate() {
                         let mut label = format!("{}. {}", i + 1, d.name);

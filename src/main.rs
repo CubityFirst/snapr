@@ -237,6 +237,8 @@ struct App {
     once: bool,
     /// `--record`: that capture is a recording.
     once_record: bool,
+    /// `--monitor`: that capture is this, taken straight away.
+    once_grab: Option<capture::Target>,
     gpu: Result<Gpu, String>,
     hotkeys: Option<Hotkeys>,
     record_hotkeys: Option<Hotkeys>,
@@ -324,6 +326,13 @@ impl App {
             ToolAction::PickColor => Purpose::PickColor,
             ToolAction::ScanQr => Purpose::Scan,
             ToolAction::PinRegion => Purpose::Pin,
+            ToolAction::CaptureDisplay => {
+                // Not while the user is recording a new hotkey.
+                if !self.main_window.as_ref().is_some_and(|w| w.form.recording) {
+                    self.grab(event_loop, capture::Target::ActiveDisplay);
+                }
+                return;
+            }
         };
         self.open_session(event_loop, purpose);
     }
@@ -1410,6 +1419,10 @@ impl ApplicationHandler<UserEvent> for App {
         if cause != StartCause::Init {
             return;
         }
+        if let Some(target) = self.once_grab {
+            self.grab(event_loop, target);
+            return self.quit_if_once_done(event_loop);
+        }
         if self.once_record {
             return self.open_session(event_loop, Purpose::Record);
         }
@@ -1895,6 +1908,7 @@ USAGE: snapr [OPTIONS]
 OPTIONS:
       --once       Capture immediately with the saved settings, then exit
       --record     Pick a region to record, then exit once it's saved
+      --monitor    Capture the display the focused window is on, then exit
       --settings   Open the settings window on start
   -h, --help       Show this help
 
@@ -1961,6 +1975,7 @@ fn main() {
         std::process::exit(install::uninstall());
     }
     let (mut once, mut once_record, mut open_settings) = (false, false, false);
+    let mut once_grab = None;
     // The copy snapr was moved from, to remove (`install::relaunch`).
     #[cfg_attr(not(windows), allow(unused_mut))]
     let mut moved_from: Option<PathBuf> = None;
@@ -1972,6 +1987,8 @@ fn main() {
             "--once" => once = true,
             // `--once`, for a recording.
             "--record" => (once, once_record) = (true, true),
+            // `--once`, for the focused window's display.
+            "--monitor" => (once, once_grab) = (true, Some(capture::Target::ActiveDisplay)),
             "--settings" => open_settings = true,
             #[cfg(windows)]
             "--moved-from" if args.peek().is_some() => moved_from = args.next().map(PathBuf::from),
@@ -2179,6 +2196,7 @@ fn main() {
         settings,
         once,
         once_record,
+        once_grab,
         gpu,
         hotkeys,
         record_hotkeys,

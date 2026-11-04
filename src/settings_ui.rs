@@ -887,6 +887,30 @@ impl Form {
         remove
     }
 
+    /// The rows of the tool hotkeys that are `captures` (or aren't), and a
+    /// menu to add one for any of `add`. Returns whether one was removed.
+    fn tool_hotkey_rows(&mut self, ui: &mut egui::Ui, captures: bool, add: &[ToolAction]) -> bool {
+        let mut removed = None;
+        for i in 0..self.draft.tool_hotkeys.len() {
+            if self.draft.tool_hotkeys[i].action.is_capture() == captures && self.tool_hotkey_row(ui, i) {
+                removed = Some(i);
+            }
+        }
+        block(ui, |ui| {
+            ui.menu_button("+ Add hotkey", |ui| {
+                for &a in add {
+                    if ui.button(a.label()).clicked() {
+                        self.add_tool_hotkey(a);
+                    }
+                }
+            });
+        });
+        if let Some(i) = removed {
+            self.draft.tool_hotkeys.remove(i);
+        }
+        removed.is_some()
+    }
+
     /// The Hotkeys tab: one row per action that can have a global hotkey.
     pub fn hotkeys_ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         egui::ScrollArea::vertical()
@@ -929,7 +953,8 @@ impl Form {
                     }
                 }
 
-                group(ui, "Capture and record", |ui| {
+                let mut removed = false;
+                let r = group(ui, "Capture and record", |ui| {
                     self.hotkey_row(ui, "capture-hotkey", "Capture region",
                         "Then drag a region, or click for a whole screen", HotkeyField::Capture);
                     let note = if crate::hotkey::desktop_picks_keys() {
@@ -938,31 +963,23 @@ impl Form {
                         "Press it again to stop. Leave it empty for no hotkey"
                     };
                     self.hotkey_row(ui, "record-hotkey", "Record region", note, HotkeyField::Record);
+                    // Captures with nothing to pick, e.g. the active display.
+                    if self.tool_hotkey_rows(ui, true, &ToolAction::CAPTURES) {
+                        removed = true;
+                    }
                 });
+                found(ui, "capture-hotkeys", r);
 
                 heading(ui, "Tools", Some(&crate::locale::spell(
                     "Run a tool straight away from anywhere, e.g. pick a colour without opening snapr",
                 )));
-                let mut removed = None;
                 let r = card(ui, |ui| {
-                    for i in 0..self.draft.tool_hotkeys.len() {
-                        if self.tool_hotkey_row(ui, i) {
-                            removed = Some(i);
-                        }
+                    if self.tool_hotkey_rows(ui, false, &ToolAction::ALL) {
+                        removed = true;
                     }
-                    block(ui, |ui| {
-                        ui.menu_button("+ Add hotkey", |ui| {
-                            for a in ToolAction::ALL {
-                                if ui.button(a.label()).clicked() {
-                                    self.add_tool_hotkey(a);
-                                }
-                            }
-                        });
-                    });
                 });
                 found(ui, "tool-hotkeys", r);
-                if let Some(i) = removed {
-                    self.draft.tool_hotkeys.remove(i);
+                if removed {
                     self.recording = false;
                 }
 
