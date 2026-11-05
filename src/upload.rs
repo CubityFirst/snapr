@@ -192,7 +192,11 @@ impl S3Target {
     fn agent() -> ureq::Agent {
         ureq::Agent::config_builder()
             .http_status_as_error(false)
-            .timeout_global(Some(Duration::from_secs(120)))
+            // Only the waits are limited, not the whole request: a big part
+            // on a slow connection can take many minutes to send.
+            .timeout_connect(Some(Duration::from_secs(30)))
+            .timeout_recv_response(Some(Duration::from_secs(120)))
+            .timeout_recv_body(Some(Duration::from_secs(120)))
             .build()
             .into()
     }
