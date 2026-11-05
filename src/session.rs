@@ -857,6 +857,9 @@ impl Session {
             Action::Text(t) => self.style.text = t,
             Action::Highlighter(shape) => self.style.highlighter = shape,
             Action::HighlighterInk(ink) => self.style.highlighter_ink = ink,
+            // Mid-drag the annotation being drawn or moved is out of the
+            // list undo swaps, and goes back in where it was on release.
+            Action::Undo | Action::Redo if self.grab == Grab::Draw => {}
             Action::Undo => {
                 self.finish_typing();
                 self.canvas.iter_mut().for_each(Canvas::undo);
@@ -1290,5 +1293,53 @@ mod tests {
         assert_eq!((r.x, r.y, r.w, r.h), (40, 40, 60, 60));
         let r = region_rect((100.0, 100.0), (180.0, 130.0), false);
         assert_eq!((r.w, r.h), (80, 30));
+    }
+
+    /// Ctrl+Z mid-drag used to put the moved annotation back at an index
+    /// undo had taken away, and panic.
+    #[test]
+    fn undo_waits_for_the_drag_to_end() {
+        let rect = Rect { x: 0, y: 0, w: 100, h: 100 };
+        let mut canvas = Canvas::new(rect, RgbaImage::new(100, 100));
+        for (tool, a, b) in [(Tool::Rect, (10.0, 10.0), (30.0, 30.0)), (Tool::Clip, (5.0, 5.0), (35.0, 35.0))] {
+            canvas.begin(Annotation::new(tool, Style::default(), a).unwrap());
+            canvas.drag_to(b, false);
+            canvas.commit();
+        }
+        assert!(canvas.begin_move((20.0, 20.0), Tool::Clip));
+        let mut s = Session {
+            overlays: HashMap::new(),
+            context: Context::new(chrono::Local::now()),
+            annotate: true,
+            purpose: Purpose::Screenshot,
+            interval: None,
+            crosshair_info: CrosshairInfo::default(),
+            magnifier: MAGNIFIER_PIXELS,
+            wheel: 0.0,
+            cursor: Some((20.0, 20.0)),
+            grab: Grab::Draw,
+            pressed_at: Some((20.0, 20.0)),
+            windows: Vec::new(),
+            canvas: Some(canvas),
+            layer: None,
+            tool: Tool::Clip,
+            style: Style::default(),
+            redact_image: None,
+            modifiers: ModifiersState::CONTROL,
+            close_on_right_release: false,
+            finger: Finger::default(),
+            keys_down: HashSet::new(),
+            stale_keys: HashSet::new(),
+        };
+        s.apply(Action::Undo);
+        s.apply(Action::Undo);
+        s.on_release();
+        let canvas = s.canvas.as_mut().unwrap();
+        assert!(!canvas.can_redo());
+        // Both annotations and the move are still there to undo.
+        canvas.undo();
+        canvas.undo();
+        canvas.undo();
+        assert!(!canvas.can_undo());
     }
 }

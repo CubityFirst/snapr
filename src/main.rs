@@ -432,9 +432,7 @@ impl App {
                 return self.quit_if_once_done(event_loop);
             }
         };
-        let out = naming
-            .path_for(&ctx)
-            .with_extension(self.settings.record_format.extension());
+        let out = naming.path_with_extension(&ctx, self.settings.record_format.extension());
         static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let proxy = Mutex::new(self.proxy.clone());
@@ -588,6 +586,10 @@ impl App {
         }
         if self.main_window.as_ref().is_some_and(|w| w.form.recording) {
             return; // the user is recording a new hotkey
+        }
+        #[cfg(target_os = "linux")]
+        if self.close_toast_first(Start::Pick(purpose)) {
+            return;
         }
         let gpu = match &self.gpu {
             Ok(g) => g,
@@ -873,29 +875,27 @@ impl App {
             Ok(c) => c,
             Err(e) => return self.report_on(event_loop, e, true, Page::Naming),
         };
+        // A hotkey that can't be registered (taken by another app, no
+        // Accessibility access, no shortcuts portal) still lets the rest be
+        // saved; it's reported once they are.
+        let mut hotkey_error = None;
         if let Some(hk) = &mut self.hotkeys
             && let Err(e) = hk.set(&new.hotkey)
         {
-            return self.report_on(event_loop, e, true, Page::Hotkeys);
+            hotkey_error = Some(e);
         }
         if let Some(hk) = &mut self.record_hotkeys
             && let Err(e) = hk.set_optional(&new.record_hotkey)
         {
-            return self.report_on(
-                event_loop,
-                format!("Record hotkey: {e}"),
-                true,
-                Page::Hotkeys,
-            );
+            hotkey_error.get_or_insert(format!("Record hotkey: {e}"));
         }
+        // Also when one failed last time (it's missing), to try it again.
         if !self.once
-            && new.tool_hotkeys != self.settings.tool_hotkeys
+            && (new.tool_hotkeys != self.settings.tool_hotkeys
+                || self.tool_hotkeys.len() != self.settings.tool_hotkeys.len())
             && let Err(e) = self.set_tool_hotkeys(&new.tool_hotkeys)
         {
-            // Put the old ones back.
-            let old = self.settings.tool_hotkeys.clone();
-            let _ = self.set_tool_hotkeys(&old);
-            return self.report_on(event_loop, e, true, Page::Hotkeys);
+            hotkey_error.get_or_insert(e);
         }
         // Only on a change: another copy (e.g. with its own SNAPR_CONFIG_DIR)
         // shouldn't undo this one's.
@@ -950,7 +950,10 @@ impl App {
             w.folder = PathBuf::from(&self.settings.folder);
             w.speed_unit = self.settings.speed_unit;
         }
-        self.report(event_loop, "Settings saved".into(), false);
+        match hotkey_error {
+            Some(e) => self.report_on(event_loop, e, true, Page::Hotkeys),
+            None => self.report(event_loop, "Settings saved".into(), false),
+        }
     }
 
     /// Replaces the tools' hotkeys. Returns the first that couldn't be
@@ -974,12 +977,35 @@ impl App {
             w.window.set_visible(false);
             self.restore_main_window = true;
         }
-        self.capture_at = Some((Instant::now() + Duration::from_millis(250), start));
+        let at = Instant::now() + Duration::from_millis(250);
+        // No sooner than one already waiting (for the corner preview to go).
+        let at = self.capture_at.map_or(at, |(t, _)| t.max(at));
+        self.capture_at = Some((at, start));
+    }
+
+    /// X11 and Wayland can't keep the corner preview out of a capture, so it
+    /// closes and the capture waits until it's gone: compositors may animate
+    /// it closing (Wayfire's takes 400ms). Whether the capture waits, or
+    /// is dropped because another is already on its way.
+    #[cfg(target_os = "linux")]
+    fn close_toast_first(&mut self, start: Start) -> bool {
+        if self.capture_at.is_some() {
+            return true;
+        }
+        if self.toast.take().is_none() {
+            return false;
+        }
+        self.capture_at = Some((Instant::now() + Duration::from_millis(500), start));
+        true
     }
 
     /// Captures a window, display, everything or a known region straight
     /// away, with no overlay to pick or annotate on.
     fn grab(&mut self, event_loop: &ActiveEventLoop, target: capture::Target) {
+        #[cfg(target_os = "linux")]
+        if self.close_toast_first(Start::Grab(target)) {
+            return;
+        }
         let time = chrono::Local::now();
         match capture::grab(&target, self.settings.screenshot_cursor) {
             Ok((image, process, title)) => {
@@ -1778,7 +1804,8 @@ impl ApplicationHandler<UserEvent> for App {
                 Start::Pick(purpose) => self.open_session(event_loop, purpose),
                 Start::Grab(target) => self.grab(event_loop, target),
             }
-            if self.sessions.is_empty() {
+            // Not while it waits for the corner preview to go.
+            if self.sessions.is_empty() && self.capture_at.is_none() {
                 self.show_main_window_again();
             }
         }
@@ -2015,10 +2042,77 @@ fn single_instance(#[cfg(windows)] uploads: &[PathBuf]) -> Option<std::fs::File>
                     std::process::exit(1);
                 }
             }
+            // Without a tray, the window is the only way back to it.
+            #[cfg(unix)]
+            if show_request::send() {
+                println!("snapr is already running; showing its window");
+                std::process::exit(0);
+            }
             eprintln!("snapr is already running");
             std::process::exit(0);
         }
         Err(_) => None, // locking unsupported; run anyway
+    }
+}
+
+/// Lets a second snapr ask the running one to show its window, on Linux
+/// and macOS (Windows finds its tray window instead). The running one
+/// listens on a socket in the config folder; a connection is the request.
+#[cfg(unix)]
+mod show_request {
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::path::{Path, PathBuf};
+
+    fn path() -> Option<PathBuf> {
+        crate::settings::Settings::config_dir().map(|dir| dir.join("snapr.sock"))
+    }
+
+    /// Asks the running snapr to show its window. Whether one was listening.
+    pub fn send() -> bool {
+        path().is_some_and(|p| UnixStream::connect(p).is_ok())
+    }
+
+    /// Calls `show` for each request. Only for the snapr holding the
+    /// instance lock, which can take over a socket left by one that crashed.
+    pub fn listen(show: impl Fn() + Send + 'static) {
+        if let Some(p) = path()
+            && let Err(e) = listen_on(&p, show)
+        {
+            eprintln!("couldn't listen for another snapr starting: {e}");
+        }
+    }
+
+    fn listen_on(path: &Path, show: impl Fn() + Send + 'static) -> std::io::Result<()> {
+        let _ = std::fs::remove_file(path);
+        let listener = UnixListener::bind(path)?;
+        std::thread::Builder::new().name("show-request".into()).spawn(move || {
+            for stream in listener.incoming() {
+                if stream.is_ok() {
+                    show();
+                }
+            }
+        })?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn a_connection_asks_to_show() {
+            let dir = std::env::temp_dir().join(format!("snapr-show-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let sock = dir.join("snapr.sock");
+            // One left over from a crash is taken over.
+            std::fs::write(&sock, b"").unwrap();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let tx = std::sync::Mutex::new(tx);
+            listen_on(&sock, move || tx.lock().unwrap().send(()).unwrap()).unwrap();
+            assert!(UnixStream::connect(&sock).is_ok());
+            rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 }
 
@@ -2194,6 +2288,14 @@ fn main() {
     #[cfg(target_os = "macos")]
     macos::ask_for_screen_recording();
     let proxy = event_loop.create_proxy();
+    // As Windows does for its second snapr (`tray::signal_running_instance`).
+    #[cfg(unix)]
+    if lock.is_some() {
+        let proxy = Mutex::new(proxy.clone());
+        show_request::listen(move || {
+            let _ = proxy.lock().unwrap().send_event(UserEvent::Tray(TrayAction::Recent));
+        });
+    }
     // Under *System*, windows follow the desktop's style (see `theme::preference`).
     #[cfg(target_os = "linux")]
     {

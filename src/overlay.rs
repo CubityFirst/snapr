@@ -73,7 +73,11 @@ pub struct Overlay {
     /// The top of the screen to keep the toolbar off (the notch), in points.
     top_inset: f32,
     shot: Shot,
+    /// The monitor's top-left corner in the global space (`capture::untangle`).
     monitor_pos: PhysicalPosition<i32>,
+    /// How far `capture::untangle` moved the monitor from where winit has it
+    /// (and so this window): nothing unless mixed scales overlapped.
+    moved: (i32, i32),
     /// When the last frame was presented, for custom frame-rate pacing.
     pub last_frame: Option<Instant>,
     /// A redraw postponed to respect the frame-rate limit.
@@ -105,7 +109,12 @@ impl Overlay {
         opened: Option<Arc<Window>>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let monitor = nearest(monitors, shot.pos).ok_or("no monitors")?;
-        let pos = monitor.position();
+        // Where the monitor is among the others, as the screenshot is cut.
+        let platform = crate::capture::winit_monitors(monitors.iter().cloned());
+        let i = monitors.iter().position(|m| m == monitor).ok_or("no monitors")?;
+        let to = crate::capture::untangle(&platform)[i];
+        let pos = PhysicalPosition::new(to.x, to.y);
+        let moved = (to.x - monitor.position().x, to.y - monitor.position().y);
         let (w, h) = shot.image.dimensions();
         let window = match opened.filter(|o| o.inner_size() == PhysicalSize::new(w, h)) {
             Some(window) => window,
@@ -232,6 +241,7 @@ impl Overlay {
             top_inset,
             shot,
             monitor_pos: pos,
+            moved,
             last_frame: None,
             due: None,
             redraw_pending: false,
@@ -262,6 +272,15 @@ impl Overlay {
             .with_window_level(WindowLevel::AlwaysOnTop)
             .with_position(monitor.position())
             .with_inner_size(size);
+        // winit turns a new window's physical place and size into points by
+        // the main screen's scale; this monitor's own is the right one.
+        #[cfg(target_os = "macos")]
+        {
+            let scale = monitor.scale_factor();
+            attrs = attrs
+                .with_position(monitor.position().to_logical::<f64>(scale))
+                .with_inner_size(size.to_logical::<f64>(scale));
+        }
         // macOS borderless fullscreen switches Spaces with an animation, so we
         // just cover the monitor with a top-level window there instead. So on
         // Windows: winit marks a fullscreen window as such to the shell, and
@@ -303,7 +322,10 @@ impl Overlay {
     }
 
     fn origin(&self) -> PhysicalPosition<i32> {
-        self.window.inner_position().unwrap_or(self.monitor_pos)
+        self.window
+            .inner_position()
+            .map(|p| PhysicalPosition::new(p.x + self.moved.0, p.y + self.moved.1))
+            .unwrap_or(self.monitor_pos)
     }
 
     pub fn global_rect(&self) -> Rect {

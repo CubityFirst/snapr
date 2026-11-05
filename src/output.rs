@@ -690,13 +690,35 @@ fn copy_image(clipboard: &mut Option<arboard::Clipboard>, img: &RgbaImage) -> Re
 
 /// Opens a file with its default app.
 pub fn open(path: &Path) {
-    let result = if cfg!(windows) {
-        // `start` resolves the default app; the empty string is the window title.
-        std::process::Command::new("cmd")
-            .args(["/C", "start", ""])
-            .arg(path)
-            .spawn()
-    } else if cfg!(target_os = "macos") {
+    #[cfg(windows)]
+    let result = {
+        // Not `cmd /C start`, which would treat `&` etc. in the name (a `%t`
+        // window title, say) as command syntax.
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::UI::Shell::ShellExecuteW;
+        use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let file: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        // SAFETY: `file` is NUL-terminated and outlives the call; null
+        // pointers are allowed for the other strings and the owner window.
+        let code = unsafe {
+            ShellExecuteW(
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                file.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                SW_SHOWNORMAL,
+            )
+        } as isize;
+        // Values above 32 mean success.
+        if code > 32 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    };
+    #[cfg(not(windows))]
+    let result = if cfg!(target_os = "macos") {
         std::process::Command::new("open").arg(path).spawn()
     } else {
         std::process::Command::new("xdg-open").arg(path).spawn()

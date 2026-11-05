@@ -92,7 +92,11 @@ pub fn is_link(text: &str) -> bool {
     !t.contains(char::is_whitespace)
         && ["http://", "https://"]
             .iter()
-            .any(|p| t.len() > p.len() && t[..p.len()].eq_ignore_ascii_case(p))
+            // `get`, not slicing: the prefix length may fall inside a
+            // multibyte character.
+            .any(|p| {
+                t.len() > p.len() && t.get(..p.len()).is_some_and(|s| s.eq_ignore_ascii_case(p))
+            })
 }
 
 #[cfg(test)]
@@ -146,5 +150,13 @@ mod tests {
         assert!(!is_link("https://"));
         assert!(!is_link("hello https://example.com"));
         assert!(!is_link("WIFI:S:home;T:WPA;P:secret;;"));
+    }
+
+    #[test]
+    fn non_ascii_text_is_not_a_link() {
+        // Byte 7 and 8 fall inside multibyte characters.
+        assert!(!is_link("éééééé"));
+        assert!(!is_link("日本語のテキスト"));
+        assert!(!is_link("htt€ps://x"));
     }
 }

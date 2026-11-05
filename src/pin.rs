@@ -149,7 +149,14 @@ impl Pin {
     ) -> Result<Self, String> {
         let (w, h) = (image.width().max(1) as f64, image.height().max(1) as f64);
         let (zoom, position) = match place {
-            Place::At(p) => (1.0, Some(p)),
+            // The region is in the screenshot's space (`capture::untangle`);
+            // winit places windows in its own.
+            Place::At(p) => {
+                let region = crate::capture::Rect { x: p.x, y: p.y, w: w as u32, h: h as u32 };
+                let monitors = crate::capture::winit_monitors(event_loop.available_monitors());
+                let at = crate::capture::to_platform(&monitors, region);
+                (1.0, Some(PhysicalPosition::new(at.x, at.y)))
+            }
             Place::Center(monitor) => {
                 match monitor
                     .or_else(|| event_loop.primary_monitor())
