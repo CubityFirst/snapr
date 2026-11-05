@@ -5,19 +5,28 @@
 use std::fmt::Arguments;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use image::RgbaImage;
 
 use crate::history::{self, Remote};
 use crate::settings::{Loaded, Settings, Upload};
 use crate::upload::{Body, Progress};
+use crate::clipboard_upload::{self, Contents};
 use crate::{naming, output, policy, secrets};
 
 const HELP: &str = "snapr upload - upload files and print their links
 
 USAGE: snapr upload [OPTIONS] <FILE>...
+       snapr upload [OPTIONS] --clipboard
 
 Uploads each file to one destination from Settings and prints its link, one
 per line, in the order given. They're added to Recent, as dropped files are.
 Failures are reported on stderr, and the exit status is then 1.
+
+--clipboard uploads what's on the clipboard, after any files given: files
+copied in a file manager, an image (saved first, as a screenshot is, if
+screenshots are saved) or text (as a .txt file).
 
 Files are named by the destination's object key or file name, unless
 --name is given. A file already in a bucket under that name is left alone
@@ -32,6 +41,7 @@ OPTIONS:
                             are sent it too, though most pick their own
   -f, --force               Replace a file already in the bucket under the
                             same name (Pomf hosts never replace anything)
+  -c, --clipboard           Upload what's on the clipboard
   -l, --list                List the destinations, then exit
   -h, --help                Show this help";
 
@@ -39,7 +49,7 @@ OPTIONS:
 /// status.
 pub fn upload(mut args: impl Iterator<Item = String>) -> i32 {
     let (mut files, mut wanted, mut list) = (Vec::new(), None, false);
-    let (mut name, mut force) = (None, false);
+    let (mut name, mut force, mut clipboard) = (None, false, false);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-d" | "--destination" => match args.next() {
@@ -51,6 +61,7 @@ pub fn upload(mut args: impl Iterator<Item = String>) -> i32 {
                 None => return usage("--name needs a name to upload the file as"),
             },
             "-f" | "--force" => force = true,
+            "-c" | "--clipboard" => clipboard = true,
             "-l" | "--list" => list = true,
             "-h" | "--help" => {
                 say(format_args!("{HELP}"));
@@ -72,10 +83,28 @@ pub fn upload(mut args: impl Iterator<Item = String>) -> i32 {
         print_list(&settings);
         return 0;
     }
-    if files.is_empty() {
+    let mut items: Vec<Item> = files.into_iter().map(Item::File).collect();
+    // A clipboard that can't be read fails, as a file would, without
+    // stopping the files given.
+    let mut status = 0;
+    if clipboard {
+        // Its errors are written for snapr's window.
+        let plain = |e: String| e.trim_start_matches("upload failed: ").to_owned();
+        match clipboard_upload::read().map_err(plain) {
+            Ok(Contents::Files(paths)) => items.extend(paths.into_iter().map(Item::File)),
+            Ok(Contents::Image(image)) => items.push(Item::Image(image)),
+            Ok(Contents::Text(text)) => items.push(Item::Text(text)),
+            Err(e) if items.is_empty() => return fail(&e),
+            Err(e) => {
+                warn(format_args!("snapr upload: the clipboard: {e}"));
+                status = 1;
+            }
+        }
+    }
+    if items.is_empty() {
         return usage("no files given");
     }
-    if name.is_some() && files.len() > 1 {
+    if name.is_some() && items.len() > 1 {
         return usage("--name names one file, but more were given");
     }
     if let Some(n) = &name
@@ -109,11 +138,27 @@ pub fn upload(mut args: impl Iterator<Item = String>) -> i32 {
     };
     let target = upload.target(secret);
 
-    let mut status = 0;
-    for file in files {
-        let result = std::path::absolute(&file)
-            .map_err(|e| e.to_string())
-            .and_then(|path| send(upload, &target, &key, name.as_deref(), force, &path));
+    for item in items {
+        let name = name.as_deref();
+        let (what, result) = match item {
+            Item::File(file) => {
+                let result = std::path::absolute(&file)
+                    .map_err(|e| e.to_string())
+                    .and_then(|path| send(upload, &target, &key, name, force, &path));
+                (file.display().to_string(), result)
+            }
+            Item::Image(image) => {
+                let result = send_image(&settings, upload, &target, &key, name, force, &image);
+                ("the clipboard's image".into(), result)
+            }
+            Item::Text(text) => {
+                let mut ctx = naming::Context::new(chrono::Local::now());
+                ctx.title = Some(clipboard_upload::TEXT_TITLE.into());
+                let object = object_key(&key, name, "txt", &ctx);
+                let body = Body::Bytes(Arc::new(text.into_bytes()));
+                ("the clipboard's text".into(), put(upload, &target, &object, &body, "txt", force))
+            }
+        };
         match result {
             Ok(url) => say(format_args!("{url}")),
             Err(e) => {
@@ -122,12 +167,84 @@ pub fn upload(mut args: impl Iterator<Item = String>) -> i32 {
                 } else {
                     ""
                 };
-                warn(format_args!("snapr upload: {}: {e}{hint}", file.display()));
+                warn(format_args!("snapr upload: {what}: {e}{hint}"));
                 status = 1;
             }
         }
     }
     status
+}
+
+/// Something to upload: a file, or what was on the clipboard.
+enum Item {
+    File(PathBuf),
+    Image(RgbaImage),
+    Text(String),
+}
+
+/// Uploads an image from the clipboard: saved first as a screenshot would
+/// be, if they are, and then sent as that file; else sent as a PNG with
+/// nothing kept.
+fn send_image(
+    settings: &Settings,
+    upload: &Upload,
+    target: &crate::upload::Target,
+    key: &naming::Template,
+    name: Option<&str>,
+    force: bool,
+    image: &RgbaImage,
+) -> Result<String, String> {
+    let mut ctx = naming::Context::new(chrono::Local::now());
+    (ctx.width, ctx.height) = image.dimensions();
+    if settings.save_to_folder {
+        let naming = settings.naming()?;
+        if naming.uses_counter() {
+            ctx.counter = output::next_counter();
+        }
+        let path = naming.path_for(&ctx);
+        let saved = path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .map_err(|e| e.to_string())
+            .and_then(|()| image.save(&path).map_err(|e| e.to_string()));
+        if let Err(e) = saved {
+            return Err(format!("couldn't save {}: {e}", path.display()));
+        }
+        return send(upload, target, key, name, force, &path);
+    }
+    let mut png = Vec::new();
+    image
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .map_err(|e| format!("couldn't encode it: {e}"))?;
+    let object = object_key(key, name, "png", &ctx);
+    put(upload, target, &object, &Body::Bytes(Arc::new(png)), "png", force)
+}
+
+/// Sends `body` as `object`; returns its link.
+fn put(
+    upload: &Upload,
+    target: &crate::upload::Target,
+    object: &str,
+    body: &Body,
+    ext: &str,
+    force: bool,
+) -> Result<String, String> {
+    upload.put(target, object, body, output::content_type(ext), force, &Progress::default())
+}
+
+/// The object key: `name` (checked before anything was sent), or else
+/// rendered from the destination's key template.
+fn object_key(key: &naming::Template, name: Option<&str>, ext: &str, ctx: &naming::Context) -> String {
+    match name {
+        Some(n) => object_name(n, ext).expect("a name"),
+        None => {
+            let mut ctx = ctx.clone();
+            if key.uses_counter() && ctx.counter == 0 {
+                ctx.counter = output::next_counter();
+            }
+            key.render_key(&ctx, ext)
+        }
+    }
 }
 
 /// Uploads one file, as `name` or else named as a dropped file would be,
@@ -148,30 +265,13 @@ fn send(
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let object = match name {
-        // Checked before anything was sent.
-        Some(n) => object_name(n, &ext).expect("a name"),
-        None => {
-            let mut ctx = naming::Context::new(chrono::Local::now());
-            ctx.title = path.file_stem().map(|s| s.to_string_lossy().into_owned());
-            if let Ok((w, h)) = image::image_dimensions(path) {
-                (ctx.width, ctx.height) = (w, h);
-            }
-            if key.uses_counter() {
-                ctx.counter = output::next_counter();
-            }
-            key.render_key(&ctx, &ext)
-        }
-    };
-    let body = Body::File(path.to_owned());
-    let url = upload.put(
-        target,
-        &object,
-        &body,
-        output::content_type(&ext),
-        force,
-        &Progress::default(),
-    )?;
+    let mut ctx = naming::Context::new(chrono::Local::now());
+    ctx.title = path.file_stem().map(|s| s.to_string_lossy().into_owned());
+    if let Ok((w, h)) = image::image_dimensions(path) {
+        (ctx.width, ctx.height) = (w, h);
+    }
+    let object = object_key(key, name, &ext, &ctx);
+    let url = put(upload, target, &object, &Body::File(path.to_owned()), &ext, force)?;
     history::add(path);
     let remote = upload.deletable().then(|| Remote {
         upload_id: upload.id.clone(),

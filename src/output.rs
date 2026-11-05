@@ -94,10 +94,23 @@ pub fn percent_done(transfers: &[Arc<Transfer>]) -> Option<u8> {
     Some((sent * 100).checked_div(total).unwrap_or(0) as u8)
 }
 
+/// What's done with an image handed to `Output`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Save {
+    /// A screenshot: saved, copied and uploaded as the settings say.
+    Capture,
+    /// Only copied to the clipboard.
+    Copy,
+    /// Uploaded (and saved, if screenshots are), but not copied: it came
+    /// from the clipboard.
+    Upload,
+}
+
+/// What a file uploaded with nothing saved is called in the uploads panel.
+const UNSAVED: &str = "Screenshot";
+
 enum Job {
-    /// The image, naming context, and whether this is a normal capture
-    /// (`false`: only copy it to the clipboard).
-    Save(RgbaImage, Context, bool),
+    Save(RgbaImage, Context, Save),
     Configure(Box<Config>),
     /// Copy an existing screenshot file to the clipboard.
     CopyFile(PathBuf),
@@ -105,6 +118,9 @@ enum Job {
     UploadFile(PathBuf, Context),
     CopyImage(RgbaImage),
     CopyText(String),
+    /// Upload this, with this extension, without saving it; its link is
+    /// copied whatever the settings say, as there's no file to keep it.
+    UploadBytes(Vec<u8>, &'static str, Context),
     /// An upload thread finished.
     Uploaded {
         path: Option<PathBuf>,
@@ -148,9 +164,15 @@ impl Output {
             let mut next_batch = 0u64;
             for job in rx {
                 match job {
-                    Job::Save(img, mut ctx, capture) => {
+                    Job::Save(img, mut ctx, how) => {
+                        if how == Save::Upload && config.uploads.is_empty() {
+                            notify(Event::Failed(NO_DESTINATIONS.into()));
+                            continue;
+                        }
                         (ctx.width, ctx.height) = img.dimensions();
                         let mut path = None;
+                        // Saved and uploaded, not only copied.
+                        let capture = how != Save::Copy;
                         let uploading = capture && !config.uploads.is_empty();
                         if capture && config.save_to_folder {
                             if config.naming.uses_counter() {
@@ -167,7 +189,7 @@ impl Output {
                                 Err(e) => notify(Event::Failed(e)),
                             }
                         }
-                        if config.copy_image || !capture {
+                        if (config.copy_image && how == Save::Capture) || how == Save::Copy {
                             match copy_image(&mut clipboard, &img) {
                                 Ok(()) if !capture => notify(Event::Copied),
                                 Ok(()) => {}
@@ -193,12 +215,17 @@ impl Output {
                                 *pending.entry(p.clone()).or_default() += config.uploads.len();
                             }
                             next_batch += 1;
-                            batches.insert(next_batch, Batch::new(&config));
+                            let mut batch = Batch::new(&config);
+                            // From the clipboard, with no file to keep the
+                            // link: copy it, as for text.
+                            batch.copy_link |= how == Save::Upload && path.is_none();
+                            batches.insert(next_batch, batch);
                             in_flight += upload_all(
                                 &config.uploads,
                                 &mut ctx,
                                 Body::Bytes(Arc::new(png)),
                                 "png",
+                                UNSAVED,
                                 path,
                                 (next_batch, &uploads_tx),
                                 &in_progress,
@@ -206,12 +233,35 @@ impl Output {
                             notify(Event::UploadsStarted);
                         }
                     }
+                    Job::UploadBytes(bytes, ext, mut ctx) => {
+                        if config.uploads.is_empty() {
+                            notify(Event::Failed(NO_DESTINATIONS.into()));
+                            continue;
+                        }
+                        let title = ctx.title.clone().unwrap_or_else(|| UNSAVED.into());
+                        next_batch += 1;
+                        batches.insert(
+                            next_batch,
+                            Batch {
+                                copy_link: true,
+                                ..Batch::new(&config)
+                            },
+                        );
+                        in_flight += upload_all(
+                            &config.uploads,
+                            &mut ctx,
+                            Body::Bytes(Arc::new(bytes)),
+                            ext,
+                            &title,
+                            None,
+                            (next_batch, &uploads_tx),
+                            &in_progress,
+                        );
+                        notify(Event::UploadsStarted);
+                    }
                     Job::UploadFile(file, mut ctx) => {
                         if config.uploads.is_empty() {
-                            notify(Event::Failed(
-                                "upload failed: no upload destinations are set up and enabled"
-                                    .into(),
-                            ));
+                            notify(Event::Failed(NO_DESTINATIONS.into()));
                             notify(Event::UploadsFinished(file));
                             continue;
                         }
@@ -236,6 +286,7 @@ impl Output {
                             &mut ctx,
                             body,
                             &ext,
+                            UNSAVED,
                             Some(file),
                             (next_batch, &uploads_tx),
                             &in_progress,
@@ -253,6 +304,7 @@ impl Output {
                         in_flight -= 1;
                         let b = batches.entry(batch).or_insert_with(|| Batch::new(&config));
                         b.left = b.left.saturating_sub(1);
+                        let copy_link = b.copy_link;
                         let link = match result {
                             Ok(url) => {
                                 notify(Event::Uploaded {
@@ -274,7 +326,7 @@ impl Output {
                             batches.remove(&batch);
                         }
                         if let Some((name, url, remote)) = link {
-                            let copied = config.copy_link
+                            let copied = copy_link
                                 && copy_text(&mut clipboard, &url)
                                     .map_err(|e| notify(Event::Failed(e)))
                                     .is_ok();
@@ -347,8 +399,22 @@ impl Output {
         self.transfers.clone()
     }
 
+    /// A screenshot (`capture`), or else an image only to copy.
     pub fn submit(&self, img: RgbaImage, ctx: Context, capture: bool) {
-        let _ = self.tx.send(Job::Save(img, ctx, capture));
+        let how = if capture { Save::Capture } else { Save::Copy };
+        let _ = self.tx.send(Job::Save(img, ctx, how));
+    }
+
+    /// Uploads an image from the clipboard, saved first as a screenshot
+    /// would be, but not copied back.
+    pub fn upload_image(&self, img: RgbaImage, ctx: Context) {
+        let _ = self.tx.send(Job::Save(img, ctx, Save::Upload));
+    }
+
+    /// Uploads text as a `.txt` file, without saving it (`ctx.title` names
+    /// it in the uploads panel), and copies its link.
+    pub fn upload_text(&self, text: String, ctx: Context) {
+        let _ = self.tx.send(Job::UploadBytes(text.into_bytes(), "txt", ctx));
     }
 
     pub fn copy_file(&self, path: PathBuf) {
@@ -380,21 +446,26 @@ impl Output {
     }
 }
 
+const NO_DESTINATIONS: &str = "upload failed: no upload destinations are set up and enabled";
+
 /// Uploads `body` to each destination on threads of its own, listed in
-/// `transfers` while they run, reporting back with `Job::Uploaded`. Returns
-/// how many uploads were started.
+/// `transfers` while they run (as `path`'s file name, or else `unsaved`),
+/// reporting back with `Job::Uploaded`. Returns how many uploads were
+/// started.
+#[allow(clippy::too_many_arguments)]
 fn upload_all(
     uploads: &[UploadTarget],
     ctx: &mut Context,
     body: Body,
     ext: &str,
+    unsaved: &str,
     path: Option<PathBuf>,
     (batch, tx): (u64, &Sender<Job>),
     transfers: &Transfers,
 ) -> usize {
     let file = match &path {
         Some(p) => p.file_name().unwrap_or_default().to_string_lossy().into_owned(),
-        None => format!("Screenshot.{ext}"),
+        None => format!("{unsaved}.{ext}"),
     };
     let content_type = content_type(ext);
     for u in uploads {
@@ -453,6 +524,8 @@ struct Batch {
     done: bool,
     /// Uploads still running.
     left: usize,
+    /// Copy the link once it's given.
+    copy_link: bool,
 }
 
 impl Batch {
@@ -465,6 +538,7 @@ impl Batch {
                 .any(|u| u.upload.id == *chosen)
                 .then(|| chosen.clone()),
             left: config.uploads.len(),
+            copy_link: config.copy_link,
             ..Self::default()
         }
     }
