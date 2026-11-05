@@ -97,4 +97,7 @@ certificate kept in the `MACOS_SIGNING_P12` and
 updates; replacing that certificate resets them for everyone. It refuses a tag that doesn't
 match `Cargo.toml`'s version (such a build would keep offering itself as an
 update). A tag with a hyphen, e.g. `v0.2.0-rc.1`, is published as a
-pre-release.
+pre-release. Before it builds anything it runs the *CI* workflow
+(`.github/workflows/ci.yml`), the tests and clippy on Windows, macOS and
+Linux, which pull requests and pushes to `main` run too; a release won't
+go out while they fail.
