@@ -461,13 +461,54 @@ fn labelled(
     response
 }
 
+/// Notes whether the pointer is a finger or the mouse, from this frame's
+/// input, for [`compact_menu`]. egui-winit reports a finger as touch events
+/// alongside the pointer events it plays it as, so pointer events with no
+/// touch among them are the mouse's. Call it every frame.
+pub fn track_touch(ctx: &egui::Context) {
+    let touch = ctx.input(|i| {
+        let mut touch = None;
+        for event in &i.events {
+            match event {
+                egui::Event::Touch { .. } => return Some(true),
+                egui::Event::PointerMoved(_) | egui::Event::PointerButton { .. } => {
+                    touch = Some(false);
+                }
+                _ => {}
+            }
+        }
+        touch
+    });
+    if let Some(touch) = touch {
+        ctx.data_mut(|d| d.insert_temp(touch_id(), touch));
+    }
+}
+
+/// Whether the pointer was last a finger, as [`track_touch`] saw it.
+pub fn touching(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp(touch_id())).unwrap_or(false)
+}
+
+fn touch_id() -> egui::Id {
+    egui::Id::new("snapr-touch")
+}
+
 /// Tightens a context menu's items: the window-wide spacing is sized for
-/// controls, which leaves a list of menu entries looking sparse.
+/// controls, which leaves a list of menu entries looking sparse. Opened by a
+/// finger, the items are spaced for one instead, tall enough and far enough
+/// apart to press the one meant.
 pub fn compact_menu(ui: &mut Ui) {
+    let touch = touching(ui.ctx());
     let spacing = ui.spacing_mut();
-    spacing.item_spacing.y = 1.0;
-    spacing.button_padding = vec2(10.0, 3.0);
-    spacing.interact_size.y = 24.0;
+    if touch {
+        spacing.item_spacing.y = 4.0;
+        spacing.button_padding = vec2(12.0, 9.0);
+        spacing.interact_size.y = 36.0;
+    } else {
+        spacing.item_spacing.y = 1.0;
+        spacing.button_padding = vec2(10.0, 3.0);
+        spacing.interact_size.y = 24.0;
+    }
 }
 
 /// A row of options where one is picked, in a sunken track with the picked
@@ -531,4 +572,50 @@ pub fn slider(ui: &mut Ui, slider: egui::Slider<'_>, widest: &str) -> Response {
         ui.add(slider)
     })
     .inner
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Runs a frame with these events, tracking the pointer as the main
+    /// window does, and says whether a menu would be spaced for a finger.
+    fn frame(ctx: &egui::Context, events: Vec<egui::Event>) -> bool {
+        let input = egui::RawInput {
+            events,
+            ..Default::default()
+        };
+        ctx.run_ui(input, |ui| track_touch(ui.ctx()))
+            .textures_delta
+            .clear();
+        touching(ctx)
+    }
+
+    #[test]
+    fn menus_space_out_for_a_finger_until_the_mouse_moves() {
+        let ctx = egui::Context::default();
+        let at = pos2(10.0, 10.0);
+        assert!(!frame(&ctx, vec![]));
+        // A tap: the touch, and the pointer events egui-winit plays it as.
+        let tap = vec![
+            egui::Event::Touch {
+                device_id: egui::TouchDeviceId(1),
+                id: egui::TouchId(1),
+                phase: egui::TouchPhase::End,
+                pos: at,
+                force: None,
+            },
+            egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerGone,
+        ];
+        assert!(frame(&ctx, tap));
+        // Frames with nothing in them (the menu open) keep it.
+        assert!(frame(&ctx, vec![]));
+        assert!(!frame(&ctx, vec![egui::Event::PointerMoved(at)]));
+    }
 }
