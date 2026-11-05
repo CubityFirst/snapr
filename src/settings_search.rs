@@ -105,7 +105,7 @@ static INDEX: LazyLock<Vec<Entry>> = LazyLock::new(|| {
     add(Hotkeys, "capture-hotkey", "Capture region hotkey", "shortcut keyboard key combination screenshot");
     add(Hotkeys, "record-hotkey", "Record region hotkey", "shortcut keyboard key combination video recording");
     add(Hotkeys, "capture-hotkeys", "Capture active display hotkey", "shortcut keyboard key combination screenshot monitor screen focused window fullscreen");
-    add(Hotkeys, "tool-hotkeys", "Tool hotkeys", "shortcut keyboard colour color picker qr code pin tools");
+    add(Hotkeys, "tool-hotkeys", "Tool hotkeys", "shortcut keyboard colour color picker qr code pin tools upload clipboard paste");
 
     // Paths & naming
     add(Naming, "folder", "Save folder", "directory location path where screenshots are saved");

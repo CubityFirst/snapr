@@ -12,6 +12,7 @@ mod capture;
 mod cli;
 #[cfg(target_os = "linux")]
 mod clipboard_holder;
+mod clipboard_upload;
 mod color_names;
 mod combine;
 mod cursor;
@@ -330,13 +331,12 @@ impl App {
             ToolAction::PickColor => Purpose::PickColor,
             ToolAction::ScanQr => Purpose::Scan,
             ToolAction::PinRegion => Purpose::Pin,
+            // Not while the user is recording a new hotkey.
+            _ if self.main_window.as_ref().is_some_and(|w| w.form.recording) => return,
             ToolAction::CaptureDisplay => {
-                // Not while the user is recording a new hotkey.
-                if !self.main_window.as_ref().is_some_and(|w| w.form.recording) {
-                    self.grab(event_loop, capture::Target::ActiveDisplay);
-                }
-                return;
+                return self.grab(event_loop, capture::Target::ActiveDisplay);
             }
+            ToolAction::UploadClipboard => return self.upload_clipboard(event_loop),
         };
         self.open_session(event_loop, purpose);
     }
@@ -1181,6 +1181,40 @@ impl App {
             }
             self.output.upload_file(path, ctx);
         }
+    }
+
+    /// Uploads what's on the clipboard to the enabled destinations: copied
+    /// files as they are, an image as a screenshot (saved first, if they
+    /// are), or text as a `.txt` file.
+    fn upload_clipboard(&mut self, event_loop: &ActiveEventLoop) {
+        if policy::uploads_disabled() {
+            return self.report_on(event_loop, policy::UPLOADS_OFF.into(), true, Page::Destinations);
+        }
+        if !self.settings.uploads.iter().any(|u| u.enabled) {
+            return self.report_on(
+                event_loop,
+                "upload failed: no upload destinations are set up and enabled".into(),
+                true,
+                Page::Destinations,
+            );
+        }
+        let contents = match clipboard_upload::read() {
+            Ok(c) => c,
+            Err(e) => return self.report_on(event_loop, e, true, Page::Destinations),
+        };
+        let ctx = naming::Context::new(chrono::Local::now());
+        match contents {
+            clipboard_upload::Contents::Files(paths) => return self.upload_files(event_loop, paths),
+            clipboard_upload::Contents::Image(image) => self.output.upload_image(image, ctx),
+            clipboard_upload::Contents::Text(text) => {
+                let ctx = naming::Context {
+                    title: Some(clipboard_upload::TEXT_TITLE.into()),
+                    ..ctx
+                };
+                self.output.upload_text(text, ctx);
+            }
+        }
+        self.set_status("Uploading the clipboard\u{2026}".into());
     }
 
     /// Deletes an uploaded copy of a screenshot from its bucket.

@@ -299,14 +299,17 @@ pub enum ToolAction {
     PinRegion,
     /// Screenshot the display the focused window is on.
     CaptureDisplay,
+    /// Upload what's on the clipboard: copied files, an image or text.
+    UploadClipboard,
 }
 
 impl ToolAction {
     /// The tools (the tray's Tools menu, the Tools hotkeys).
-    pub const ALL: [ToolAction; 3] = [
+    pub const ALL: [ToolAction; 4] = [
         ToolAction::PickColor,
         ToolAction::ScanQr,
         ToolAction::PinRegion,
+        ToolAction::UploadClipboard,
     ];
 
     /// The captures that can have a hotkey besides region and record.
@@ -323,6 +326,7 @@ impl ToolAction {
             ToolAction::ScanQr => "scan-qr",
             ToolAction::PinRegion => "pin-region",
             ToolAction::CaptureDisplay => "capture-display",
+            ToolAction::UploadClipboard => "upload-clipboard",
         }
     }
 
@@ -332,6 +336,7 @@ impl ToolAction {
             ToolAction::ScanQr => "Read a QR code",
             ToolAction::PinRegion => "Pin a region to the screen",
             ToolAction::CaptureDisplay => "Capture active display",
+            ToolAction::UploadClipboard => "Upload the clipboard",
         }
     }
 }
@@ -376,6 +381,7 @@ impl TrayClick {
             TrayClick::Tool(ToolAction::ScanQr) => "Reads a QR code",
             TrayClick::Tool(ToolAction::PinRegion) => "Pins a region to the screen",
             TrayClick::Tool(ToolAction::CaptureDisplay) => "Captures the active display",
+            TrayClick::Tool(ToolAction::UploadClipboard) => "Uploads the clipboard",
         }
     }
 }

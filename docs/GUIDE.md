@@ -63,6 +63,12 @@ or *Display*, *Fullscreen*, or *Record region…*.
   to preview, double-click to open, right-click for the same actions, or drag
   one out into another app. Files dropped on the window are uploaded. Saved
   screenshots are remembered in `history.txt` next to the settings.
+- **Upload the clipboard** (in the tray's *Tools* menu, or give it a hotkey
+  under *Settings → Hotkeys → Tool hotkeys*) uploads what's on the clipboard
+  to the ticked destinations: files copied in a file manager as they are, an
+  image as a screenshot (saved first, if screenshots are saved, and shown in
+  Recent), or text as a `.txt` file. With nothing saved to keep the link in
+  Recent, the link is copied even if *Copy the link to the clipboard* is off.
 - **Combine images** on the Recent page: drag one screenshot onto another and
   drop it on *Horizontal* or *Vertical*, or Ctrl-click several (they're
   numbered and combined in the order you click them; Shift-click picks every
@@ -341,6 +347,7 @@ snapr upload shot.png log.txt         # upload files, print a link for each
 snapr upload -d "My R2" shot.png      # to a particular destination (--destination)
 snapr upload -n docs/latest shot.png  # as docs/latest.png rather than by the key template (--name)
 snapr upload -n docs/latest -f shot.png  # ...replacing the one already there (--force)
+snapr upload --clipboard              # what's on the clipboard: copied files, an image or text (-c)
 snapr upload --list                   # the destinations, and which is the default (-l)
 ```
 
@@ -356,7 +363,9 @@ bucket under the same name is left alone and reported as an error, unless
 `-f` says to replace it (Pomf hosts never replace anything). Links go to stdout, one per line in the order given; errors go to
 stderr, and the exit status is 1 if any file failed (2 for a mistake in the
 command). Files are added to Recent, as dropped
-files are. It works while snapr is running in the tray. On Windows snapr is a
+files are. `-c` uploads the clipboard, after any files given, as *Upload the
+clipboard* does: an image is saved first if screenshots are saved, and text
+goes as a `.txt` file. It works while snapr is running in the tray. On Windows snapr is a
 windowed app, which PowerShell doesn't wait for unless its output is piped:
 use `snapr upload shot.png | Out-String` there (Git Bash and cmd scripts
 that capture the output wait anyway).

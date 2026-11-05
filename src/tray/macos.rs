@@ -69,6 +69,11 @@ define_class!(
             (self.ivars().callback)(TrayAction::Tool(ToolAction::PinRegion));
         }
 
+        #[unsafe(method(uploadClipboard:))]
+        fn upload_clipboard(&self, _sender: Option<&AnyObject>) {
+            (self.ivars().callback)(TrayAction::Tool(ToolAction::UploadClipboard));
+        }
+
         #[unsafe(method(recent:))]
         fn recent(&self, _sender: Option<&AnyObject>) {
             (self.ivars().callback)(TrayAction::Recent);
@@ -149,6 +154,7 @@ impl Tray {
                 ToolAction::PickColor => sel!(pickColor:),
                 ToolAction::ScanQr => sel!(scanQr:),
                 ToolAction::PinRegion => sel!(pinRegion:),
+                ToolAction::UploadClipboard => sel!(uploadClipboard:),
                 // Not a tool: not in `ALL`.
                 ToolAction::CaptureDisplay => continue,
             };
