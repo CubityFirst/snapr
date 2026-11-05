@@ -4,11 +4,13 @@
 use ksni::blocking::{Handle, TrayMethods};
 use ksni::menu::{MenuItem, StandardItem, SubMenu};
 
-use super::{Callback, TrayAction, capture_label};
+use super::{Callback, TrayAction, capture_label, record_label};
 use crate::settings::{ToolAction, TrayClick, TrayIconStyle};
 
 struct Sni {
     capture_label: String,
+    /// A recording is in progress, so the Record item stops it.
+    recording: bool,
     callback: Callback,
     /// How far the uploads have got, while there are any.
     progress: Option<super::Progress>,
@@ -53,6 +55,7 @@ impl ksni::Tray for Sni {
         };
         vec![
             item(self.capture_label.clone(), TrayAction::Capture),
+            item(record_label(self.recording).into(), TrayAction::Record),
             SubMenu {
                 label: "Tools".into(),
                 submenu: ToolAction::ALL
@@ -79,6 +82,7 @@ impl Tray {
     pub fn new(hotkey: Option<&str>, callback: Callback) -> Result<Self, String> {
         let sni = Sni {
             capture_label: capture_label(hotkey),
+            recording: false,
             callback,
             progress: None,
             color: super::color(TrayIconStyle::default()),
@@ -90,6 +94,11 @@ impl Tray {
     pub fn set_hotkey(&self, hotkey: Option<&str>) {
         let label = capture_label(hotkey);
         self.handle.update(|t| t.capture_label = label);
+    }
+
+    /// Whether a recording is in progress, for the Record item's label.
+    pub fn set_recording(&self, recording: bool) {
+        self.handle.update(|t| t.recording = recording);
     }
 
     /// A left-click always sends `TrayAction::Click` here: the menu is only

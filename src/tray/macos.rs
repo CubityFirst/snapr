@@ -13,7 +13,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{NSData, NSSize, NSString};
 
-use super::{Callback, TrayAction, capture_label};
+use super::{Callback, TrayAction, capture_label, record_label};
 use crate::settings::{ToolAction, TrayClick, TrayIconStyle};
 
 struct Ivars {
@@ -52,6 +52,11 @@ define_class!(
         #[unsafe(method(capture:))]
         fn capture(&self, _sender: Option<&AnyObject>) {
             (self.ivars().callback)(TrayAction::Capture);
+        }
+
+        #[unsafe(method(record:))]
+        fn record(&self, _sender: Option<&AnyObject>) {
+            (self.ivars().callback)(TrayAction::Record);
         }
 
         #[unsafe(method(pickColor:))]
@@ -124,6 +129,7 @@ impl Target {
 pub struct Tray {
     status_item: Retained<NSStatusItem>,
     capture_item: Retained<NSMenuItem>,
+    record_item: Retained<NSMenuItem>,
     menu: Retained<NSMenu>,
     _target: Retained<Target>,
 }
@@ -148,6 +154,7 @@ impl Tray {
         };
         let add = |title: &str, action: Sel| add_to(&menu, title, Some(action));
         let capture_item = add(&capture_label(hotkey), sel!(capture:));
+        let record_item = add(record_label(false), sel!(record:));
         let tools = NSMenu::new(mtm);
         for tool in ToolAction::ALL {
             let action = match tool {
@@ -190,6 +197,7 @@ impl Tray {
         let tray = Self {
             status_item,
             capture_item,
+            record_item,
             menu,
             _target: target,
         };
@@ -208,6 +216,12 @@ impl Tray {
     pub fn set_hotkey(&self, hotkey: Option<&str>) {
         self.capture_item
             .setTitle(&NSString::from_str(&capture_label(hotkey)));
+    }
+
+    /// Whether a recording is in progress, for the Record item's label.
+    pub fn set_recording(&self, recording: bool) {
+        self.record_item
+            .setTitle(&NSString::from_str(record_label(recording)));
     }
 
     /// macOS tints the icon to suit the menu bar, whatever the style.
