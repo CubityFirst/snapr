@@ -407,13 +407,18 @@ impl Naming {
     }
 
     /// An example path for the settings window. Uses a fixed seed so the
-    /// random part doesn't change on every repaint.
+    /// random part doesn't change on every repaint; the shared generator
+    /// goes back to how it was after, so later draws (say, the noise the
+    /// Secure pixelation adds) aren't predictable.
     pub fn preview(&self, ctx: &Context) -> PathBuf {
+        let saved = fastrand::get_seed();
         fastrand::seed(0x5eed);
-        self.candidate(ctx, None)
+        let path = self.candidate(ctx, None, "png");
+        fastrand::seed(saved);
+        path
     }
 
-    fn candidate(&self, ctx: &Context, suffix: Option<u32>) -> PathBuf {
+    fn candidate(&self, ctx: &Context, suffix: Option<u32>, ext: &str) -> PathBuf {
         let mut path = self.dir.clone();
         path.extend(components(&self.subdir.render(ctx)));
         let name = self.name.render(ctx);
@@ -424,20 +429,26 @@ impl Naming {
         if let Some(n) = suffix {
             let _ = write!(name, "-{n}");
         }
-        path.join(name + ".png")
+        path.join(format!("{name}.{ext}"))
     }
 
     /// Picks a path for a new screenshot that doesn't overwrite an existing one.
     pub fn path_for(&self, ctx: &Context) -> PathBuf {
+        self.path_with_extension(ctx, "png")
+    }
+
+    /// Picks a path ending `.{ext}` (say, a recording's `mp4`) that doesn't
+    /// overwrite an existing file.
+    pub fn path_with_extension(&self, ctx: &Context, ext: &str) -> PathBuf {
         let retries = if self.name.has_random() { 16 } else { 1 };
         for _ in 0..retries {
-            let path = self.candidate(ctx, None);
+            let path = self.candidate(ctx, None, ext);
             if !path.exists() {
                 return path;
             }
         }
         (2..)
-            .map(|n| self.candidate(ctx, Some(n)))
+            .map(|n| self.candidate(ctx, Some(n), ext))
             .find(|p| !Path::exists(p))
             .expect("ran out of suffixes")
     }
@@ -469,7 +480,7 @@ mod tests {
 
     fn render(name: &str) -> String {
         naming("", name)
-            .candidate(&ctx(), None)
+            .candidate(&ctx(), None, "png")
             .file_stem()
             .unwrap()
             .to_str()
@@ -511,7 +522,7 @@ mod tests {
 
     #[test]
     fn folders_from_process_and_date() {
-        let p = naming("%pn/%y/%mo", "%h-%mi-%s").candidate(&ctx(), None);
+        let p = naming("%pn/%y/%mo", "%h-%mi-%s").candidate(&ctx(), None, "png");
         assert_eq!(p, Path::new("base/my_app/2026/10/14-30-05.png"));
     }
 
@@ -519,7 +530,7 @@ mod tests {
     fn values_cannot_escape_base_dir() {
         let mut c = ctx();
         c.process = Some("../../etc".into());
-        let p = naming("../%pn", "x").candidate(&c, None);
+        let p = naming("../%pn", "x").candidate(&c, None, "png");
         assert_eq!(p, Path::new("base/.._.._etc/x.png"));
     }
 
@@ -532,6 +543,31 @@ mod tests {
             "screenshot.png"
         );
         assert_eq!(t.render_key(&ctx(), ""), "2026-10/my_app/14-30-05");
+    }
+
+    #[test]
+    fn recordings_dont_overwrite_recordings() {
+        let dir = std::env::temp_dir().join(format!("snapr-naming-{}", fastrand::u64(..)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let n = Naming {
+            dir: dir.clone(),
+            ..naming("", "clip")
+        };
+        std::fs::write(dir.join("clip.mp4"), "").unwrap();
+        let path = n.path_with_extension(&ctx(), "mp4");
+        assert_eq!(path, dir.join("clip-2.mp4"));
+        assert_eq!(n.path_for(&ctx()), dir.join("clip.png"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn preview_leaves_the_shared_rng_alone() {
+        fastrand::seed(42);
+        let before = fastrand::get_seed();
+        let n = naming("", "%rna{8}");
+        let a = n.preview(&ctx());
+        assert_eq!(fastrand::get_seed(), before);
+        assert_eq!(n.preview(&ctx()), a, "the same every repaint");
     }
 
     #[test]

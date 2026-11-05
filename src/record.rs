@@ -276,24 +276,16 @@ impl Recording {
                     }
                     None => Ok(()),
                 });
-                let discard = |encoder: Box<dyn Encoder>| {
+                if thread_flags.abort.load(Ordering::Relaxed) {
                     drop(encoder);
                     let _ = std::fs::remove_file(&out);
-                };
-                if thread_flags.abort.load(Ordering::Relaxed) {
-                    discard(encoder);
                     return done(Ok(None));
                 }
-                if let Err(e) = result {
-                    discard(encoder);
-                    return done(Err(e));
-                }
-                match encoder.finish() {
+                // The first frame went in once it's live.
+                let wrote_frames = thread_flags.live.load(Ordering::Relaxed);
+                match finish_file(encoder, &out, result, wrote_frames) {
                     Ok(w) => warning = w.or(warning),
-                    Err(e) => {
-                        let _ = std::fs::remove_file(&out);
-                        return done(Err(e));
-                    }
+                    Err(e) => return done(Err(e)),
                 }
                 crate::thumbnail::save_poster(&out, &first_frame);
                 done(Ok(Some(Recorded {
@@ -412,10 +404,61 @@ fn xcap_area_for(rect: Rect) -> Result<Area, String> {
                 w: m.width().ok()?,
                 h: m.height().ok()?,
             };
-            Some((Screen::Xcap(m), bounds))
+            // macOS gives monitors in points. The selection is in the pixels
+            // `capture::capture_all` puts monitors in (each at its point
+            // position times its own scale, then untangled below), as are
+            // the recorder's frames.
+            #[cfg(target_os = "macos")]
+            let (bounds, scale) = {
+                let s = m.scale_factor().ok()?;
+                (in_pixels(bounds, s), s as f64)
+            };
+            #[cfg(not(target_os = "macos"))]
+            let scale = 1.0;
+            Some((Screen::Xcap(m), bounds, scale))
         })
-        .collect();
+        .collect::<Vec<_>>();
+    // Where mixed scales overlap, placed as the overlays are (at one scale,
+    // as everywhere but macOS, nothing moves).
+    let placed = crate::capture::untangle(&bounds.iter().map(|(_, b, s)| (*b, *s)).collect::<Vec<_>>());
+    let bounds = bounds.into_iter().zip(placed).map(|((screen, ..), b)| (screen, b)).collect();
     area_in(rect, bounds)
+}
+
+/// A rect in points, as macOS gives monitors, in pixels at `scale`.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn in_pixels(r: Rect, scale: f32) -> Rect {
+    let px = |v: f32| (v * scale).round();
+    Rect {
+        x: px(r.x as f32) as i32,
+        y: px(r.y as f32) as i32,
+        w: px(r.w as f32) as u32,
+        h: px(r.h as f32) as u32,
+    }
+}
+
+/// The points to ask macOS for to get `region` (pixels on a monitor at
+/// `scale`, relative to it) on a monitor `size` points big, and where
+/// `region` is in the picture that comes back.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn in_points(region: Rect, scale: f32, size: (u32, u32)) -> (Rect, Rect) {
+    let s = scale.max(f32::MIN_POSITIVE);
+    let x0 = ((region.x as f32 / s).floor().max(0.0) as u32).min(size.0);
+    let y0 = ((region.y as f32 / s).floor().max(0.0) as u32).min(size.1);
+    let x1 = ((region.right() as f32 / s).ceil() as u32).clamp(x0, size.0);
+    let y1 = ((region.bottom() as f32 / s).ceil() as u32).clamp(y0, size.1);
+    let points = Rect {
+        x: x0 as i32,
+        y: y0 as i32,
+        w: x1 - x0,
+        h: y1 - y0,
+    };
+    let within = Rect {
+        x: (region.x - (x0 as f32 * s).round() as i32).max(0),
+        y: (region.y - (y0 as f32 * s).round() as i32).max(0),
+        ..region
+    };
+    (points, within)
 }
 
 /// `area_for` with these monitors and their bounds.
@@ -563,6 +606,7 @@ impl ScreenFrames {
             for piece in &area.pieces {
                 let region = piece.region;
                 let at = piece.at(area.rect);
+                #[cfg_attr(target_os = "macos", allow(unused_variables))]
                 let whole = Rect { x: 0, y: 0, ..region };
                 #[cfg(windows)]
                 let feed = {
@@ -573,10 +617,23 @@ impl ScreenFrames {
                 #[cfg(not(windows))]
                 let feed = match &piece.screen {
                     Screen::Xcap(monitor) => {
+                        // macOS takes the region in points and gives back
+                        // pixels.
+                        #[cfg(target_os = "macos")]
+                        let (ask, within) = {
+                            let scale = monitor.scale_factor().map_err(|e| e.to_string())?;
+                            let points = (
+                                monitor.width().map_err(|e| e.to_string())?,
+                                monitor.height().map_err(|e| e.to_string())?,
+                            );
+                            in_points(region, scale, points)
+                        };
+                        #[cfg(not(target_os = "macos"))]
+                        let (ask, within) = (region, whole);
                         let shot = monitor
-                            .capture_region(region.x as u32, region.y as u32, region.w, region.h)
+                            .capture_region(ask.x as u32, ask.y as u32, ask.w, ask.h)
                             .map_err(crate::capture::failure)?;
-                        crop_into(&shot, (region.w, region.h), whole, &mut first, size.0, at);
+                        crop_into(&shot, shot.dimensions(), within, &mut first, size.0, at);
                         let id = monitor.id().map_err(|e| e.to_string())?;
                         let (recorder, frames) = take_recorder(monitor, id)?;
                         // Frames left over from the last recording on this monitor.
@@ -801,6 +858,37 @@ fn pump(
     Ok(())
 }
 
+/// Finishes the file once recording has ended with `result`. When it went
+/// wrong partway (a display unplugged, say) after `wrote_frames`, what was
+/// recorded up to then is kept if the encoder can still finish the file,
+/// with the error as the warning. Otherwise the file is deleted.
+fn finish_file(
+    encoder: Box<dyn Encoder>,
+    out: &std::path::Path,
+    result: Result<(), String>,
+    wrote_frames: bool,
+) -> Result<Option<String>, String> {
+    let stopped_early = match result {
+        Ok(()) => None,
+        Err(e) if wrote_frames => Some(e),
+        Err(e) => {
+            drop(encoder);
+            let _ = std::fs::remove_file(out);
+            return Err(e);
+        }
+    };
+    match encoder.finish() {
+        Ok(w) => Ok(stopped_early.map(|e| format!("the recording stopped early: {e}")).or(w)),
+        Err(f) => {
+            let _ = std::fs::remove_file(out);
+            Err(match stopped_early {
+                Some(e) => format!("{e} (and what was recorded couldn't be saved: {f})"),
+                None => f,
+            })
+        }
+    }
+}
+
 /// Copies `region` out of a picture of a monitor (RGBA, `src_size`) into
 /// `out`, a picture `width` pixels wide, with its top-left corner at `at`.
 fn crop_into(src: &[u8], src_size: (u32, u32), region: Rect, out: &mut [u8], width: u32, at: (u32, u32)) {
@@ -921,6 +1009,72 @@ mod tests {
             shades.len() as f64 / fps as f64
         );
         assert!(repeats_at_start == 0, "the video starts frozen");
+    }
+
+    /// An encoder whose `finish` succeeds or fails as told.
+    struct Fake(Result<Option<String>, String>);
+
+    impl Encoder for Fake {
+        fn video(&mut self, _: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+        fn audio(&mut self, _: &[f32]) -> Result<(), String> {
+            Ok(())
+        }
+        fn finish(self: Box<Self>) -> Result<Option<String>, String> {
+            self.0
+        }
+    }
+
+    #[test]
+    fn keeps_what_was_recorded_when_it_fails_partway() {
+        let out = std::env::temp_dir().join(format!("snapr-finish-test-{}.mp4", std::process::id()));
+        let file = |out: &std::path::Path| std::fs::write(out, b"video").unwrap();
+        let fake = |r: Result<Option<String>, String>| Box::new(Fake(r)) as Box<dyn Encoder>;
+        let unplugged = || Err::<(), _>("the display went away".to_string());
+
+        // Partway: saved, with the error as the warning.
+        file(&out);
+        let w = finish_file(fake(Ok(None)), &out, unplugged(), true).unwrap();
+        assert_eq!(w.as_deref(), Some("the recording stopped early: the display went away"));
+        assert!(out.exists());
+
+        // Before the first frame: nothing worth keeping.
+        let e = finish_file(fake(Ok(None)), &out, unplugged(), false).unwrap_err();
+        assert_eq!(e, "the display went away");
+        assert!(!out.exists());
+
+        // Partway, but the file can't be finished either.
+        file(&out);
+        let e = finish_file(fake(Err("no index".into())), &out, unplugged(), true).unwrap_err();
+        assert!(e.starts_with("the display went away") && e.contains("no index"), "{e}");
+        assert!(!out.exists());
+
+        // No error: the encoder's own warning, if any.
+        file(&out);
+        let w = finish_file(fake(Ok(Some("no sound".into()))), &out, Ok(()), true).unwrap();
+        assert_eq!(w.as_deref(), Some("no sound"));
+        let _ = std::fs::remove_file(&out);
+    }
+
+    #[test]
+    fn converts_between_points_and_pixels() {
+        // A Retina monitor right of the main one: 1440x900 points at 1440.
+        let monitor = in_pixels(Rect { x: 1440, y: 0, w: 1440, h: 900 }, 2.0);
+        assert_eq!(monitor, Rect { x: 2880, y: 0, w: 2880, h: 1800 });
+        // Pixels 101..301 across ask for points 50..151, and the region
+        // starts 1 pixel into what comes back.
+        let region = Rect { x: 101, y: 40, w: 200, h: 100 };
+        let (points, within) = in_points(region, 2.0, (1440, 900));
+        assert_eq!(points, Rect { x: 50, y: 20, w: 101, h: 50 });
+        assert_eq!(within, Rect { x: 1, y: 0, w: 200, h: 100 });
+        // Never past the monitor's edge.
+        let corner = Rect { x: 2780, y: 1700, w: 100, h: 100 };
+        let (points, within) = in_points(corner, 2.0, (1440, 900));
+        assert_eq!(points, Rect { x: 1390, y: 850, w: 50, h: 50 });
+        assert_eq!((within.x, within.y), (0, 0));
+        // At 1x it's the region as it is.
+        assert_eq!(in_points(region, 1.0, (1440, 900)), (region, Rect { x: 0, y: 0, ..region }));
     }
 
     #[test]

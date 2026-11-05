@@ -80,6 +80,9 @@ impl RecordingUi {
         rect: capture::Rect,
         #[cfg(target_os = "linux")] send_x11: impl Fn(X11Event) + Send + 'static,
     ) -> Result<Self, String> {
+        // The region is in the screenshot's space (`capture::untangle`);
+        // windows go where winit (and XWayland) have the monitors.
+        let rect = capture::to_platform(&capture::winit_monitors(event_loop.available_monitors()), rect);
         #[cfg(target_os = "linux")]
         if x11::wanted(event_loop) {
             match Self::open_x11(gpu, rect, send_x11) {
@@ -728,7 +731,7 @@ fn place_bar(
 }
 
 /// Keeps a window out of screenshots and recordings (Windows 10 2004+).
-fn exclude_from_capture(window: &Window) {
+pub(crate) fn exclude_from_capture(window: &Window) {
     #[cfg(windows)]
     {
         use windows_sys::Win32::Foundation::HWND;

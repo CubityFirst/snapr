@@ -1,6 +1,7 @@
-//! Audio for screen recordings: what's playing (WASAPI loopback on Windows)
-//! and/or a microphone. Each source's samples are padded to follow the
-//! recording clock and sent on to be mixed and encoded with the video.
+//! Audio for screen recordings: what's playing (WASAPI loopback on Windows,
+//! the default sink's monitor on Linux) and/or a microphone. Each source's
+//! samples are padded to follow the recording clock and sent on to be mixed
+//! and encoded with the video.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -85,6 +86,13 @@ impl Capture {
         out: Sender<Chunk>,
         clock: Arc<Mutex<Clock>>,
     ) -> Result<Self, String> {
+        // cpal on Linux is ALSA, whose default device records the
+        // microphone, even opened as the "output": what's playing comes from
+        // the default sink's monitor instead, or not at all.
+        #[cfg(target_os = "linux")]
+        if *source == Source::System {
+            return Self::start_monitor(index, out, clock);
+        }
         let host = cpal::default_host();
         let device = match source {
             Source::System => host
@@ -155,6 +163,34 @@ impl Capture {
         })
     }
 
+    /// `start` for what's playing on Linux: the default sink's monitor,
+    /// through PipeWire's or PulseAudio's own recorder.
+    #[cfg(target_os = "linux")]
+    fn start_monitor(index: usize, out: Sender<Chunk>, clock: Arc<Mutex<Clock>>) -> Result<Self, String> {
+        let (child, rx) = monitor::open()?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopping = stop.clone();
+        let thread = thread::Builder::new()
+            .name("audio".into())
+            .spawn(move || {
+                let send = |samples: Vec<f32>| {
+                    out.send((index, samples))
+                        .map_err(|_| "the recording stopped taking audio".to_string())
+                };
+                let (rate, channels) = (monitor::RATE, monitor::CHANNELS);
+                let result = write_samples(rx, send, &clock, &stopping, rate, channels);
+                drop(child);
+                result
+            })
+            .map_err(|e| format!("couldn't start audio thread: {e}"))?;
+        Ok(Self {
+            sample_rate: monitor::RATE,
+            channels: monitor::CHANNELS,
+            stop,
+            thread: Some(thread),
+        })
+    }
+
     /// Stops capturing, once the samples up to now are sent.
     pub fn finish(mut self) -> Result<(), String> {
         self.stop.store(true, Ordering::Relaxed);
@@ -181,6 +217,141 @@ pub fn microphones() -> Vec<String> {
         .input_devices()
         .map(|devices| devices.map(|d| d.to_string()).collect())
         .unwrap_or_default()
+}
+
+/// What's playing on Linux: the default sink's monitor, recorded by
+/// `pw-record` (PipeWire, told to capture a sink) or else `parec`
+/// (PulseAudio, or PipeWire's stand-in for it). Never a microphone.
+#[cfg(target_os = "linux")]
+mod monitor {
+    use std::io::Read;
+    use std::process::{Child, Command, Stdio};
+    use std::sync::mpsc::{self, Receiver, Sender};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    pub const RATE: u32 = 48_000;
+    pub const CHANNELS: u16 = 2;
+    /// How long a recorder that's sent nothing yet is given to fail (say,
+    /// no sound server) before it's taken as working and just quiet.
+    const STARTUP: Duration = Duration::from_millis(500);
+
+    /// The recorders to try, in order, each writing raw interleaved f32
+    /// samples to stdout.
+    fn commands() -> [Command; 2] {
+        let (rate, channels) = (RATE.to_string(), CHANNELS.to_string());
+        let mut pw = Command::new("pw-record");
+        pw.args(["--raw", "--format", "f32", "--rate", &rate, "--channels", &channels])
+            .args(["--latency", "20ms", "-P"])
+            .arg("{ stream.capture.sink = true node.name = snapr node.description = \"snapr (what's playing)\" }")
+            .arg("-");
+        let mut pa = Command::new("parec");
+        pa.args(["--device=@DEFAULT_MONITOR@", "--raw", "--format=float32le"])
+            .arg(format!("--rate={rate}"))
+            .arg(format!("--channels={channels}"))
+            .args(["--latency-msec=20", "--client-name=snapr"]);
+        [pw, pa]
+    }
+
+    /// A recorder that's stopped once dropped.
+    pub struct Recorder(Child);
+
+    impl Drop for Recorder {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// Starts the first recorder that works, with its samples.
+    pub fn open() -> Result<(Recorder, Receiver<Vec<f32>>), String> {
+        let mut failures = Vec::new();
+        for mut command in commands() {
+            let name = command.get_program().to_string_lossy().into_owned();
+            match start(&mut command) {
+                Ok(started) => return Ok(started),
+                Err(e) => failures.push(format!("{name}: {e}")),
+            }
+        }
+        Err(format!(
+            "couldn't record what's playing (it needs PipeWire's pw-record or PulseAudio's parec): {}",
+            failures.join("; ")
+        ))
+    }
+
+    fn start(command: &mut Command) -> Result<(Recorder, Receiver<Vec<f32>>), String> {
+        let mut child = command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        let stdout = child.stdout.take().expect("piped");
+        let mut recorder = Recorder(child);
+        let (tx, rx) = mpsc::channel();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        thread::Builder::new()
+            .name("audio-monitor".into())
+            .spawn(move || read_samples(stdout, tx, ready_tx))
+            .map_err(|e| e.to_string())?;
+        let began = Instant::now();
+        loop {
+            match ready_rx.recv_timeout(Duration::from_millis(20)) {
+                Ok(()) => return Ok((recorder, rx)),
+                // Its output closed before any sound.
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    let status = recorder.0.wait().map_err(|e| e.to_string())?;
+                    return Err(format!("stopped straight away ({status})"));
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if let Some(status) = recorder.0.try_wait().map_err(|e| e.to_string())? {
+                        return Err(format!("stopped straight away ({status})"));
+                    }
+                    if began.elapsed() >= STARTUP {
+                        return Ok((recorder, rx));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Sends `from`'s samples on as whole frames until it closes, saying
+    /// on `ready` once the first arrive.
+    fn read_samples(mut from: impl Read, to: Sender<Vec<f32>>, ready: Sender<()>) {
+        let mut buf = vec![0u8; 16 * 1024];
+        let mut pending = Vec::new();
+        let mut ready = Some(ready);
+        loop {
+            let n = match from.read(&mut buf) {
+                Ok(0) | Err(_) => return,
+                Ok(n) => n,
+            };
+            pending.extend_from_slice(&buf[..n]);
+            let samples = take_frames(&mut pending, CHANNELS);
+            if samples.is_empty() {
+                continue;
+            }
+            if let Some(r) = ready.take() {
+                let _ = r.send(());
+            }
+            if to.send(samples).is_err() {
+                return;
+            }
+        }
+    }
+
+    /// The whole frames of raw little-endian f32 samples at the start of
+    /// `bytes`, leaving any partial one there for the next read.
+    pub(super) fn take_frames(bytes: &mut Vec<u8>, channels: u16) -> Vec<f32> {
+        let frame = 4 * channels.max(1) as usize;
+        let whole = bytes.len() / frame * frame;
+        let samples = bytes[..whole]
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .collect();
+        bytes.drain(..whole);
+        samples
+    }
 }
 
 fn build_stream(
@@ -334,5 +505,42 @@ mod tests {
             frames >= 250 && frames <= elapsed,
             "{frames} frames in {elapsed} ms"
         );
+    }
+
+    /// Raw samples split mid-frame keep the rest for the next read, so the
+    /// channels stay in step.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn monitor_samples_come_in_whole_frames() {
+        let bytes: Vec<u8> = [1.0f32, -1.0, 0.5, 0.25].iter().flat_map(|s| s.to_le_bytes()).collect();
+        // A frame and a half of stereo, then the rest.
+        let mut pending = bytes[..12].to_vec();
+        assert_eq!(monitor::take_frames(&mut pending, 2), [1.0, -1.0]);
+        assert_eq!(pending.len(), 4);
+        pending.extend_from_slice(&bytes[12..]);
+        assert_eq!(monitor::take_frames(&mut pending, 2), [0.5, 0.25]);
+        assert!(pending.is_empty());
+    }
+
+    /// Records two seconds of what's playing, leaving the raw samples (f32,
+    /// interleaved) in the temp folder to inspect:
+    /// `cargo test records_whats_playing -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn records_whats_playing() {
+        let clock = Arc::new(Mutex::new(Clock::default()));
+        let (tx, rx) = mpsc::channel();
+        let capture = Capture::start(&Source::System, 0, tx, clock.clone()).unwrap();
+        clock.lock().unwrap().start();
+        thread::sleep(Duration::from_secs(2));
+        let (rate, channels) = (capture.sample_rate, capture.channels);
+        capture.finish().unwrap();
+        let samples: Vec<f32> = rx.try_iter().flat_map(|(_, s)| s).collect();
+        let peak = samples.iter().fold(0f32, |m, s| m.max(s.abs()));
+        let path = std::env::temp_dir().join("snapr-whats-playing.f32");
+        let bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+        std::fs::write(&path, bytes).unwrap();
+        println!("{} frames at {rate} Hz x{channels}, peak {peak}, in {}", samples.len() / channels as usize, path.display());
+        assert!(samples.len() / channels as usize >= rate as usize);
     }
 }

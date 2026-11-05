@@ -218,6 +218,10 @@ impl Toast {
             attrs = attrs.with_skip_taskbar(true);
         }
         let window = Arc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
+        // So it isn't in the next screenshot or recording.
+        crate::record_ui::exclude_from_capture(&window);
+        #[cfg(target_os = "macos")]
+        not_shared(&window);
         if let Some(pos) = corner_position(event_loop, &window) {
             window.set_outer_position(pos);
         }
@@ -633,6 +637,22 @@ fn work_area_corner() -> Option<(i32, i32)> {
 #[cfg(not(windows))]
 fn work_area_corner() -> Option<(i32, i32)> {
     None
+}
+
+/// Keeps the toast's window out of other processes' captures, snapr's own
+/// screenshots and recordings among them (NSWindowSharingNone).
+#[cfg(target_os = "macos")]
+fn not_shared(window: &Window) {
+    use objc2_app_kit::{NSView, NSWindowSharingType};
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let Ok(handle) = window.window_handle() else { return };
+    let RawWindowHandle::AppKit(h) = handle.as_raw() else { return };
+    // SAFETY: winit's view, made on this (the main) thread, alive while
+    // `window` is.
+    let view: &NSView = unsafe { h.ns_view.cast().as_ref() };
+    if let Some(ns_window) = view.window() {
+        ns_window.setSharingType(NSWindowSharingType::None);
+    }
 }
 
 /// Decodes a screenshot small enough for the preview.

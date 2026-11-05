@@ -90,17 +90,24 @@ fn draw_cursor(cursors: &mut crate::cursor::Cursors, image: &mut RgbaImage, orig
 
 /// Every monitor, with the mouse pointer drawn in if `cursor`.
 pub fn capture_all(cursor: bool) -> Result<Vec<Shot>, xcap::XCapError> {
+    Ok(capture_placed(cursor)?.into_iter().map(|(shot, _)| shot).collect())
+}
+
+/// `capture_all`, with where each shot is in the global space (see
+/// `untangle`).
+fn capture_placed(cursor: bool) -> Result<Vec<(Shot, Rect)>, xcap::XCapError> {
     // wlroots compositors copy their outputs to us themselves, pointer and
     // all, and place them as the overlays are placed.
     #[cfg(target_os = "linux")]
     if let Some(outputs) = crate::wayland::screenshot(cursor) {
         let shots = outputs
             .into_iter()
-            .filter_map(|(rect, f)| {
-                Some(Shot {
+            .filter_map(|(output, f)| {
+                let shot = Shot {
                     image: RgbaImage::from_raw(f.width, f.height, f.raw)?,
-                    pos: (rect.x, rect.y),
-                })
+                    pos: output.at,
+                };
+                Some((shot, output.rect))
             })
             .collect();
         return Ok(shots);
@@ -108,14 +115,22 @@ pub fn capture_all(cursor: bool) -> Result<Vec<Shot>, xcap::XCapError> {
     let mut shots = capture_monitors()?;
     if cursor {
         let mut cursors = crate::cursor::Cursors::new();
-        for shot in &mut shots {
+        for (shot, _) in &mut shots {
             draw_cursor(&mut cursors, &mut shot.image, shot.pos);
         }
     }
-    Ok(shots)
+    let monitors: Vec<_> = shots
+        .iter()
+        .map(|(s, scale)| {
+            let (w, h) = s.image.dimensions();
+            (Rect { x: s.pos.0, y: s.pos.1, w, h }, *scale)
+        })
+        .collect();
+    Ok(shots.into_iter().map(|(s, _)| s).zip(untangle(&monitors)).collect())
 }
 
-fn capture_monitors() -> Result<Vec<Shot>, xcap::XCapError> {
+/// Each monitor's picture, and its scale.
+fn capture_monitors() -> Result<Vec<(Shot, f64)>, xcap::XCapError> {
     #[cfg(windows)]
     let hdr = crate::hdr::displays();
     xcap::Monitor::all()?
@@ -135,7 +150,7 @@ fn capture_monitors() -> Result<Vec<Shot>, xcap::XCapError> {
                 (m.x()? as f32 * scale).round() as i32,
                 (m.y()? as f32 * scale).round() as i32,
             );
-            Ok(Shot { image, pos })
+            Ok((Shot { image, pos }, scale as f64))
         })
         .collect()
 }
@@ -263,7 +278,7 @@ fn xcap_window_rects(own: &[&winit::window::Window]) -> Vec<(u32, Rect)> {
 /// `window_rects` from one pass over the window list. Frames are in points,
 /// scaled like `capture_all` places monitors: by the scale of the monitor
 /// under the window's centre (else one it overlaps, else the main one), as
-/// xcap picks it.
+/// xcap picks it, and moved with that monitor where `untangle` moves it.
 #[cfg(target_os = "macos")]
 fn macos_window_rects() -> Vec<(u32, Rect)> {
     let monitors: Vec<([f64; 4], f32, bool)> = xcap::Monitor::all()
@@ -274,6 +289,21 @@ fn macos_window_rects() -> Vec<(u32, Rect)> {
             Some((frame, m.scale_factor().ok()?, m.is_primary().unwrap_or(false)))
         })
         .collect();
+    // Each monitor as `capture_monitors` places it, and how far `untangle`
+    // moves it from there.
+    let placed: Vec<(Rect, f64)> = monitors
+        .iter()
+        .map(|&([x, y, w, h], s, _)| {
+            let px = |v: f64| (v as f32 * s).round();
+            let rect = Rect { x: px(x) as i32, y: px(y) as i32, w: px(w) as u32, h: px(h) as u32 };
+            (rect, s as f64)
+        })
+        .collect();
+    let moved: Vec<(i32, i32)> = placed
+        .iter()
+        .zip(untangle(&placed))
+        .map(|((from, _), to)| (to.x - from.x, to.y - from.y))
+        .collect();
     let contains = |[x, y, w, h]: [f64; 4], (px, py): (f64, f64)| px >= x && px < x + w && py >= y && py < y + h;
     let overlaps = |[x, y, w, h]: [f64; 4], [ox, oy, ow, oh]: [f64; 4]| {
         x < ox + ow && ox < x + w && y < oy + oh && oy < y + h
@@ -283,14 +313,14 @@ fn macos_window_rects() -> Vec<(u32, Rect)> {
         .filter_map(|w| {
             let [x, y, width, height] = w.frame;
             let centre = (x + width / 2.0, y + height / 2.0);
-            let s = monitors
+            let i = monitors
                 .iter()
-                .find(|(m, ..)| contains(*m, centre) || overlaps(*m, w.frame))
-                .or_else(|| monitors.iter().find(|(.., primary)| *primary))?
-                .1;
+                .position(|(m, ..)| contains(*m, centre) || overlaps(*m, w.frame))
+                .or_else(|| monitors.iter().position(|(.., primary)| *primary))?;
+            let (s, (dx, dy)) = (monitors[i].1, moved[i]);
             let rect = Rect {
-                x: (x as i32 as f32 * s).round() as i32,
-                y: (y as i32 as f32 * s).round() as i32,
+                x: (x as i32 as f32 * s).round() as i32 + dx,
+                y: (y as i32 as f32 * s).round() as i32 + dy,
                 w: (width as u32 as f32 * s).round() as u32,
                 h: (height as u32 as f32 * s).round() as u32,
             };
@@ -600,18 +630,10 @@ pub fn grab(target: &Target, cursor: bool) -> Result<(RgbaImage, Option<String>,
         Target::ActiveDisplay => active_display(cursor),
         Target::Region(_) | Target::Everything => {
             let (process, title) = foreground_window();
-            let shots = capture_all(cursor).map_err(failure)?;
+            let shots = capture_placed(cursor).map_err(failure)?;
             let placed: Vec<_> = shots
                 .iter()
-                .map(|s| PlacedShot {
-                    image: &s.image,
-                    rect: Rect {
-                        x: s.pos.0,
-                        y: s.pos.1,
-                        w: s.image.width(),
-                        h: s.image.height(),
-                    },
-                })
+                .map(|(s, rect)| PlacedShot { image: &s.image, rect: *rect })
                 .collect();
             let region = match target {
                 Target::Region(r) => *r,
@@ -698,6 +720,110 @@ fn pick_display(displays: &[DisplayInfo], focused: Option<u32>, pointer: Option<
         .or_else(|| displays.first().map(|d| d.id))
 }
 
+/// Where each monitor is in the global space the screenshot is cut from,
+/// given where the platform places it (`monitors`: its rect, from winit or
+/// the compositor, and its scale). macOS and Wayland put a monitor at its
+/// logical position times its own scale but give it its full size in pixels,
+/// so with mixed scales they overlap, and a region on one would take the
+/// other's pixels. Then each axis is laid out again from the logical layout,
+/// every stretch of it as many pixels as its densest monitor needs, so
+/// monitors keep their order and neighbours and no longer overlap (lower
+/// scale ones may leave a gap). Where nothing overlaps, they're as given.
+pub fn untangle(monitors: &[(Rect, f64)]) -> Vec<Rect> {
+    let overlapping = monitors
+        .iter()
+        .enumerate()
+        .any(|(i, (a, _))| monitors[i + 1..].iter().any(|(b, _)| a.intersect(b).is_some()));
+    if !overlapping {
+        return monitors.iter().map(|(r, _)| *r).collect();
+    }
+    let max_scale = monitors.iter().map(|(_, s)| *s).fold(1.0, f64::max);
+    // Each monitor's logical (start, length) along one axis, and its scale.
+    let axis = |get: fn(&Rect) -> (i32, u32)| -> Vec<i32> {
+        let spans: Vec<(f64, f64, f64)> = monitors
+            .iter()
+            .map(|(r, s)| {
+                let s = s.max(f64::MIN_POSITIVE);
+                let (at, len) = get(r);
+                (at as f64 / s, len as f64 / s, s)
+            })
+            .collect();
+        let mut stops: Vec<f64> = spans.iter().flat_map(|&(a, l, _)| [a, a + l]).chain([0.0]).collect();
+        stops.sort_by(f64::total_cmp);
+        stops.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+        // Pixels for each stretch between stops: at the scale of the
+        // densest monitor across it (or of any, between monitors).
+        let pixels: Vec<i32> = stops
+            .windows(2)
+            .map(|w| {
+                let scale = spans
+                    .iter()
+                    .filter(|&&(a, l, _)| a <= w[0] + 1e-9 && a + l >= w[1] - 1e-9)
+                    .map(|&(.., s)| s)
+                    .reduce(f64::max)
+                    .unwrap_or(max_scale);
+                ((w[1] - w[0]) * scale - 1e-6).ceil() as i32
+            })
+            .collect();
+        // Logical 0 stays at pixel 0, so the main monitor doesn't move.
+        let zero = stops.iter().position(|s| s.abs() < 1e-9).expect("0 is a stop");
+        let mut at = vec![0; stops.len()];
+        for i in zero + 1..stops.len() {
+            at[i] = at[i - 1] + pixels[i - 1];
+        }
+        for i in (0..zero).rev() {
+            at[i] = at[i + 1] - pixels[i];
+        }
+        spans
+            .iter()
+            .map(|&(a, ..)| {
+                let i = stops.iter().position(|s| (s - a).abs() < 1e-9).expect("a stop");
+                at[i]
+            })
+            .collect()
+    };
+    let xs = axis(|r| (r.x, r.w));
+    let ys = axis(|r| (r.y, r.h));
+    monitors
+        .iter()
+        .zip(xs.into_iter().zip(ys))
+        .map(|((r, _), (x, y))| Rect { x, y, ..*r })
+        .collect()
+}
+
+/// winit's monitors as `untangle` takes them.
+pub fn winit_monitors(monitors: impl IntoIterator<Item = winit::monitor::MonitorHandle>) -> Vec<(Rect, f64)> {
+    monitors
+        .into_iter()
+        .map(|m| {
+            let (p, s) = (m.position(), m.size());
+            (Rect { x: p.x, y: p.y, w: s.width, h: s.height }, m.scale_factor())
+        })
+        .collect()
+}
+
+/// `rect`, in the global space `untangle` makes of `monitors`, where the
+/// platform places windows: moved back as the monitor its centre is on (else
+/// the nearest) was moved. Unchanged where `untangle` moves nothing.
+pub fn to_platform(monitors: &[(Rect, f64)], rect: Rect) -> Rect {
+    let untangled = untangle(monitors);
+    let centre = (rect.x as f64 + rect.w as f64 / 2.0, rect.y as f64 + rect.h as f64 / 2.0);
+    let away = |r: &Rect| {
+        let dx = (r.x as f64 - centre.0).max(centre.0 - r.right() as f64).max(0.0);
+        let dy = (r.y as f64 - centre.1).max(centre.1 - r.bottom() as f64).max(0.0);
+        dx * dx + dy * dy
+    };
+    let Some(i) = (0..untangled.len()).min_by(|&a, &b| away(&untangled[a]).total_cmp(&away(&untangled[b]))) else {
+        return rect;
+    };
+    let (from, to) = (monitors[i].0, untangled[i]);
+    Rect {
+        x: rect.x + from.x - to.x,
+        y: rect.y + from.y - to.y,
+        ..rect
+    }
+}
+
 /// Builds the final screenshot for `region`, stitching together every monitor
 /// it overlaps. Areas not covered by any monitor are left transparent.
 pub fn crop(shots: &[PlacedShot], region: Rect) -> Option<RgbaImage> {
@@ -778,6 +904,79 @@ mod tests {
         assert_eq!(pick_display(&displays, Some(9), Some((-5.0, 50.0))), Some(2));
         assert_eq!(pick_display(&displays[..1], None, None), Some(1));
         assert_eq!(pick_display(&[], Some(1), None), None);
+    }
+
+    /// A 4K monitor at scale 2 with a 1080p one at scale 1 to its right, as
+    /// macOS and Wayland place them: the second starts at the first's
+    /// logical width (1920), inside the first's 3840 pixels.
+    #[test]
+    fn mixed_scales_are_untangled_side_by_side() {
+        let rect = |x, y, w, h| Rect { x, y, w, h };
+        let placed = untangle(&[(rect(0, 0, 3840, 2160), 2.0), (rect(1920, 0, 1920, 1080), 1.0)]);
+        assert_eq!(placed, [rect(0, 0, 3840, 2160), rect(3840, 0, 1920, 1080)]);
+        assert!(placed[0].intersect(&placed[1]).is_none());
+
+        // A region in the right half of the 4K monitor is all its own, and
+        // one over the seam takes each monitor's pixels on its side.
+        let big = RgbaImage::from_pixel(3840, 2160, Rgba([255, 0, 0, 255]));
+        let small = RgbaImage::from_pixel(1920, 1080, Rgba([0, 0, 255, 255]));
+        let shots = [
+            PlacedShot { image: &big, rect: placed[0] },
+            PlacedShot { image: &small, rect: placed[1] },
+        ];
+        let inside = crop(&shots, rect(2000, 100, 1800, 200)).unwrap();
+        assert!(inside.pixels().all(|p| *p == Rgba([255, 0, 0, 255])));
+        let seam = crop(&shots, rect(3830, 0, 20, 10)).unwrap();
+        assert_eq!(seam.get_pixel(9, 5), &Rgba([255, 0, 0, 255]));
+        assert_eq!(seam.get_pixel(10, 5), &Rgba([0, 0, 255, 255]));
+    }
+
+    #[test]
+    fn mixed_scales_are_untangled_stacked_and_on_three_monitors() {
+        let rect = |x, y, w, h| Rect { x, y, w, h };
+        // A scale 1 monitor below a scale 2 one (logically at y 1080).
+        let placed = untangle(&[(rect(0, 0, 3840, 2160), 2.0), (rect(0, 1080, 1920, 1080), 1.0)]);
+        assert_eq!(placed, [rect(0, 0, 3840, 2160), rect(0, 2160, 1920, 1080)]);
+        // Scale 1 monitors on both sides of a scale 2 one: the one on the
+        // left (which didn't overlap anything) stays put.
+        let placed = untangle(&[
+            (rect(-1920, 0, 1920, 1080), 1.0),
+            (rect(0, 0, 2880, 1800), 2.0),
+            (rect(1440, 0, 1920, 1080), 1.0),
+        ]);
+        assert_eq!(placed, [rect(-1920, 0, 1920, 1080), rect(0, 0, 2880, 1800), rect(2880, 0, 1920, 1080)]);
+        for (i, a) in placed.iter().enumerate() {
+            assert!(placed[i + 1..].iter().all(|b| a.intersect(b).is_none()));
+        }
+    }
+
+    /// Monitors that don't overlap (one scale, or Windows' and X11's own
+    /// pixel layout) are left exactly where the platform put them.
+    #[test]
+    fn monitors_that_dont_overlap_stay_put() {
+        let rect = |x, y, w, h| Rect { x, y, w, h };
+        let same_scale = [(rect(0, 0, 2880, 1800), 2.0), (rect(2880, -200, 3840, 2160), 2.0)];
+        assert_eq!(untangle(&same_scale), [same_scale[0].0, same_scale[1].0]);
+        let windows = [(rect(0, 0, 3840, 2160), 1.5), (rect(3840, 0, 1920, 1080), 1.0)];
+        assert_eq!(untangle(&windows), [windows[0].0, windows[1].0]);
+        // Overlapping, but at one scale (mirrored displays): as they were.
+        let mirrored = [(rect(0, 0, 2880, 1800), 2.0), (rect(0, 0, 2880, 1800), 2.0), (rect(2880, 0, 200, 100), 2.0)];
+        assert_eq!(untangle(&mirrored), mirrored.map(|(r, _)| r));
+        let ones = [(rect(0, 0, 1920, 1080), 1.0), (rect(1000, 0, 1920, 1080), 1.0)];
+        assert_eq!(untangle(&ones), ones.map(|(r, _)| r));
+        assert_eq!(to_platform(&windows, rect(4000, 10, 50, 50)), rect(4000, 10, 50, 50));
+    }
+
+    /// A window placed at a selection goes where winit puts that spot.
+    #[test]
+    fn selections_go_back_to_the_platforms_place() {
+        let rect = |x, y, w, h| Rect { x, y, w, h };
+        let monitors = [(rect(0, 0, 3840, 2160), 2.0), (rect(1920, 0, 1920, 1080), 1.0)];
+        // On the scale 1 monitor (untangled to x 3840): back by 1920.
+        assert_eq!(to_platform(&monitors, rect(3900, 100, 200, 100)), rect(1980, 100, 200, 100));
+        // On the scale 2 one, which didn't move.
+        assert_eq!(to_platform(&monitors, rect(3000, 100, 200, 100)), rect(3000, 100, 200, 100));
+        assert_eq!(to_platform(&[], rect(5, 5, 5, 5)), rect(5, 5, 5, 5));
     }
 
     #[test]

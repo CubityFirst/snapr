@@ -249,21 +249,47 @@ impl Dispatch<zxdg_output_v1::ZxdgOutputV1, ()> for Toplevels {
 
 delegate_noop!(Toplevels: ignore zxdg_output_manager_v1::ZxdgOutputManagerV1);
 
-/// A monitor as winit places it, so it lines up with a selection on the
-/// overlays: at the compositor's logical position times the output's
-/// (integer) scale, and its mode's size in pixels.
+/// A monitor, placed so it lines up with a selection on the overlays.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Output {
     pub name: String,
+    /// Where it is in the global space: as winit places it (see `at`), with
+    /// its mode's size in pixels, moved by `capture::untangle` where mixed
+    /// scales make those overlap.
     pub rect: Rect,
+    /// Where winit places it, to match it to winit's monitors: at the
+    /// compositor's logical position times the output's (integer) scale.
+    pub at: (i32, i32),
 }
 
 /// The monitors, if the compositor can screencopy them and says where they
 /// are (xdg-output).
 pub fn screencopy_outputs() -> Option<Vec<Output>> {
     let screens = Screens::connect().ok()?;
-    let outputs: Vec<Output> = screens.state.outputs.iter().filter_map(OutputState::placed).collect();
+    let outputs: Vec<Output> = placed_outputs(&screens.state.outputs).into_iter().flatten().collect();
     (!outputs.is_empty()).then_some(outputs)
+}
+
+/// Each output as `Output` places it, where the compositor has said where it
+/// is, in the same order. They're untangled together, so this is the same
+/// whichever of them are then used.
+fn placed_outputs(outputs: &[OutputState]) -> Vec<Option<Output>> {
+    let placed: Vec<Option<Output>> = outputs.iter().map(OutputState::placed).collect();
+    let known: Vec<(Rect, f64)> = outputs
+        .iter()
+        .zip(&placed)
+        .filter_map(|(o, p)| Some((p.as_ref()?.rect, o.scale as f64)))
+        .collect();
+    let mut untangled = crate::capture::untangle(&known).into_iter();
+    placed
+        .into_iter()
+        .map(|p| {
+            p.map(|o| Output {
+                rect: untangled.next().expect("one each"),
+                ..o
+            })
+        })
+        .collect()
 }
 
 /// A picture of each output now, placed as `screencopy_outputs` places
@@ -271,25 +297,26 @@ pub fn screencopy_outputs() -> Option<Vec<Output>> {
 /// can't screencopy, or can't one of them, so xcap takes them all instead;
 /// rotated or flipped outputs are left to xcap too, as screencopy gives
 /// their pictures untransformed.
-pub fn screenshot(cursor: bool) -> Option<Vec<(Rect, Frame)>> {
+pub fn screenshot(cursor: bool) -> Option<Vec<(Output, Frame)>> {
     let mut screens = Screens::connect().ok()?;
     screens.cursor = cursor;
     let outputs: Option<Vec<_>> = screens
         .state
         .outputs
         .iter()
-        .map(|o| {
+        .zip(placed_outputs(&screens.state.outputs))
+        .map(|(o, placed)| {
             if o.transform != wl_output::Transform::Normal {
                 return None;
             }
-            Some((o.output.clone(), o.placed()?))
+            Some((o.output.clone(), placed?))
         })
         .collect();
     let outputs = outputs.filter(|o| !o.is_empty())?;
     outputs
         .into_iter()
         .map(|(output, placed)| match screens.capture(&output, false, Some(FIRST_FRAME_TIMEOUT), &|| false) {
-            Ok(frame) => Some((placed.rect, frame?)),
+            Ok(frame) => Some((placed, frame?)),
             Err(e) => {
                 eprintln!("screencopy of {}: {e}; asking xcap", placed.name);
                 None
@@ -305,18 +332,18 @@ pub fn screenshot(cursor: bool) -> Option<Vec<(Rect, Frame)>> {
 pub fn screenshot_output(name: Option<&str>, cursor: bool) -> Option<(Output, Frame)> {
     let mut screens = Screens::connect().ok()?;
     screens.cursor = cursor;
-    let outputs = &screens.state.outputs;
-    let named = name.and_then(|n| outputs.iter().find(|o| o.name.as_deref() == Some(n)));
+    let outputs: Vec<_> = screens.state.outputs.iter().zip(placed_outputs(&screens.state.outputs)).collect();
+    let named = name.and_then(|n| outputs.iter().find(|(o, _)| o.name.as_deref() == Some(n)));
     let at_origin = || {
         outputs
             .iter()
-            .find(|o| o.placed().is_some_and(|p| p.rect.contains((0.0, 0.0))))
+            .find(|(_, p)| p.as_ref().is_some_and(|p| p.rect.contains((0.0, 0.0))))
     };
-    let state = named.or_else(at_origin).or(outputs.first())?;
+    let (state, placed) = named.or_else(at_origin).or(outputs.first())?;
     if state.transform != wl_output::Transform::Normal {
         return None;
     }
-    let (output, placed) = (state.output.clone(), state.placed()?);
+    let (output, placed) = (state.output.clone(), placed.clone()?);
     match screens.capture(&output, false, Some(FIRST_FRAME_TIMEOUT), &|| false) {
         Ok(frame) => Some((placed, frame?)),
         Err(e) => {
@@ -465,17 +492,21 @@ struct OutputState {
 }
 
 impl OutputState {
+    /// Where winit places it (both `rect` and `at`), before `placed_outputs`
+    /// untangles them.
     fn placed(&self) -> Option<Output> {
         let (x, y) = self.logical?;
         let (w, h) = self.mode?;
+        let at = (x * self.scale, y * self.scale);
         Some(Output {
             name: self.name.clone()?,
             rect: Rect {
-                x: x * self.scale,
-                y: y * self.scale,
+                x: at.0,
+                y: at.1,
                 w: u32::try_from(w).ok()?,
                 h: u32::try_from(h).ok()?,
             },
+            at,
         })
     }
 }
