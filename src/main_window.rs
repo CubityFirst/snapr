@@ -396,6 +396,7 @@ impl MainWindow {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        theme::track_touch(ui.ctx());
         if self.page == Page::Setup {
             return self.setup_ui(ui, actions);
         }
