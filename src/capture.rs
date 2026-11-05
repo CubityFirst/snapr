@@ -430,6 +430,11 @@ fn focused_window() -> Option<xcap::Window> {
         .find(|w| w.is_focused().unwrap_or(false))
 }
 
+/// The focused window's id, for `Target::Window`.
+pub fn active_window() -> Option<u32> {
+    focused_window()?.id().ok()
+}
+
 /// A window's process name and title, for naming.
 fn names(window: &xcap::Window) -> (Option<String>, Option<String>) {
     let by_pid = window.pid().ok().and_then(process_name);

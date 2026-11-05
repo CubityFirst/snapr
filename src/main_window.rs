@@ -581,6 +581,12 @@ impl MainWindow {
             self.capture_menu = (capture::windows(), capture::displays());
         }
         let (windows, displays) = &self.capture_menu;
+        // A capture's hotkey, if it has one; where the desktop picks the
+        // keys, snapr doesn't know them.
+        let tool_hotkeys = &self.form.saved.tool_hotkeys;
+        let hotkey = |action: ToolAction| {
+            tool_hotkeys.iter().find(|h| h.action == action).map_or("", |h| h.hotkey.as_str())
+        };
         egui::Popup::menu(&chevron)
             .align(egui::RectAlign::RIGHT_START)
             .gap(4.0)
@@ -592,7 +598,11 @@ impl MainWindow {
                     ui.close();
                 }
                 let last = ui
-                    .add_enabled(self.last_region.is_some(), egui::Button::new("Last region"))
+                    .add_enabled(
+                        self.last_region.is_some(),
+                        egui::Button::new("Last region")
+                            .shortcut_text(hotkey(ToolAction::CaptureLastRegion)),
+                    )
                     .on_disabled_hover_text("Take a region screenshot first");
                 if last.clicked()
                     && let Some(r) = self.last_region
@@ -613,16 +623,8 @@ impl MainWindow {
                     if displays.is_empty() {
                         ui.weak("No displays");
                     } else {
-                        // Its hotkey, if it has one; where the desktop picks
-                        // the keys, snapr doesn't know them.
-                        let hotkey = self
-                            .form
-                            .saved
-                            .tool_hotkeys
-                            .iter()
-                            .find(|h| h.action == ToolAction::CaptureDisplay)
-                            .map_or("", |h| h.hotkey.as_str());
-                        let active = egui::Button::new("Active display").shortcut_text(hotkey);
+                        let active = egui::Button::new("Active display")
+                            .shortcut_text(hotkey(ToolAction::CaptureDisplay));
                         if ui
                             .add(active)
                             .on_hover_text("The display the focused window is on")
@@ -653,7 +655,9 @@ impl MainWindow {
                 } else {
                     "Fullscreen"
                 };
-                if ui.button(everything).clicked() {
+                let everything =
+                    egui::Button::new(everything).shortcut_text(hotkey(ToolAction::CaptureEverything));
+                if ui.add(everything).clicked() {
                     actions.push(Action::CaptureTarget(capture::Target::Everything));
                     ui.close();
                 }
