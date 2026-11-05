@@ -156,7 +156,10 @@ impl Tray {
                 ToolAction::PinRegion => sel!(pinRegion:),
                 ToolAction::UploadClipboard => sel!(uploadClipboard:),
                 // Not a tool: not in `ALL`.
-                ToolAction::CaptureDisplay => continue,
+                ToolAction::CaptureDisplay
+                | ToolAction::CaptureLastRegion
+                | ToolAction::CaptureWindow
+                | ToolAction::CaptureEverything => continue,
             };
             add_to(&tools, tool.label(), Some(action));
         }

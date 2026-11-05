@@ -299,6 +299,12 @@ pub enum ToolAction {
     PinRegion,
     /// Screenshot the display the focused window is on.
     CaptureDisplay,
+    /// Screenshot the same region as the last screenshot.
+    CaptureLastRegion,
+    /// Screenshot the focused window.
+    CaptureWindow,
+    /// Screenshot every display.
+    CaptureEverything,
     /// Upload what's on the clipboard: copied files, an image or text.
     UploadClipboard,
 }
@@ -313,7 +319,12 @@ impl ToolAction {
     ];
 
     /// The captures that can have a hotkey besides region and record.
-    pub const CAPTURES: [ToolAction; 1] = [ToolAction::CaptureDisplay];
+    pub const CAPTURES: [ToolAction; 4] = [
+        ToolAction::CaptureDisplay,
+        ToolAction::CaptureLastRegion,
+        ToolAction::CaptureWindow,
+        ToolAction::CaptureEverything,
+    ];
 
     pub fn is_capture(self) -> bool {
         Self::CAPTURES.contains(&self)
@@ -326,6 +337,9 @@ impl ToolAction {
             ToolAction::ScanQr => "scan-qr",
             ToolAction::PinRegion => "pin-region",
             ToolAction::CaptureDisplay => "capture-display",
+            ToolAction::CaptureLastRegion => "capture-last-region",
+            ToolAction::CaptureWindow => "capture-window",
+            ToolAction::CaptureEverything => "capture-everything",
             ToolAction::UploadClipboard => "upload-clipboard",
         }
     }
@@ -336,6 +350,9 @@ impl ToolAction {
             ToolAction::ScanQr => "Read a QR code",
             ToolAction::PinRegion => "Pin a region to the screen",
             ToolAction::CaptureDisplay => "Capture active display",
+            ToolAction::CaptureLastRegion => "Capture last region",
+            ToolAction::CaptureWindow => "Capture active window",
+            ToolAction::CaptureEverything => "Capture fullscreen",
             ToolAction::UploadClipboard => "Upload the clipboard",
         }
     }
@@ -381,6 +398,9 @@ impl TrayClick {
             TrayClick::Tool(ToolAction::ScanQr) => "Reads a QR code",
             TrayClick::Tool(ToolAction::PinRegion) => "Pins a region to the screen",
             TrayClick::Tool(ToolAction::CaptureDisplay) => "Captures the active display",
+            TrayClick::Tool(ToolAction::CaptureLastRegion) => "Captures the last region",
+            TrayClick::Tool(ToolAction::CaptureWindow) => "Captures the active window",
+            TrayClick::Tool(ToolAction::CaptureEverything) => "Captures everything",
             TrayClick::Tool(ToolAction::UploadClipboard) => "Uploads the clipboard",
         }
     }
@@ -921,6 +941,20 @@ mod tests {
         // Older config files have none.
         let old: Settings = toml::from_str("hotkey = \"Alt + Shift + KeyS\"").unwrap();
         assert!(old.tool_hotkeys.is_empty());
+    }
+
+    #[test]
+    fn capture_hotkeys_round_trip() {
+        let settings = Settings {
+            tool_hotkeys: ToolAction::CAPTURES
+                .map(|action| ToolHotkey { action, hotkey: String::new() })
+                .to_vec(),
+            ..Settings::default()
+        };
+        let text = toml::to_string_pretty(&settings).unwrap();
+        assert_eq!(toml::from_str::<Settings>(&text).unwrap(), settings, "{text}");
+        let ids: std::collections::HashSet<_> = ToolAction::CAPTURES.map(ToolAction::id).into();
+        assert_eq!(ids.len(), ToolAction::CAPTURES.len());
     }
 
     #[test]

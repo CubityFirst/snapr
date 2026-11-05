@@ -336,6 +336,21 @@ impl App {
             ToolAction::CaptureDisplay => {
                 return self.grab(event_loop, capture::Target::ActiveDisplay);
             }
+            ToolAction::CaptureLastRegion => {
+                return match self.last_region {
+                    Some(r) => self.grab(event_loop, capture::Target::Region(r)),
+                    None => self.report(event_loop, "take a region screenshot first".into(), true),
+                };
+            }
+            ToolAction::CaptureWindow => {
+                return match capture::active_window() {
+                    Some(id) => self.grab(event_loop, capture::Target::Window(id)),
+                    None => self.report(event_loop, "no window is focused".into(), true),
+                };
+            }
+            ToolAction::CaptureEverything => {
+                return self.grab(event_loop, capture::Target::Everything);
+            }
             ToolAction::UploadClipboard => return self.upload_clipboard(event_loop),
         };
         self.open_session(event_loop, purpose);
