@@ -6,6 +6,8 @@
 pub struct Image {
     pub width: u32,
     pub height: u32,
+    // Only Windows draws the pointer into recordings.
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub hotspot: (i32, i32),
     /// Premultiplied RGBA.
     pub pixels: Vec<u8>,

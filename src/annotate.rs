@@ -1848,7 +1848,7 @@ fn box_rows(src: &[u32], dst: &mut [u32], w: usize, radius: usize) {
                     sum[c] += p[c];
                 }
             }
-            for (x, out) in d.chunks_exact_mut(4).enumerate() {
+            for (x, out) in d.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                 for c in 0..4 {
                     out[c] = (sum[c] * m + 32768) >> 16;
                 }

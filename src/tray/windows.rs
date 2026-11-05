@@ -326,7 +326,7 @@ fn make_icon(size: u32, progress: Option<super::Progress>, color: [u8; 4]) -> HI
     let rgba = super::icon_with_progress(size, progress, color);
     // 32-bit icons take BGRA colour bits plus a 1-bit AND mask (unused with alpha).
     let bgra: Vec<u8> = rgba
-        .chunks_exact(4)
+        .as_chunks::<4>().0.iter()
         .flat_map(|p| [p[2], p[1], p[0], p[3]])
         .collect();
     let mask = vec![0u8; (size * size / 8) as usize];

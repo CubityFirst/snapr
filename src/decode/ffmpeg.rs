@@ -142,7 +142,7 @@ pub fn sound(
         carry.extend_from_slice(&chunk[..n]);
         let whole = carry.len() / 4 * 4;
         let samples = carry[..whole]
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         carry.drain(..whole);
@@ -170,7 +170,7 @@ fn read_ppm(r: &mut impl BufRead) -> Option<RgbaImage> {
     }
     let mut rgb = vec![0u8; w * h * 3];
     r.read_exact(&mut rgb).ok()?;
-    let rgba = rgb.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect();
+    let rgba = rgb.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect();
     RgbaImage::from_raw(w as u32, h as u32, rgba)
 }
 

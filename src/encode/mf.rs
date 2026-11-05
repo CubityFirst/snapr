@@ -156,7 +156,7 @@ impl Encoder for MediaFoundation {
         // SAFETY: the buffer holds two bytes per sample.
         unsafe {
             self.writer()?.write(stream, samples.len() * 2, time, duration, |buf| {
-                for (dst, s) in buf.chunks_exact_mut(2).zip(samples) {
+                for (dst, s) in buf.as_chunks_mut::<2>().0.iter_mut().zip(samples) {
                     let v = (s.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16;
                     dst.copy_from_slice(&v.to_le_bytes());
                 }

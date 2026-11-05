@@ -63,6 +63,7 @@ pub trait Encoder {
 }
 
 /// The display an HDR recording is made on, for its metadata.
+#[cfg(windows)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HdrInfo {
     pub peak_nits: f32,
@@ -152,7 +153,7 @@ pub fn rgba_to_nv12(rgba: &[u8], w: usize, h: usize, out: &mut [u8]) {
     let (y_plane, uv_plane) = out.split_at_mut(w * h);
     for (y, row) in y_plane.chunks_exact_mut(w).enumerate() {
         let src = &rgba[y * w * 4..(y + 1) * w * 4];
-        for (dst, p) in row.iter_mut().zip(src.chunks_exact(4)) {
+        for (dst, p) in row.iter_mut().zip(src.as_chunks::<4>().0) {
             let (r, g, b) = (p[0] as i32, p[1] as i32, p[2] as i32);
             *dst = (((11966 * r + 40254 * g + 4064 * b + ROUND) >> 16) + 16) as u8;
         }
@@ -160,7 +161,7 @@ pub fn rgba_to_nv12(rgba: &[u8], w: usize, h: usize, out: &mut [u8]) {
     for (cy, row) in uv_plane.chunks_exact_mut(w).enumerate() {
         let top = &rgba[2 * cy * w * 4..(2 * cy + 1) * w * 4];
         let bottom = &rgba[(2 * cy + 1) * w * 4..(2 * cy + 2) * w * 4];
-        for (cx, uv) in row.chunks_exact_mut(2).enumerate() {
+        for (cx, uv) in row.as_chunks_mut::<2>().0.iter_mut().enumerate() {
             let i = cx * 8;
             // Sum of the 2x2 block; divided by 4 with the coefficients below.
             let sum = |c: usize| {

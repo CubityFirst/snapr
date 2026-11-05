@@ -229,7 +229,7 @@ impl Encoder for AssetWriter {
             let row = self.video.width as usize * 4;
             for (y, src) in rgba.chunks_exact(row).take(self.video.height as usize).enumerate() {
                 let dst = std::slice::from_raw_parts_mut(base.add(y * stride), row);
-                for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
+                for (d, s) in dst.as_chunks_mut::<4>().0.iter_mut().zip(src.as_chunks::<4>().0) {
                     d.copy_from_slice(&[s[2], s[1], s[0], 255]);
                 }
             }

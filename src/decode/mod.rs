@@ -132,7 +132,7 @@ pub(crate) fn picture_from(
     if (ow, oh) == (w, h) {
         for (y, dst) in out.chunks_exact_mut(ow as usize * 4).enumerate() {
             let src = row(y as u32)?;
-            for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
+            for (d, s) in dst.as_chunks_mut::<4>().0.iter_mut().zip(src.as_chunks::<4>().0) {
                 d.copy_from_slice(&[s[order[0]], s[order[1]], s[order[2]], 255]);
             }
         }
@@ -151,7 +151,7 @@ pub(crate) fn picture_from(
     let (xs, ys) = (points(ow, w), points(oh, h));
     for (y, dst) in out.chunks_exact_mut(ow as usize * 4).enumerate() {
         let (r0, r1) = (row(ys[y][0])?, row(ys[y][1])?);
-        for (x, d) in dst.chunks_exact_mut(4).enumerate() {
+        for (x, d) in dst.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let [x0, x1] = xs[x].map(|v| v as usize * 4);
             for (c, &i) in order.iter().enumerate() {
                 let sum = r0[x0 + i] as u32 + r0[x1 + i] as u32 + r1[x0 + i] as u32 + r1[x1 + i] as u32;
