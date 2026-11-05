@@ -1,0 +1,46 @@
+# Runs the tests and clippy on Windows, macOS and Linux for pull requests
+# and pushes to main. The Release workflow calls it too, and builds nothing
+# until it passes.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+
+jobs:
+  check:
+    name: Tests and clippy (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # The same images the Release workflow builds on.
+        os: [windows-latest, macos-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config clang libclang-dev \
+            libasound2-dev libpipewire-0.3-dev libspa-0.2-dev \
+            libgbm-dev libdrm-dev libegl-dev libwayland-dev libxkbcommon-dev \
+            libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev \
+            libdbus-1-dev
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --locked

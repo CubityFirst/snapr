@@ -2171,6 +2171,8 @@ fn main() {
     // From File Explorer's "Upload with Snapr".
     #[cfg(windows)]
     let mut uploads: Vec<PathBuf> = Vec::new();
+    // Not `for`: Windows' flags take the next argument too.
+    #[cfg_attr(not(windows), allow(clippy::while_let_on_iterator))]
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--once" => once = true,

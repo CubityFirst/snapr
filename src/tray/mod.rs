@@ -240,8 +240,8 @@ mod tests {
 
     /// Which pixels of a 16px icon are drawn, a row per string.
     fn rows(rgba: &[u8]) -> Vec<String> {
-        rgba.chunks_exact(16 * 4)
-            .map(|row| row.chunks_exact(4).map(|p| if p[3] > 0 { '#' } else { '.' }).collect())
+        rgba.as_chunks::<{ 16 * 4 }>().0.iter()
+            .map(|row| row.as_chunks::<4>().0.iter().map(|p| if p[3] > 0 { '#' } else { '.' }).collect())
             .collect()
     }
 
@@ -272,7 +272,7 @@ mod tests {
             for p in [None, progress] {
                 let rgba = icon_with_progress(16, p, c);
                 // Every drawn pixel is that colour, and only its alpha varies.
-                assert!(rgba.chunks_exact(4).all(|px| px[3] == 0 || px[..3] == c[..3]));
+                assert!(rgba.as_chunks::<4>().0.iter().all(|px| px[3] == 0 || px[..3] == c[..3]));
                 // The same shape whatever the colour.
                 assert_eq!(rows(&rgba), rows(&icon_with_progress(16, p, BLUE)));
             }

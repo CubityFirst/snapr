@@ -346,7 +346,7 @@ mod monitor {
         let frame = 4 * channels.max(1) as usize;
         let whole = bytes.len() / frame * frame;
         let samples = bytes[..whole]
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
             .collect();
         bytes.drain(..whole);

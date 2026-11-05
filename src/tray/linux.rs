@@ -30,7 +30,7 @@ impl ksni::Tray for Sni {
         const SIZE: u32 = 32;
         // RGBA -> ARGB, as the protocol requires.
         let data = super::icon_with_progress(SIZE, self.progress, self.color)
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .flat_map(|p| [p[3], p[0], p[1], p[2]])
             .collect();
         vec![ksni::Icon {

@@ -100,6 +100,7 @@ pub struct Toast {
 
 impl Toast {
     /// `send_x11` passes on an X11 toast's input, from its own thread.
+    #[cfg_attr(target_os = "linux", allow(clippy::too_many_arguments))]
     pub fn open(
         event_loop: &ActiveEventLoop,
         gpu: &Gpu,

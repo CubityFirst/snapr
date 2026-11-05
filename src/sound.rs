@@ -238,7 +238,7 @@ mod tests {
             let len = u32::from_le_bytes(wav[40..44].try_into().unwrap()) as usize;
             assert_eq!(wav.len(), 44 + len, "{sound:?}");
             let peak = wav[44..]
-                .chunks_exact(2)
+                .as_chunks::<2>().0.iter()
                 .map(|b| i16::from_le_bytes([b[0], b[1]]).unsigned_abs())
                 .max()
                 .unwrap();
@@ -251,7 +251,7 @@ mod tests {
     fn volume_scales_the_sound() {
         let peak = |wav: &[u8]| {
             wav[44..]
-                .chunks_exact(2)
+                .as_chunks::<2>().0.iter()
                 .map(|b| i16::from_le_bytes([b[0], b[1]]).unsigned_abs())
                 .max()
                 .unwrap() as f32

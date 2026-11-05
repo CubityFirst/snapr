@@ -28,8 +28,14 @@ permissions:
   contents: write
 
 jobs:
+  # The tests and clippy on every platform. Nothing is built or published
+  # until they pass.
+  ci:
+    uses: ./.github/workflows/ci.yml
+
   build:
     name: Build ${{ matrix.asset }}
+    needs: ci
     strategy:
       fail-fast: false
       matrix:

@@ -201,7 +201,7 @@ impl Duplicator {
             let row = self.region.w as usize * 4;
             for (y, dst) in self.latest.chunks_exact_mut(row).enumerate() {
                 let src = std::slice::from_raw_parts((mapped.pData as *const u8).add(y * mapped.RowPitch as usize), row);
-                for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
+                for (d, s) in dst.as_chunks_mut::<4>().0.iter_mut().zip(src.as_chunks::<4>().0) {
                     d.copy_from_slice(&[s[2], s[1], s[0], 255]);
                 }
             }

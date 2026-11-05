@@ -150,7 +150,7 @@ impl HdrDisplay {
         let (w, h, pixels) = self.capture_scrgb()?;
         let mapping = ToneMap::new(self.sdr_white_nits);
         let mut out = RgbaImage::new(w, h);
-        for (dst, src) in out.chunks_exact_mut(4).zip(pixels.chunks_exact(4)) {
+        for (dst, src) in out.as_chunks_mut::<4>().0.iter_mut().zip(pixels.as_chunks::<4>().0) {
             let rgb = mapping.apply([src[0], src[1], src[2]]);
             dst.copy_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
         }
@@ -373,7 +373,7 @@ impl Duplicator {
     pub fn sdr_picture(&self) -> RgbaImage {
         let mapping = ToneMap::new(self.sdr_white_nits);
         let mut out = RgbaImage::new(self.region.w, self.region.h);
-        for (dst, src) in out.chunks_exact_mut(4).zip(self.latest.chunks_exact(4)) {
+        for (dst, src) in out.as_chunks_mut::<4>().0.iter_mut().zip(self.latest.as_chunks::<4>().0) {
             let rgb = mapping.apply([f16_to_f32(src[0]), f16_to_f32(src[1]), f16_to_f32(src[2])]);
             dst.copy_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
         }
@@ -571,7 +571,7 @@ unsafe fn read_texture(
         let mut pixels = Vec::with_capacity(w * h * 4);
         for y in 0..h {
             let row = std::slice::from_raw_parts((mapped.pData as *const u8).add(y * mapped.RowPitch as usize), w * 8);
-            pixels.extend(row.chunks_exact(2).map(|b| f16_to_f32(u16::from_le_bytes([b[0], b[1]]))));
+            pixels.extend(row.as_chunks::<2>().0.iter().map(|b| f16_to_f32(u16::from_le_bytes([b[0], b[1]]))));
         }
         context.Unmap(&staging, 0);
         Ok((w as u32, h as u32, pixels))
