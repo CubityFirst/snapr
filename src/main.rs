@@ -254,6 +254,8 @@ struct App {
     tray: Option<Tray>,
     /// How far the uploads have got, as last shown on the tray icon.
     tray_progress: Option<tray::Progress>,
+    /// Whether the tray's Record item last said Stop.
+    tray_recording: bool,
     output: Output,
     /// Open captures. Pressing the hotkey during a capture stacks a new one
     /// on top (so the overlay itself can be captured); the last is active.
@@ -1585,6 +1587,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Hotkey | UserEvent::Tray(TrayAction::Capture) => {
                 self.start_capture(event_loop)
             }
+            UserEvent::Tray(TrayAction::Record) => self.toggle_recording(event_loop),
             UserEvent::RecordHotkey => {
                 if !self.main_window.as_ref().is_some_and(|w| w.form.recording) {
                     self.toggle_recording(event_loop)
@@ -1885,6 +1888,11 @@ impl ApplicationHandler<UserEvent> for App {
             if progress != self.tray_progress {
                 self.tray_progress = progress;
                 tray.set_progress(progress);
+            }
+            let recording = self.recording.is_some();
+            if recording != self.tray_recording {
+                self.tray_recording = recording;
+                tray.set_recording(recording);
             }
             if progress.is_some() {
                 let t = now + Duration::from_millis(250);
@@ -2414,6 +2422,7 @@ fn main() {
         recording_lock,
         tray: None,
         tray_progress: None,
+        tray_recording: false,
         output,
         sessions: Vec::new(),
         style: remembered.style(),

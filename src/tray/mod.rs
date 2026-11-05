@@ -23,6 +23,8 @@ pub enum TrayAction {
     /// The icon was left-clicked: whatever `Settings::tray_click` says.
     Click,
     Capture,
+    /// Start recording a region, or stop the recording in progress.
+    Record,
     /// Start one of the tools, from the Tools submenu.
     Tool(ToolAction),
     /// Open the main window on the Recent page.
@@ -38,6 +40,15 @@ fn capture_label(hotkey: Option<&str>) -> String {
     match hotkey {
         Some(h) => format!("Capture region    {h}"),
         None => "Capture region".into(),
+    }
+}
+
+/// The Record item, which stops the recording while there is one.
+fn record_label(recording: bool) -> &'static str {
+    if recording {
+        "Stop recording"
+    } else {
+        "Record region"
     }
 }
 

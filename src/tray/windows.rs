@@ -24,7 +24,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WNDCLASSW,
 };
 
-use super::{Callback, TrayAction, capture_label};
+use super::{Callback, TrayAction, capture_label, record_label};
 use crate::settings::{ToolAction, TrayClick, TrayIconStyle};
 
 const CLASS_NAME: &str = "snapr.tray";
@@ -39,6 +39,7 @@ const UPLOAD_FILES: usize = 0x736e_7570;
 
 const MENU: &[(usize, TrayAction)] = &[
     (1, TrayAction::Capture),
+    (6, TrayAction::Record),
     (5, TrayAction::Recent),
     (2, TrayAction::Settings),
     (3, TrayAction::OpenFolder),
@@ -58,6 +59,8 @@ struct State {
     /// What `style` came to when the icon was last drawn.
     color: [u8; 4],
     capture_label: String,
+    /// A recording is in progress, so the Record item stops it.
+    recording: bool,
     callback: Callback,
     taskbar_created: u32,
     /// What a left-click does.
@@ -123,6 +126,7 @@ impl Tray {
             style,
             color,
             capture_label: capture_label(hotkey),
+            recording: false,
             callback,
             taskbar_created: unsafe { RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()) },
             click: TrayClick::default(),
@@ -142,6 +146,15 @@ impl Tray {
                 state.tooltip = tooltip(hotkey);
                 state.capture_label = capture_label(hotkey);
                 notify(state, NIM_MODIFY);
+            }
+        });
+    }
+
+    /// Whether a recording is in progress, for the Record item's label.
+    pub fn set_recording(&self, recording: bool) {
+        STATE.with(|s| {
+            if let Some(state) = s.borrow_mut().as_mut() {
+                state.recording = recording;
             }
         });
     }
@@ -344,14 +357,18 @@ fn click() -> TrayClick {
 }
 
 fn show_menu(hwnd: HWND) {
-    let Some(capture) = STATE.with(|s| s.borrow().as_ref().map(|st| st.capture_label.clone()))
-    else {
+    let Some((capture, recording)) = STATE.with(|s| {
+        s.borrow()
+            .as_ref()
+            .map(|st| (st.capture_label.clone(), st.recording))
+    }) else {
         return;
     };
     // In bold: what a left-click does, if it's on the menu.
     let default = match click() {
         TrayClick::Open => Some(5),
         TrayClick::Capture => Some(1),
+        TrayClick::Record => Some(6),
         _ => None,
     };
     // SAFETY: standard popup-menu sequence on our own window.
@@ -360,6 +377,7 @@ fn show_menu(hwnd: HWND) {
         for &(id, action) in MENU {
             let label = match action {
                 TrayAction::Capture => capture.clone(),
+                TrayAction::Record => record_label(recording).into(),
                 TrayAction::Click | TrayAction::Tool(_) => unreachable!(),
                 TrayAction::Recent => "Recent screenshots\u{2026}".into(),
                 TrayAction::Settings => "Settings\u{2026}".into(),
@@ -370,7 +388,7 @@ fn show_menu(hwnd: HWND) {
                 }
             };
             AppendMenuW(menu, MF_STRING, id, wide(&label).as_ptr());
-            if action == TrayAction::Capture {
+            if action == TrayAction::Record {
                 // Destroyed along with `menu`.
                 let tools = CreatePopupMenu();
                 for (i, tool) in ToolAction::ALL.into_iter().enumerate() {
