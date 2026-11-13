@@ -2,7 +2,9 @@
 //! Left-click opens the link (or the image, before it's uploaded), middle-click
 //! copies the image, right-click dismisses it, and dragging it drops the file
 //! into another app. It goes away by itself after a few seconds, unless the
-//! mouse is over it.
+//! mouse is over it. A finger has no middle or right button, so a tap shows
+//! Open, Copy and Close buttons, and a second tap picks one; swiping it left
+//! or right dismisses it.
 
 // `Backend` only has its X11 variant on Linux.
 #![cfg_attr(not(target_os = "linux"), allow(irrefutable_let_patterns))]
@@ -14,7 +16,7 @@ use std::time::{Duration, Instant};
 use egui::RichText;
 use egui_wgpu::winit::Painter;
 use winit::dpi::{LogicalSize, PhysicalPosition};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, Touch, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowLevel};
 
@@ -44,14 +46,39 @@ const AFTER_HOVER: Duration = Duration::from_secs(2);
 /// How far (in points) the mouse moves with the button down before it's a
 /// drag rather than a click.
 const DRAG_THRESHOLD: f64 = 6.0;
+/// How far of the toast's width a swipe goes to dismiss it, or, for a
+/// quick flick, how far (in points) and how fast (points per second).
+const SWIPE_AWAY: f64 = 0.3;
+const FLICK_DISTANCE: f64 = 24.0;
+const FLICK_SPEED: f64 = 600.0;
+/// The buttons a tap shows: their tallest, and the gap between them, in points.
+const BUTTON_HEIGHT: f32 = 44.0;
+const BUTTON_GAP: f32 = 6.0;
 /// Pixels decoded for the preview (twice the size, for high-DPI screens).
 pub const DECODE_SIZE: (u32, u32) = (640, 400);
 
+#[derive(Clone, Copy)]
 pub enum Action {
     /// Open the link, or the image if there's no link yet.
     Open,
     CopyImage,
     Dismiss,
+}
+
+/// The buttons a tap shows, left to right.
+const BUTTONS: [Action; 3] = [Action::Open, Action::CopyImage, Action::Dismiss];
+
+/// Where the buttons a tap shows go, in a toast of `size` points.
+fn button_rects(size: egui::Vec2) -> [(Action, egui::Rect); 3] {
+    let inner = egui::Rect::from_min_size(egui::Pos2::ZERO, size).shrink(MARGIN);
+    let height = inner.height().min(BUTTON_HEIGHT);
+    let width = (inner.width() - 2.0 * BUTTON_GAP) / 3.0;
+    let top = inner.center().y - height / 2.0;
+    std::array::from_fn(|i| {
+        let left = inner.left() + i as f32 * (width + BUTTON_GAP);
+        let rect = egui::Rect::from_min_size(egui::pos2(left, top), egui::vec2(width, height));
+        (BUTTONS[i], rect)
+    })
 }
 
 /// What the mouse did over the toast (or another X11 window).
@@ -96,6 +123,22 @@ pub struct Toast {
     pressed_at: Option<PhysicalPosition<f64>>,
     /// A touchscreen finger, played as the mouse.
     finger: Finger,
+    /// The Open, Copy and Close buttons are up, after a tap.
+    buttons: bool,
+    /// The window's size, in points.
+    points: egui::Vec2,
+    /// A finger that's down, which may swipe the toast away.
+    swipe: Option<Swipe>,
+}
+
+/// A finger on the toast, which moves it sideways once it's dragged.
+struct Swipe {
+    /// Where the finger went down, across the screen, in pixels.
+    finger_x: f64,
+    /// Where the window was then; `None` where it can't be moved (Wayland).
+    window: Option<PhysicalPosition<i32>>,
+    /// When it became a swipe rather than a tap.
+    since: Option<Instant>,
 }
 
 impl Toast {
@@ -164,6 +207,9 @@ impl Toast {
             cursor: PhysicalPosition::new(0.0, 0.0),
             pressed_at: None,
             finger: Finger::default(),
+            buttons: false,
+            points: egui::vec2(window_size.width as f32, window_size.height as f32),
+            swipe: None,
         };
         // Paint before showing it, so it doesn't flash white.
         toast.paint();
@@ -257,6 +303,10 @@ impl Toast {
 
     pub fn set_link(&mut self, link: String) {
         self.link = Some(link);
+        self.redraw();
+    }
+
+    fn redraw(&mut self) {
         match &self.backend {
             Backend::Winit { window, .. } => window.request_redraw(),
             #[cfg(target_os = "linux")]
@@ -265,13 +315,8 @@ impl Toast {
     }
 
     pub fn on_event(&mut self, event: &WindowEvent) -> Option<Action> {
-        // In place of the touch, so egui doesn't get both.
         if let WindowEvent::Touch(touch) = event {
-            return self
-                .finger
-                .mouse_events(touch)
-                .iter()
-                .find_map(|e| self.on_event(e));
+            return self.on_touch(touch);
         }
         let pointer = match event {
             WindowEvent::MouseInput { state, button, .. } => Some(match state {
@@ -332,13 +377,137 @@ impl Toast {
         }
     }
 
+    /// A finger works the toast like the mouse, except that a tap shows the
+    /// buttons (a finger has only the one button), and moving it swipes the
+    /// toast rather than dragging the file out: the system's drag follows
+    /// only the mouse. The events are kept from egui, which doesn't need them.
+    fn on_touch(&mut self, touch: &Touch) -> Option<Action> {
+        let mut action = None;
+        for event in self.finger.mouse_events(touch) {
+            match event {
+                WindowEvent::CursorMoved { position, .. } => {
+                    self.cursor = position;
+                    if self.pressed_at.is_some_and(|from| self.dragged(from)) {
+                        self.pressed_at = None;
+                        if let Some(s) = &mut self.swipe {
+                            s.since = Some(Instant::now());
+                        }
+                    }
+                    self.follow_finger();
+                }
+                WindowEvent::MouseInput { state, .. } => match state {
+                    ElementState::Pressed => {
+                        self.pressed_at = Some(self.cursor);
+                        self.swipe = Some(Swipe {
+                            finger_x: self.finger_x(),
+                            window: self.window().and_then(|w| w.outer_position().ok()),
+                            since: None,
+                        });
+                    }
+                    ElementState::Released if self.pressed_at.take().is_some() => {
+                        self.swipe = None;
+                        action = action.or(self.click(true));
+                    }
+                    ElementState::Released => action = action.or(self.end_swipe()),
+                },
+                WindowEvent::CursorEntered { .. } => self.expires_at = None,
+                // Long enough to pick a button, once they're up.
+                WindowEvent::CursorLeft { .. } => {
+                    let wait = if self.buttons { SHOWN_FOR } else { AFTER_HOVER };
+                    self.expires_at = Some(Instant::now() + wait);
+                }
+                _ => {}
+            }
+        }
+        action
+    }
+
+    fn window(&self) -> Option<&Window> {
+        match &self.backend {
+            Backend::Winit { window, .. } => Some(window),
+            #[cfg(target_os = "linux")]
+            Backend::X11(_) => None,
+        }
+    }
+
+    /// The finger across the screen, in pixels: the window may be moving
+    /// under it. Just across the window where it can't be placed.
+    fn finger_x(&self) -> f64 {
+        let left = self.window().and_then(|w| w.inner_position().ok());
+        left.map_or(0.0, |p| p.x as f64) + self.cursor.x
+    }
+
+    /// How far the finger has swiped, in pixels; `None` if it isn't swiping.
+    fn swiped(&self) -> Option<f64> {
+        let s = self.swipe.as_ref().filter(|s| s.since.is_some())?;
+        Some(self.finger_x() - s.finger_x)
+    }
+
+    /// Moves the toast sideways with a swiping finger.
+    fn follow_finger(&self) {
+        let from = self.swipe.as_ref().and_then(|s| s.window);
+        if let (Some(dx), Some(window), Some(from)) = (self.swiped(), self.window(), from) {
+            window.set_outer_position(PhysicalPosition::new(from.x + dx.round() as i32, from.y));
+        }
+    }
+
+    /// The finger's lifted after a swipe: far or fast enough dismisses the
+    /// toast, else it goes back.
+    fn end_swipe(&mut self) -> Option<Action> {
+        let dx = self.swiped();
+        let swipe = self.swipe.take()?;
+        let (dx, since) = (dx?, swipe.since?);
+        let points = dx.abs() / self.scale_factor();
+        let speed = points / since.elapsed().as_secs_f64().max(0.001);
+        let far = points >= self.points.x as f64 * SWIPE_AWAY;
+        let flicked = points >= FLICK_DISTANCE && speed >= FLICK_SPEED;
+        if far || flicked {
+            return Some(Action::Dismiss);
+        }
+        if let (Some(window), Some(from)) = (self.window(), swipe.window) {
+            window.set_outer_position(from);
+        }
+        None
+    }
+
+    /// Whether the pointer has gone far enough from `from` to be a drag.
+    fn dragged(&self, from: PhysicalPosition<f64>) -> bool {
+        let (dx, dy) = (self.cursor.x - from.x, self.cursor.y - from.y);
+        let threshold = DRAG_THRESHOLD * self.scale_factor();
+        dx * dx + dy * dy >= threshold * threshold
+    }
+
+    /// A left-click or a tap: the button under it if the buttons are up,
+    /// else opens, or shows the buttons for a tap. Missing the buttons puts
+    /// them away.
+    fn click(&mut self, touch: bool) -> Option<Action> {
+        if self.buttons {
+            let points =
+                egui::pos2(self.cursor.x as f32, self.cursor.y as f32) / self.scale_factor() as f32;
+            let hit = button_rects(self.points)
+                .into_iter()
+                .find(|(_, rect)| rect.contains(points));
+            if hit.is_none() {
+                self.buttons = false;
+                self.redraw();
+            }
+            return hit.map(|(action, _)| action);
+        }
+        if touch {
+            self.buttons = true;
+            self.redraw();
+            return None;
+        }
+        Some(Action::Open)
+    }
+
     fn on_pointer(&mut self, pointer: Pointer) -> Option<Action> {
         match pointer {
             Pointer::Pressed(MouseButton::Left) => self.pressed_at = Some(self.cursor),
             Pointer::Pressed(_) => {}
             Pointer::Released(button) => match button {
                 // Not if the press turned into a drag.
-                MouseButton::Left if self.pressed_at.take().is_some() => return Some(Action::Open),
+                MouseButton::Left if self.pressed_at.take().is_some() => return self.click(false),
                 MouseButton::Middle => return Some(Action::CopyImage),
                 MouseButton::Right => return Some(Action::Dismiss),
                 _ => {}
@@ -347,16 +516,12 @@ impl Toast {
                 self.cursor = position;
                 // Also after a drag, which swallows the mouse's comings and goings.
                 self.expires_at = None;
-                if let Some(from) = self.pressed_at {
-                    let (dx, dy) = (position.x - from.x, position.y - from.y);
-                    let threshold = DRAG_THRESHOLD * self.scale_factor();
-                    if dx * dx + dy * dy >= threshold * threshold {
-                        self.pressed_at = None;
-                        if let Backend::Winit { window, .. } = &self.backend {
-                            crate::output::drag_out(window, std::slice::from_ref(&self.path));
-                        }
-                        self.expires_at = Some(Instant::now() + AFTER_HOVER);
+                if self.pressed_at.is_some_and(|from| self.dragged(from)) {
+                    self.pressed_at = None;
+                    if let Backend::Winit { window, .. } = &self.backend {
+                        crate::output::drag_out(window, std::slice::from_ref(&self.path));
                     }
+                    self.expires_at = Some(Instant::now() + AFTER_HOVER);
                 }
             }
             Pointer::Entered => self.expires_at = None,
@@ -389,6 +554,7 @@ impl Toast {
             video: self.video,
             size: self.size,
             icons: self.icons,
+            buttons: self.buttons,
         };
         let mut output = ctx.run_ui(input, |ui| toast.show(ui));
         let (window, state, painter) = match &mut self.backend {
@@ -424,10 +590,13 @@ struct Contents<'a> {
     video: bool,
     size: ToastSize,
     icons: bool,
+    /// Draws the buttons a tap shows over it.
+    buttons: bool,
 }
 
 impl Contents<'_> {
     fn show(&self, ui: &mut egui::Ui) {
+        let window = ui.max_rect();
         egui::CentralPanel::default()
             .frame({
                 let p = crate::theme::palette(ui);
@@ -440,6 +609,38 @@ impl Contents<'_> {
                 ToastSize::Large => self.large(ui),
                 ToastSize::Compact => self.compact(ui),
             });
+        if self.buttons {
+            self.touch_buttons(ui, window);
+        }
+    }
+
+    /// Open, Copy and Close, over a dimmed toast, for a finger to pick.
+    fn touch_buttons(&self, ui: &egui::Ui, window: egui::Rect) {
+        let p = crate::theme::palette(ui);
+        let painter = ui.painter();
+        painter.rect_filled(window.shrink(1.0), 0.0, p.surface.gamma_multiply(0.8));
+        let open = match (self.link.is_some(), self.video) {
+            (true, _) => "Open link",
+            (false, true) => "Play",
+            (false, false) => "Open",
+        };
+        for (action, rect) in button_rects(window.size()) {
+            let rect = rect.translate(window.min.to_vec2());
+            let (label, fill, text) = match action {
+                Action::Open => (open, crate::theme::ACCENT, egui::Color32::WHITE),
+                Action::CopyImage => ("Copy", p.control, p.text_strong),
+                Action::Dismiss => ("Close", p.control, p.text_strong),
+            };
+            let stroke = egui::Stroke::new(1.0, p.stroke);
+            painter.rect(rect, 6.0, fill, stroke, egui::StrokeKind::Inside);
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                label,
+                egui::FontId::proportional(13.0),
+                text,
+            );
+        }
     }
 
     /// The preview image and the caption under it.
@@ -684,16 +885,19 @@ mod tests {
             .flat_map(|i| [(i % 640 / 3) as u8, 90, (i / 640 / 2) as u8, 255])
             .collect();
         let image = egui::ColorImage::from_rgba_unmultiplied([640, 360], &pixels);
-        for (name, video, dark, size, icons) in [
-            ("toast-preview", false, true, ToastSize::Large, false),
-            ("toast-video-preview", true, true, ToastSize::Large, false),
-            ("toast-light-preview", false, false, ToastSize::Large, false),
-            ("toast-icons-preview", false, true, ToastSize::Large, true),
-            ("toast-icons-light-preview", false, false, ToastSize::Large, true),
-            ("toast-compact-preview", false, true, ToastSize::Compact, false),
-            ("toast-compact-video-preview", true, true, ToastSize::Compact, false),
-            ("toast-compact-light-preview", false, false, ToastSize::Compact, false),
-            ("toast-compact-icons-preview", true, true, ToastSize::Compact, true),
+        for (name, video, dark, size, icons, buttons) in [
+            ("toast-preview", false, true, ToastSize::Large, false, false),
+            ("toast-video-preview", true, true, ToastSize::Large, false, false),
+            ("toast-light-preview", false, false, ToastSize::Large, false, false),
+            ("toast-icons-preview", false, true, ToastSize::Large, true, false),
+            ("toast-icons-light-preview", false, false, ToastSize::Large, true, false),
+            ("toast-compact-preview", false, true, ToastSize::Compact, false, false),
+            ("toast-compact-video-preview", true, true, ToastSize::Compact, false, false),
+            ("toast-compact-light-preview", false, false, ToastSize::Compact, false, false),
+            ("toast-compact-icons-preview", true, true, ToastSize::Compact, true, false),
+            ("toast-touch-preview", false, true, ToastSize::Large, false, true),
+            ("toast-touch-light-preview", false, false, ToastSize::Large, false, true),
+            ("toast-compact-touch-preview", false, true, ToastSize::Compact, false, true),
         ] {
             let mut texture = None;
             let window = match size {
@@ -714,6 +918,7 @@ mod tests {
                     video,
                     size,
                     icons,
+                    buttons,
                 };
                 toast.show(root);
             });
