@@ -1183,17 +1183,22 @@ fn insert_at_cursor(ctx: &egui::Context, id: egui::Id, text: &mut String, token:
 
 /// Whether `msg` is about a permission snapr is missing, which
 /// [`permission_card`] explains.
+#[cfg(target_os = "macos")]
 pub(crate) fn is_missing_permission(msg: &str) -> bool {
-    #[cfg(target_os = "macos")]
-    if crate::macos::missing_permission(msg).is_some() {
-        return true;
-    }
-    #[cfg(target_os = "linux")]
-    if msg.ends_with(crate::portal::SCREENSHOTS_OFF) {
-        return true;
-    }
-    #[cfg(windows)]
-    let _ = msg;
+    crate::macos::missing_permission(msg).is_some()
+}
+
+/// Whether `msg` is about a permission snapr is missing, which
+/// [`permission_card`] explains.
+#[cfg(target_os = "linux")]
+pub(crate) fn is_missing_permission(msg: &str) -> bool {
+    msg.ends_with(crate::portal::SCREENSHOTS_OFF)
+}
+
+/// Whether `msg` is about a permission snapr is missing, which
+/// [`permission_card`] explains. Windows has none of these.
+#[cfg(windows)]
+pub(crate) fn is_missing_permission(_msg: &str) -> bool {
     false
 }
 
