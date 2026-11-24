@@ -902,10 +902,7 @@ impl App {
         // A hotkey that can't be registered (taken by another app, no
         // Accessibility access, no shortcuts portal) still lets the rest be
         // saved; it's reported once they are.
-        // Also when one failed last time (it's missing), to try it again.
-        let tools = !self.once
-            && (new.tool_hotkeys != self.settings.tool_hotkeys
-                || self.tool_hotkeys.len() != self.settings.tool_hotkeys.len());
+        let tools = !self.once && new.tool_hotkeys != self.settings.tool_hotkeys;
         let hotkey_error = self.register_hotkeys(&new, tools);
         // Only on a change: another copy (e.g. with its own SNAPR_CONFIG_DIR)
         // shouldn't undo this one's.
@@ -967,7 +964,8 @@ impl App {
     }
 
     /// Registers `settings`' hotkeys, keeping those already registered, and
-    /// replaces the tools' if `tools`. Notes the ones that fail in
+    /// replaces the tools' if `tools` (they've changed); otherwise tries
+    /// those that failed last time again. Notes the ones that fail in
     /// `hotkey_failures` (and on the Hotkeys tab), and returns why the first
     /// did; the others are still registered.
     fn register_hotkeys(&mut self, settings: &Settings, tools: bool) -> Option<String> {
@@ -990,6 +988,17 @@ impl App {
             let (hotkeys, tool_failures) = tool_hotkeys(&self.proxy, &settings.tool_hotkeys);
             self.tool_hotkeys = hotkeys;
             failures.extend(tool_failures);
+        } else {
+            let list = &settings.tool_hotkeys;
+            for i in 0..list.len() {
+                let id = ToolHotkey::id(list, i);
+                if self.hotkey_failures.iter().any(|(f, _)| *f == id) {
+                    match tool_hotkey(&self.proxy, list, i) {
+                        Ok(h) => self.tool_hotkeys.push(h),
+                        Err(failure) => failures.push(failure),
+                    }
+                }
+            }
         }
         let first = failures.first().map(|(_, e)| e.clone());
         if let Some(w) = &mut self.main_window {
@@ -1002,9 +1011,8 @@ impl App {
     /// Tries the hotkeys that couldn't be registered again, e.g. once the
     /// app that had their keys has let go of them.
     fn reload_hotkeys(&mut self, event_loop: &ActiveEventLoop) {
-        let tools = !self.once && self.tool_hotkeys.len() != self.settings.tool_hotkeys.len();
         let settings = self.settings.clone();
-        self.register_hotkeys(&settings, tools);
+        self.register_hotkeys(&settings, false);
         match self.hotkey_failures.len() {
             0 => self.report(event_loop, "All hotkeys are available".into(), false),
             1 => self.report_on(event_loop, "1 hotkey is still unavailable".into(), true, Page::Hotkeys),
@@ -2047,18 +2055,31 @@ fn tool_hotkeys(
 ) -> (Vec<Hotkeys>, Vec<(String, String)>) {
     let mut failures = Vec::new();
     let mut hotkeys = Vec::new();
-    for (i, t) in list.iter().enumerate() {
-        let action = t.action;
-        let id = ToolHotkey::id(list, i);
-        let mut h = Hotkeys::new(proxy.clone(), &id, action.label(), move || {
-            UserEvent::ToolHotkey(action)
-        });
-        match h.set_or_offer(&t.hotkey) {
-            Ok(()) => hotkeys.push(h),
-            Err(e) => failures.push((id, format!("{} hotkey: {e}", action.label()))),
+    for i in 0..list.len() {
+        match tool_hotkey(proxy, list, i) {
+            Ok(h) => hotkeys.push(h),
+            Err(failure) => failures.push(failure),
         }
     }
     (hotkeys, failures)
+}
+
+/// The `i`th of `list`'s tool hotkeys, registered, or its id and why it
+/// couldn't be.
+fn tool_hotkey(
+    proxy: &EventLoopProxy<UserEvent>,
+    list: &[ToolHotkey],
+    i: usize,
+) -> Result<Hotkeys, (String, String)> {
+    let action = list[i].action;
+    let id = ToolHotkey::id(list, i);
+    let mut h = Hotkeys::new(proxy.clone(), &id, action.label(), move || {
+        UserEvent::ToolHotkey(action)
+    });
+    match h.set_or_offer(&list[i].hotkey) {
+        Ok(()) => Ok(h),
+        Err(e) => Err((id, format!("{} hotkey: {e}", action.label()))),
+    }
 }
 
 /// The capture hotkey for the tray's menu: none where the desktop picks the
