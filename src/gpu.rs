@@ -146,12 +146,17 @@ impl Gpu {
     /// done with them. wgpu keeps everything a submitted frame used until it
     /// checks that frame finished, at the next submit or here.
     pub fn free_unused(&self) {
-        let _ = self.device.poll(wgpu::PollType::Wait {
-            submission_index: None,
-            // The last frame went long ago, so this is a formality; just
-            // don't hang if the GPU is stuck.
-            timeout: Some(std::time::Duration::from_millis(100)),
-        });
+        // wgpu panics on any error here other than a timeout, a lost device
+        // included, where drawing only fails quietly. Nothing can draw then
+        // anyway, so don't take the tray down with it.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                // The last frame went long ago, so this is a formality; just
+                // don't hang if the GPU is stuck.
+                timeout: Some(std::time::Duration::from_millis(100)),
+            })
+        }));
     }
 
     pub fn overlay_pipeline(&self, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
