@@ -152,8 +152,9 @@ impl Gpu {
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.device.poll(wgpu::PollType::Wait {
                 submission_index: None,
-                // The last frame went long ago, so this is a formality; just
-                // don't hang if the GPU is stuck.
+                // Usually the last frame went long ago; at most a new
+                // window's first frame (a pin's) is waited for. Just don't
+                // hang if the GPU is stuck.
                 timeout: Some(std::time::Duration::from_millis(100)),
             })
         }));
