@@ -604,15 +604,28 @@ fn encode_png(img: &RgbaImage) -> Option<Vec<u8>> {
     Some(png)
 }
 
+/// Runs a clipboard write in its own autorelease pool on macOS. The output
+/// thread runs as long as snapr and has no run loop to drain a pool, so the
+/// objects AppKit autoreleases while copying (for an image, its pixels and
+/// the pasteboard's encoded copy) would otherwise stay until snapr quits.
+fn pooled<R>(f: impl FnOnce() -> R) -> R {
+    #[cfg(target_os = "macos")]
+    {
+        objc2::rc::autoreleasepool(|_| f())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        f()
+    }
+}
+
 fn copy_text(clipboard: &mut Option<arboard::Clipboard>, text: &str) -> Result<(), String> {
     if clipboard.is_none() {
         *clipboard =
             Some(arboard::Clipboard::new().map_err(|e| format!("clipboard unavailable: {e}"))?);
     }
-    clipboard
-        .as_mut()
-        .expect("just set")
-        .set_text(text)
+    let clipboard = clipboard.as_mut().expect("just set");
+    pooled(|| clipboard.set_text(text))
         .map_err(|e| format!("failed to copy to clipboard: {e}"))?;
     #[cfg(target_os = "linux")]
     crate::clipboard_holder::remember(|| crate::clipboard_holder::Clip::Text(text.to_owned()));
@@ -626,11 +639,8 @@ fn copy_files(clipboard: &mut Option<arboard::Clipboard>, path: &Path) -> Result
         *clipboard =
             Some(arboard::Clipboard::new().map_err(|e| format!("clipboard unavailable: {e}"))?);
     }
-    clipboard
-        .as_mut()
-        .expect("just set")
-        .set()
-        .file_list(&[path])
+    let clipboard = clipboard.as_mut().expect("just set");
+    pooled(|| clipboard.set().file_list(&[path]))
         .map_err(|e| format!("failed to copy to clipboard: {e}"))?;
     #[cfg(target_os = "linux")]
     crate::clipboard_holder::remember(|| crate::clipboard_holder::Clip::File(path.to_owned()));
@@ -678,10 +688,8 @@ fn copy_image(clipboard: &mut Option<arboard::Clipboard>, img: &RgbaImage) -> Re
         height: img.height() as usize,
         bytes: Cow::Borrowed(img.as_raw()),
     };
-    clipboard
-        .as_mut()
-        .expect("just set")
-        .set_image(data)
+    let clipboard = clipboard.as_mut().expect("just set");
+    pooled(|| clipboard.set_image(data))
         .map_err(|e| format!("failed to copy to clipboard: {e}"))?;
     #[cfg(target_os = "linux")]
     crate::clipboard_holder::remember(|| crate::clipboard_holder::Clip::Image(img.clone()));
