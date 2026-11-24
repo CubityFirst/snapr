@@ -142,6 +142,18 @@ impl Gpu {
         })
     }
 
+    /// Frees what dropped textures and buffers still hold once the GPU is
+    /// done with them. wgpu keeps everything a submitted frame used until it
+    /// checks that frame finished, at the next submit or here.
+    pub fn free_unused(&self) {
+        let _ = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            // The last frame went long ago, so this is a formality; just
+            // don't hang if the GPU is stuck.
+            timeout: Some(std::time::Duration::from_millis(100)),
+        });
+    }
+
     pub fn overlay_pipeline(&self, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
         self.pipelines
             .borrow_mut()

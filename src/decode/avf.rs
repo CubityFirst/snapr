@@ -44,7 +44,10 @@ pub fn pictures(
     max: (u32, u32),
     each: &mut dyn FnMut(Picture) -> bool,
 ) -> Result<(), String> {
-    unsafe {
+    // The whole read in a pool, not just each frame: the gallery's
+    // thumbnail thread runs as long as its window and has no run loop to
+    // drain one, so the asset and reader set up here would stay until then.
+    autoreleasepool(|_| unsafe {
         let settings = NSDictionary::<NSString, AnyObject>::from_slices(
             &[cf_key(kCVPixelBufferPixelFormatTypeKey)],
             &[NSNumber::new_u32(kCVPixelFormatType_32BGRA).as_ref()],
@@ -97,7 +100,7 @@ pub fn pictures(
             }
         }
         Ok(())
-    }
+    })
 }
 
 pub fn sound(
@@ -108,7 +111,8 @@ pub fn sound(
     channels: u16,
     each: &mut dyn FnMut(Vec<f32>) -> bool,
 ) -> Result<bool, String> {
-    unsafe {
+    // In a pool throughout, as `pictures` is.
+    autoreleasepool(|_| unsafe {
         // AVFAudio's key constants, by value. The reader resamples and
         // remixes to what the output device takes.
         let key = |k: &str| NSString::from_str(k);
@@ -160,7 +164,7 @@ pub fn sound(
             }
         }
         Ok(true)
-    }
+    })
 }
 
 fn asset(path: &Path) -> Option<Retained<AVURLAsset>> {

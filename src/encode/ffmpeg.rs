@@ -134,6 +134,10 @@ impl Encoder for Ffmpeg {
             .flush()
             .map_err(|e| format!("couldn't write audio: {e}"))
             .and_then(|()| mux(&self.program, &self.video, &sound.path, sound.format, &self.out, self.webm));
+        // Taken from `self`, so `drop` won't remove it: the raw samples
+        // (about 23 MB a minute) are done with either way.
+        drop(sound.file);
+        let _ = std::fs::remove_file(&sound.path);
         let mut warning = None;
         if let Err(e) = muxed {
             warning = Some(format!("saved without sound: {e}"));

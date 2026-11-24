@@ -387,6 +387,17 @@ fn bind(conn: &Connection, wanted: &[Wanted]) -> Result<Bound, String> {
     let options = HashMap::from([("handle_token", Value::from(handle.as_str()))]);
     let results = request(conn, &handle, || {
         shortcuts.call_method("BindShortcuts", &(&session, list, "", options))
+    })
+    .inspect_err(|_| {
+        // Refused or cancelled: close the session, or the portal keeps it
+        // until snapr quits, one for every try.
+        let _ = conn.call_method(
+            Some(DESTINATION),
+            session.as_str(),
+            Some("org.freedesktop.portal.Session"),
+            "Close",
+            &(),
+        );
     })?;
 
     let mut bound = Vec::new();

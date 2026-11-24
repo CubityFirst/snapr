@@ -685,6 +685,10 @@ impl ScreenFrames {
             match part.feed {
                 Feed::Frames(Some(Producer::Xcap(recorder, id)), frames) => {
                     let _ = recorder.0.stop();
+                    // Kept for the next recording: don't keep the frames
+                    // that came in before it stopped (full-screen pictures)
+                    // with it.
+                    while frames.try_recv().is_ok() {}
                     put_recorder(id, recorder, frames);
                 }
                 // It stops as it's dropped.

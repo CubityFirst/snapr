@@ -275,6 +275,9 @@ struct App {
     toast: Option<Toast>,
     /// Images pinned to the screen.
     pins: Vec<Pin>,
+    /// How many windows drawn on the GPU were open when last counted, to
+    /// notice one closing (see `free_gpu_of_closed_windows`).
+    gpu_windows: usize,
     /// The latest upload's screenshot and link, for a preview that's still
     /// being decoded when the upload finishes.
     last_upload: Option<(PathBuf, String)>,
@@ -1477,6 +1480,25 @@ impl App {
         }
     }
 
+    /// Once a window drawn on the GPU has closed, has wgpu free what its
+    /// last frames used. It only does that when it next checks on its work,
+    /// which nothing does while snapr sits in the tray, so a capture's frozen
+    /// screens (a texture per monitor, 33 MB at 4K) would stay until the
+    /// next window draws.
+    fn free_gpu_of_closed_windows(&mut self) {
+        let open = self.sessions.len()
+            + self.pins.len()
+            + usize::from(self.toast.is_some())
+            + usize::from(self.main_window.is_some())
+            + usize::from(self.recording.as_ref().is_some_and(|r| r.ui.is_some()));
+        if open < self.gpu_windows
+            && let Ok(gpu) = &self.gpu
+        {
+            gpu.free_unused();
+        }
+        self.gpu_windows = open;
+    }
+
     fn pin_event(&mut self, index: usize, event: WindowEvent) {
         match self.pins[index].on_event(&event) {
             None => {}
@@ -1813,6 +1835,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.free_gpu_of_closed_windows();
         let now = Instant::now();
         if let Some((at, start)) = self.capture_at
             && at <= now
@@ -2434,6 +2457,7 @@ fn main() {
         main_window: None,
         toast: None,
         pins: Vec::new(),
+        gpu_windows: 0,
         last_upload: None,
         toast_after_upload: HashMap::new(),
         redact_image: None,
