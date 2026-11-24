@@ -992,12 +992,19 @@ impl Form {
                         1 => "1 hotkey is unavailable".to_string(),
                         n => format!("{n} hotkeys are unavailable"),
                     };
+                    // Something other than another app, e.g. no Accessibility
+                    // access on macOS: say what.
+                    let other = self.hotkey_failures.iter().find(|(_, e)| !e.ends_with(crate::hotkey::IN_USE));
                     missing_card(
                         ui,
                         &title,
-                        "Another app may be using these keys. Close it and try again, or choose \
-                         different keys.",
-                        None,
+                        if other.is_none() {
+                            "Another app may be using these keys. Close it and try again, or \
+                             choose different keys."
+                        } else {
+                            "snapr couldn't register these keys. Try again, or choose different keys."
+                        },
+                        other.map(|(_, e)| e.as_str()),
                         |ui| {
                             if ui.add(theme::primary("Try again")).clicked() {
                                 actions.push(Action::ReloadHotkeys);
