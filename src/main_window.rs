@@ -59,6 +59,8 @@ pub enum Action {
     /// Upload snapr's icon to a destination, as a screenshot would be.
     UploadIcon(Upload, Option<String>),
     CheckForUpdates,
+    /// Try registering the hotkeys that couldn't be again.
+    ReloadHotkeys,
     /// Have the desktop ask the user to let snapr take screenshots.
     #[cfg(target_os = "linux")]
     AllowScreenshots,
@@ -105,6 +107,7 @@ impl From<settings_ui::Action> for Action {
             settings_ui::Action::TestUpload(u, secret) => Action::TestUpload(u, secret),
             settings_ui::Action::UploadIcon(u, secret) => Action::UploadIcon(u, secret),
             settings_ui::Action::CheckForUpdates => Action::CheckForUpdates,
+            settings_ui::Action::ReloadHotkeys => Action::ReloadHotkeys,
             #[cfg(target_os = "linux")]
             settings_ui::Action::AllowScreenshots => Action::AllowScreenshots,
             settings_ui::Action::RestartToUpdate => Action::RestartToUpdate,
