@@ -727,13 +727,28 @@ pub fn open(path: &Path) {
     };
     #[cfg(not(windows))]
     let result = if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg(path).spawn()
+        launch(std::process::Command::new("open").arg(path))
     } else {
-        std::process::Command::new("xdg-open").arg(path).spawn()
+        launch(std::process::Command::new("xdg-open").arg(path))
     };
     if let Err(e) = result {
         eprintln!("couldn't open {}: {e}", path.display());
     }
+}
+
+/// Starts a helper (`open`, `xdg-open`, Explorer) and leaves it to run. On
+/// Unix something has to wait for it once it exits, or each one stays a
+/// zombie for as long as snapr runs; a thread does, as these quit quickly.
+fn launch(command: &mut std::process::Command) -> std::io::Result<()> {
+    let child = command.spawn()?;
+    #[cfg(unix)]
+    {
+        let mut child = child;
+        std::thread::spawn(move || child.wait());
+    }
+    #[cfg(not(unix))]
+    drop(child);
+    Ok(())
 }
 
 /// Shows a file selected in the system file manager.
@@ -741,13 +756,11 @@ pub fn open(path: &Path) {
 pub fn open_url(url: &str) {
     let result = if cfg!(windows) {
         // Not `cmd /C start`, which would treat `&` in the URL as a separator.
-        std::process::Command::new("rundll32")
-            .args(["url.dll,FileProtocolHandler", url])
-            .spawn()
+        launch(std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]))
     } else if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg(url).spawn()
+        launch(std::process::Command::new("open").arg(url))
     } else {
-        std::process::Command::new("xdg-open").arg(url).spawn()
+        launch(std::process::Command::new("xdg-open").arg(url))
     };
     if let Err(e) = result {
         eprintln!("couldn't open {url}: {e}");
@@ -756,19 +769,12 @@ pub fn open_url(url: &str) {
 
 pub fn show_in_folder(path: &Path) {
     let result = if cfg!(windows) {
-        std::process::Command::new("explorer")
-            .arg(format!("/select,{}", path.display()))
-            .spawn()
+        launch(std::process::Command::new("explorer").arg(format!("/select,{}", path.display())))
     } else if cfg!(target_os = "macos") {
-        std::process::Command::new("open")
-            .arg("-R")
-            .arg(path)
-            .spawn()
+        launch(std::process::Command::new("open").arg("-R").arg(path))
     } else {
         // No portable "select"; open the containing folder.
-        std::process::Command::new("xdg-open")
-            .arg(path.parent().unwrap_or(path))
-            .spawn()
+        launch(std::process::Command::new("xdg-open").arg(path.parent().unwrap_or(path)))
     };
     if let Err(e) = result {
         eprintln!("couldn't show {}: {e}", path.display());
@@ -887,7 +893,7 @@ pub fn reveal(path: &Path) {
     } else {
         "xdg-open"
     };
-    if let Err(e) = std::process::Command::new(program).arg(path).spawn() {
+    if let Err(e) = launch(std::process::Command::new(program).arg(path)) {
         eprintln!("couldn't open {}: {e}", path.display());
     }
 }

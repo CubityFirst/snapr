@@ -142,6 +142,9 @@ impl Gallery {
         self.items.retain(|e| e.path != path);
         self.items.insert(0, Entry::new(path));
         self.items.truncate(MAX_ITEMS);
+        // Free the thumbnails of whatever fell off the end.
+        let items = &self.items;
+        self.thumbs.retain(|(p, _), _| items.iter().any(|e| e.path == *p));
         self.selected = None; // show the newest
         self.picked.clear();
     }
@@ -202,6 +205,11 @@ impl Gallery {
     fn thumb(&mut self, path: &Path, large: bool) -> &Thumb {
         let key = (path.to_owned(), large);
         if !self.thumbs.contains_key(&key) {
+            // Only one large preview is shown at a time, and each is a
+            // full-size texture (up to 9 MB): keep just the one asked for.
+            if large {
+                self.thumbs.retain(|(p, l), _| !*l || p == path);
+            }
             let _ = self.requests.send(key.clone());
             self.thumbs.insert(key.clone(), Thumb::Loading);
         }
@@ -210,6 +218,13 @@ impl Gallery {
 
     fn receive(&mut self, ctx: &egui::Context) {
         while let Ok((path, large, image)) = self.results.try_recv() {
+            let key = (path, large);
+            // Dropped while it loaded (removed, cleared, fell off the list,
+            // or another large preview was asked for): don't keep it.
+            if !matches!(self.thumbs.get(&key), Some(Thumb::Loading)) {
+                continue;
+            }
+            let (path, large) = key;
             let thumb = match image {
                 Some((img, size)) => {
                     let name = format!("{}{}", path.display(), if large { "#large" } else { "" });

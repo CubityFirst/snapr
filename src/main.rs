@@ -275,6 +275,9 @@ struct App {
     toast: Option<Toast>,
     /// Images pinned to the screen.
     pins: Vec<Pin>,
+    /// How many windows of each kind drawn on the GPU were open when last
+    /// counted, to notice one closing (see `free_gpu_of_closed_windows`).
+    gpu_windows: [usize; 5],
     /// The latest upload's screenshot and link, for a preview that's still
     /// being decoded when the upload finishes.
     last_upload: Option<(PathBuf, String)>,
@@ -1477,6 +1480,29 @@ impl App {
         }
     }
 
+    /// Once a window drawn on the GPU has closed, has wgpu free what its
+    /// last frames used. It only does that when it next checks on its work,
+    /// which nothing does while snapr sits in the tray, so a capture's frozen
+    /// screens (a texture per monitor, 33 MB at 4K) would stay until the
+    /// next window draws.
+    fn free_gpu_of_closed_windows(&mut self) {
+        // By kind, as one can close as another opens: a capture pinned, say,
+        // whose pin draws before the capture's windows have gone.
+        let open = [
+            self.sessions.len(),
+            self.pins.len(),
+            usize::from(self.toast.is_some()),
+            usize::from(self.main_window.is_some()),
+            usize::from(self.recording.as_ref().is_some_and(|r| r.ui.is_some())),
+        ];
+        if open.iter().zip(self.gpu_windows).any(|(&now, was)| now < was)
+            && let Ok(gpu) = &self.gpu
+        {
+            gpu.free_unused();
+        }
+        self.gpu_windows = open;
+    }
+
     fn pin_event(&mut self, index: usize, event: WindowEvent) {
         match self.pins[index].on_event(&event) {
             None => {}
@@ -1909,6 +1935,8 @@ impl ApplicationHandler<UserEvent> for App {
                 None => {}
             }
         }
+        // Last, after the toast may have timed out above.
+        self.free_gpu_of_closed_windows();
         event_loop.set_control_flow(wake.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
     }
 
@@ -2434,6 +2462,7 @@ fn main() {
         main_window: None,
         toast: None,
         pins: Vec::new(),
+        gpu_windows: [0; 5],
         last_upload: None,
         toast_after_upload: HashMap::new(),
         redact_image: None,

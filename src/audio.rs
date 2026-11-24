@@ -416,11 +416,23 @@ fn write_samples(
         }
         Ok(())
     };
+    // The source went away (say, `pw-record` exited) before the recording
+    // stopped. It stays silent rather than ending: the mixer only mixes what
+    // every source has delivered, so the others would pile up unmixed.
+    let mut ended = false;
     loop {
-        let chunk = match rx.recv_timeout(Duration::from_millis(50)) {
-            Ok(c) => Some(c),
-            Err(mpsc::RecvTimeoutError::Timeout) => None,
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        let chunk = if ended {
+            thread::sleep(Duration::from_millis(50));
+            None
+        } else {
+            match rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(c) => Some(c),
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    ended = true;
+                    None
+                }
+            }
         };
         let (paused, now) = {
             let c = clock.lock().unwrap();
@@ -499,6 +511,36 @@ mod tests {
             write_samples(rx, collect, &clock, &stop, 1000, 2).unwrap();
         });
         // A frame a millisecond: silence from the start until it stopped.
+        let frames = (out.len() / 2) as u128;
+        let elapsed = clock.lock().unwrap().elapsed().as_millis();
+        assert!(
+            frames >= 250 && frames <= elapsed,
+            "{frames} frames in {elapsed} ms"
+        );
+    }
+
+    /// A source that goes away early (its recorder exited) stays silent
+    /// until the end, so the mixer doesn't wait on it while the others pile
+    /// up.
+    #[test]
+    fn ended_source_keeps_filling_silence() {
+        let (tx, rx) = mpsc::channel::<Vec<f32>>();
+        drop(tx);
+        let clock = Mutex::new(Clock::default());
+        clock.lock().unwrap().start();
+        let stop = AtomicBool::new(false);
+        let mut out = Vec::new();
+        thread::scope(|s| {
+            s.spawn(|| {
+                thread::sleep(Duration::from_millis(250));
+                stop.store(true, Ordering::Relaxed);
+            });
+            let collect = |samples: Vec<f32>| {
+                out.extend(samples);
+                Ok(())
+            };
+            write_samples(rx, collect, &clock, &stop, 1000, 2).unwrap();
+        });
         let frames = (out.len() / 2) as u128;
         let elapsed = clock.lock().unwrap().elapsed().as_millis();
         assert!(
