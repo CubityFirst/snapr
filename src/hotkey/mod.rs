@@ -23,6 +23,9 @@ pub type Callback = Box<dyn Fn() + Send + 'static>;
 pub const CAPTURE: &str = "capture";
 pub const RECORD: &str = "record";
 
+/// Why a hotkey couldn't be registered when another app has its keys.
+pub const IN_USE: &str = "already in use by another app";
+
 type Reporter = Box<dyn Fn(String) + Send + Sync + 'static>;
 
 static REPORTER: OnceLock<Reporter> = OnceLock::new();
@@ -451,7 +454,7 @@ mod platform {
                                     registered = true;
                                     Ok(())
                                 } else if GetLastError() == ERROR_HOTKEY_ALREADY_REGISTERED {
-                                    Err("already in use by another app".to_string())
+                                    Err(super::IN_USE.to_string())
                                 } else {
                                     Err(format!("couldn't register (error {})", GetLastError()))
                                 }

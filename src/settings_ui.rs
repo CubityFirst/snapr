@@ -31,6 +31,8 @@ pub enum Action {
     /// a secret key typed but not yet saved.
     UploadIcon(Upload, Option<String>),
     CheckForUpdates,
+    /// Try registering the hotkeys that couldn't be again.
+    ReloadHotkeys,
     /// Have the desktop ask the user to let snapr take screenshots.
     #[cfg(target_os = "linux")]
     AllowScreenshots,
@@ -81,6 +83,9 @@ pub struct Form {
     recording_field: HotkeyField,
     /// Message from the app, e.g. a save or hotkey error. `true` = error.
     pub status: Option<(String, bool)>,
+    /// The saved hotkeys that couldn't be registered, by id (see
+    /// `GlobalHotkey::new`), and why.
+    pub hotkey_failures: Vec<(String, String)>,
     pub last_capture: Option<PathBuf>,
     /// Where checking for and installing updates is up to.
     pub update: update::Status,
@@ -124,6 +129,7 @@ impl Form {
             recording: false,
             recording_field: HotkeyField::Capture,
             status: None,
+            hotkey_failures: Vec::new(),
             last_capture: None,
             update: update::Status::default(),
             secrets: HashMap::new(),
@@ -863,13 +869,41 @@ impl Form {
         }
     }
 
+    /// Why the saved hotkey `field` couldn't be registered, if it couldn't
+    /// and is still the one in the form.
+    fn hotkey_failure(&self, field: HotkeyField) -> Option<&str> {
+        let (id, unchanged) = match field {
+            HotkeyField::Capture => (crate::hotkey::CAPTURE.to_string(), self.draft.hotkey == self.saved.hotkey),
+            HotkeyField::Record => {
+                (crate::hotkey::RECORD.to_string(), self.draft.record_hotkey == self.saved.record_hotkey)
+            }
+            HotkeyField::Tool(i) => (
+                ToolHotkey::id(&self.draft.tool_hotkeys, i),
+                self.draft.tool_hotkeys == self.saved.tool_hotkeys,
+            ),
+        };
+        let (_, e) = self.hotkey_failures.iter().find(|(f, _)| *f == id).filter(|_| unchanged)?;
+        Some(e)
+    }
+
+    /// Marks the hotkey `field` if it couldn't be registered, beside its keys.
+    fn unavailable_tag(&self, ui: &mut egui::Ui, field: HotkeyField) {
+        if let Some(e) = self.hotkey_failure(field) {
+            let why = if e.ends_with(crate::hotkey::IN_USE) { "These keys are in use by another app." } else { e };
+            ui.label(RichText::new("Unavailable").color(ERROR)).on_hover_text(why);
+        }
+    }
+
     fn hotkey_row(&mut self, ui: &mut egui::Ui, key: &str, title: &str, note: &str, field: HotkeyField) {
         let err = match field {
             HotkeyField::Capture => parse_hotkey(&self.draft.hotkey).err(),
             HotkeyField::Record => self.record_hotkey_problem(),
             HotkeyField::Tool(i) => self.tool_hotkey_problem(i),
         };
-        row(ui, key, title, Some(note), false, |ui| self.hotkey_editor(ui, field));
+        row(ui, key, title, Some(note), false, |ui| {
+            self.unavailable_tag(ui, field);
+            self.hotkey_editor(ui, field);
+        });
         error_row(ui, &format!("{key}-error"), err.as_deref());
     }
 
@@ -880,6 +914,7 @@ impl Form {
         let key = format!("tool-hotkey-{i}");
         let mut remove = false;
         row(ui, &key, self.draft.tool_hotkeys[i].action.label(), None, false, |ui| {
+            self.unavailable_tag(ui, HotkeyField::Tool(i));
             self.hotkey_editor(ui, HotkeyField::Tool(i));
             remove = ui.add(theme::danger(ui, "Remove")).clicked();
         });
@@ -951,6 +986,31 @@ impl Form {
                     {
                         self.status = Some((e, true));
                     }
+                } else if !self.hotkey_failures.is_empty() {
+                    ui.add_space(6.0);
+                    let title = match self.hotkey_failures.len() {
+                        1 => "1 hotkey is unavailable".to_string(),
+                        n => format!("{n} hotkeys are unavailable"),
+                    };
+                    // Something other than another app, e.g. no Accessibility
+                    // access on macOS: say what.
+                    let other = self.hotkey_failures.iter().find(|(_, e)| !e.ends_with(crate::hotkey::IN_USE));
+                    missing_card(
+                        ui,
+                        &title,
+                        if other.is_none() {
+                            "Another app may be using these keys. Close it and try again, or \
+                             choose different keys."
+                        } else {
+                            "snapr couldn't register these keys. Try again, or choose different keys."
+                        },
+                        other.map(|(_, e)| e.as_str()),
+                        |ui| {
+                            if ui.add(theme::primary("Try again")).clicked() {
+                                actions.push(Action::ReloadHotkeys);
+                            }
+                        },
+                    );
                 }
 
                 let mut removed = false;
@@ -1242,7 +1302,6 @@ pub(crate) fn permission_card(ui: &mut egui::Ui, msg: &str, actions: &mut Vec<Ac
 
 /// A missing permission's card: what's off (`title`), how to turn it on,
 /// what went wrong last time if anything, and `buttons`.
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn missing_card(
     ui: &mut egui::Ui,
     title: &str,

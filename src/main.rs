@@ -246,6 +246,9 @@ struct App {
     record_hotkeys: Option<Hotkeys>,
     /// The tools' hotkeys (none with `--once`).
     tool_hotkeys: Vec<Hotkeys>,
+    /// The hotkeys that couldn't be registered, by id (see
+    /// `GlobalHotkey::new`), and why: e.g. another app has their keys.
+    hotkey_failures: Vec<(String, String)>,
     /// The screen recording in progress.
     recording: Option<ActiveRecording>,
     /// Held while recording (all along with `--record`), so `snapr --record`
@@ -803,6 +806,7 @@ impl App {
         }
         let mut form = Form::new(&self.settings);
         form.status = self.status.clone();
+        form.hotkey_failures = self.hotkey_failures.clone();
         form.last_capture = self.last_capture.clone();
         form.update = self.update.clone();
         let proxy = Mutex::new(self.proxy.clone());
@@ -898,25 +902,8 @@ impl App {
         // A hotkey that can't be registered (taken by another app, no
         // Accessibility access, no shortcuts portal) still lets the rest be
         // saved; it's reported once they are.
-        let mut hotkey_error = None;
-        if let Some(hk) = &mut self.hotkeys
-            && let Err(e) = hk.set(&new.hotkey)
-        {
-            hotkey_error = Some(e);
-        }
-        if let Some(hk) = &mut self.record_hotkeys
-            && let Err(e) = hk.set_optional(&new.record_hotkey)
-        {
-            hotkey_error.get_or_insert(format!("Record hotkey: {e}"));
-        }
-        // Also when one failed last time (it's missing), to try it again.
-        if !self.once
-            && (new.tool_hotkeys != self.settings.tool_hotkeys
-                || self.tool_hotkeys.len() != self.settings.tool_hotkeys.len())
-            && let Err(e) = self.set_tool_hotkeys(&new.tool_hotkeys)
-        {
-            hotkey_error.get_or_insert(e);
-        }
+        let tools = !self.once && new.tool_hotkeys != self.settings.tool_hotkeys;
+        let hotkey_error = self.register_hotkeys(&new, tools);
         // Only on a change: another copy (e.g. with its own SNAPR_CONFIG_DIR)
         // shouldn't undo this one's.
         #[cfg(any(windows, target_os = "linux"))]
@@ -976,16 +963,61 @@ impl App {
         }
     }
 
-    /// Replaces the tools' hotkeys. Returns the first that couldn't be
-    /// registered; the others still are.
-    fn set_tool_hotkeys(&mut self, list: &[ToolHotkey]) -> Result<(), String> {
-        // Free the old keys first: one may move to another tool.
-        for h in &mut self.tool_hotkeys {
-            h.clear();
+    /// Registers `settings`' hotkeys, keeping those already registered, and
+    /// replaces the tools' if `tools` (they've changed); otherwise tries
+    /// those that failed last time again. Notes the ones that fail in
+    /// `hotkey_failures` (and on the Hotkeys tab), and returns why the first
+    /// did; the others are still registered.
+    fn register_hotkeys(&mut self, settings: &Settings, tools: bool) -> Option<String> {
+        let mut failures = Vec::new();
+        if let Some(hk) = &mut self.hotkeys
+            && let Err(e) = hk.set(&settings.hotkey)
+        {
+            failures.push((hotkey::CAPTURE.to_string(), e));
         }
-        let (hotkeys, result) = tool_hotkeys(&self.proxy, list);
-        self.tool_hotkeys = hotkeys;
-        result
+        if let Some(hk) = &mut self.record_hotkeys
+            && let Err(e) = hk.set_optional(&settings.record_hotkey)
+        {
+            failures.push((hotkey::RECORD.to_string(), format!("Record hotkey: {e}")));
+        }
+        if tools {
+            // Free the old keys first: one may move to another tool.
+            for h in &mut self.tool_hotkeys {
+                h.clear();
+            }
+            let (hotkeys, tool_failures) = tool_hotkeys(&self.proxy, &settings.tool_hotkeys);
+            self.tool_hotkeys = hotkeys;
+            failures.extend(tool_failures);
+        } else {
+            let list = &settings.tool_hotkeys;
+            for i in 0..list.len() {
+                let id = ToolHotkey::id(list, i);
+                if self.hotkey_failures.iter().any(|(f, _)| *f == id) {
+                    match tool_hotkey(&self.proxy, list, i) {
+                        Ok(h) => self.tool_hotkeys.push(h),
+                        Err(failure) => failures.push(failure),
+                    }
+                }
+            }
+        }
+        let first = failures.first().map(|(_, e)| e.clone());
+        if let Some(w) = &mut self.main_window {
+            w.form.hotkey_failures = failures.clone();
+        }
+        self.hotkey_failures = failures;
+        first
+    }
+
+    /// Tries the hotkeys that couldn't be registered again, e.g. once the
+    /// app that had their keys has let go of them.
+    fn reload_hotkeys(&mut self, event_loop: &ActiveEventLoop) {
+        let settings = self.settings.clone();
+        self.register_hotkeys(&settings, false);
+        match self.hotkey_failures.len() {
+            0 => self.report(event_loop, "All hotkeys are available".into(), false),
+            1 => self.report_on(event_loop, "1 hotkey is still unavailable".into(), true, Page::Hotkeys),
+            n => self.report_on(event_loop, format!("{n} hotkeys are still unavailable"), true, Page::Hotkeys),
+        }
     }
 
     /// Starts a capture from the main window, once it's hidden so it isn't
@@ -1116,6 +1148,7 @@ impl App {
             Action::TestUpload(upload, secret) => self.test_upload(upload, secret, false),
             Action::UploadIcon(upload, secret) => self.test_upload(upload, secret, true),
             Action::CheckForUpdates => self.check_for_updates(),
+            Action::ReloadHotkeys => self.reload_hotkeys(event_loop),
             #[cfg(target_os = "linux")]
             Action::AllowScreenshots => {
                 let proxy = Mutex::new(self.proxy.clone());
@@ -1594,6 +1627,8 @@ impl ApplicationHandler<UserEvent> for App {
                 Page::Setup
             } else if self.open_recent_on_start {
                 Page::Recent
+            } else if !self.hotkey_failures.is_empty() {
+                Page::Hotkeys
             } else {
                 Page::Settings
             };
@@ -2017,25 +2052,34 @@ fn output_config(settings: &Settings) -> Result<output::Config, String> {
 fn tool_hotkeys(
     proxy: &EventLoopProxy<UserEvent>,
     list: &[ToolHotkey],
-) -> (Vec<Hotkeys>, Result<(), String>) {
-    let mut result = Ok(());
+) -> (Vec<Hotkeys>, Vec<(String, String)>) {
+    let mut failures = Vec::new();
     let mut hotkeys = Vec::new();
-    for (i, t) in list.iter().enumerate() {
-        let action = t.action;
-        let id = ToolHotkey::id(list, i);
-        let mut h = Hotkeys::new(proxy.clone(), &id, action.label(), move || {
-            UserEvent::ToolHotkey(action)
-        });
-        match h.set_or_offer(&t.hotkey) {
-            Ok(()) => hotkeys.push(h),
-            Err(e) => {
-                if result.is_ok() {
-                    result = Err(format!("{} hotkey: {e}", action.label()));
-                }
-            }
+    for i in 0..list.len() {
+        match tool_hotkey(proxy, list, i) {
+            Ok(h) => hotkeys.push(h),
+            Err(failure) => failures.push(failure),
         }
     }
-    (hotkeys, result)
+    (hotkeys, failures)
+}
+
+/// The `i`th of `list`'s tool hotkeys, registered, or its id and why it
+/// couldn't be.
+fn tool_hotkey(
+    proxy: &EventLoopProxy<UserEvent>,
+    list: &[ToolHotkey],
+    i: usize,
+) -> Result<Hotkeys, (String, String)> {
+    let action = list[i].action;
+    let id = ToolHotkey::id(list, i);
+    let mut h = Hotkeys::new(proxy.clone(), &id, action.label(), move || {
+        UserEvent::ToolHotkey(action)
+    });
+    match h.set_or_offer(&list[i].hotkey) {
+        Ok(()) => Ok(h),
+        Err(e) => Err((id, format!("{} hotkey: {e}", action.label()))),
+    }
 }
 
 /// The capture hotkey for the tray's menu: none where the desktop picks the
@@ -2376,11 +2420,11 @@ fn main() {
             let _ = keys.lock().unwrap().send_event(UserEvent::HotkeyKeysChanged);
         });
     }
+    let mut hotkey_failures = Vec::new();
     let hotkeys = (!once).then(|| {
         let mut h = Hotkeys::new(proxy.clone(), hotkey::CAPTURE, "Capture region", || UserEvent::Hotkey);
         if let Err(e) = h.set(&settings.hotkey) {
-            status = Some((e, true));
-            open_settings = true;
+            hotkey_failures.push((hotkey::CAPTURE.to_string(), e));
         }
         h
     });
@@ -2389,21 +2433,21 @@ fn main() {
             UserEvent::RecordHotkey
         });
         if let Err(e) = h.set_optional(&settings.record_hotkey) {
-            status.get_or_insert((format!("Record hotkey: {e}"), true));
-            open_settings = true;
+            hotkey_failures.push((hotkey::RECORD.to_string(), format!("Record hotkey: {e}")));
         }
         h
     });
     let tool_hotkeys = if once {
         Vec::new()
     } else {
-        let (hotkeys, result) = tool_hotkeys(&proxy, &settings.tool_hotkeys);
-        if let Err(e) = result {
-            status.get_or_insert((e, true));
-            open_settings = true;
-        }
+        let (hotkeys, failures) = tool_hotkeys(&proxy, &settings.tool_hotkeys);
+        hotkey_failures.extend(failures);
         hotkeys
     };
+    if let Some((_, e)) = hotkey_failures.first() {
+        status = Some((e.clone(), true));
+        open_settings = true;
+    }
     // Asked for from the window, as GNOME only asks the focused app, and a
     // capture from the hotkey or the tray has no snapr window focused.
     #[cfg(target_os = "linux")]
@@ -2448,6 +2492,7 @@ fn main() {
         hotkeys,
         record_hotkeys,
         tool_hotkeys,
+        hotkey_failures,
         recording: None,
         recording_lock,
         tray: None,
