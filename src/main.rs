@@ -1140,13 +1140,7 @@ impl App {
             Action::TestUpload(upload, secret) => self.test_upload(upload, secret, false),
             Action::UploadIcon(upload, secret) => self.test_upload(upload, secret, true),
             Action::CheckForUpdates => self.check_for_updates(),
-            Action::ReloadHotkeys => {
-                // With the keys being typed, if they're not saved yet.
-                if let Some(save) = self.main_window.as_mut().and_then(|w| w.flush_settings()) {
-                    self.main_window_action(event_loop, save);
-                }
-                self.reload_hotkeys(event_loop);
-            }
+            Action::ReloadHotkeys => self.reload_hotkeys(event_loop),
             #[cfg(target_os = "linux")]
             Action::AllowScreenshots => {
                 let proxy = Mutex::new(self.proxy.clone());
