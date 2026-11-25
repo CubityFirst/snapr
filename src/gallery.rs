@@ -320,15 +320,14 @@ impl Gallery {
                 if ui.button("Show in folder").clicked() {
                     actions.push(Action::ShowInFolder(selected.clone()));
                 }
-                let link = self
-                    .items
-                    .iter()
-                    .find(|e| e.path == selected)
-                    .and_then(|e| e.link.clone());
-                if let Some(link) = link
-                    && ui.button("Copy link").on_hover_text(&link).clicked()
+                let links = self.links_with(&selected);
+                if !links.is_empty()
+                    && ui
+                        .button(copy_links_label(links.len()))
+                        .on_hover_text(links.join("\n"))
+                        .clicked()
                 {
-                    actions.push(Action::CopyLink(link));
+                    actions.push(Action::CopyLink(links.join("\n")));
                 }
                 if thumbnail::kind(&selected) == Kind::Image
                     && ui
@@ -558,6 +557,23 @@ impl Gallery {
         }
     }
 
+    /// The links copied along with `path`'s: those of the whole Ctrl-click
+    /// selection, in the order it was picked, if it's part of it. Files that
+    /// weren't uploaded have none and are left out.
+    fn links_with(&self, path: &Path) -> Vec<String> {
+        let link = |p: &Path| {
+            self.items
+                .iter()
+                .find(|e| e.path == p)
+                .and_then(|e| e.link.clone())
+        };
+        if self.picked.iter().any(|p| p == path) {
+            self.picked.iter().filter_map(|p| link(p)).collect()
+        } else {
+            link(path).into_iter().collect()
+        }
+    }
+
     fn picked_images(&self) -> Vec<PathBuf> {
         self.picked
             .iter()
@@ -717,6 +733,8 @@ impl Gallery {
         } else {
             Vec::new()
         };
+        let links = self.links_with(path);
+        let copy_links = copy_links_label(links.len());
         resp.context_menu(|ui| {
             theme::compact_menu(ui);
             if combinable.len() > 1 {
@@ -738,10 +756,11 @@ impl Gallery {
                 }
                 ui.separator();
             }
+            let copy_link = (!links.is_empty()).then(|| Action::CopyLink(links.join("\n")));
             for (label, action) in [
                 ("Open", Some(Action::Open(path.to_owned()))),
                 ("Copy", Some(Action::Copy(path.to_owned()))),
-                ("Copy link", entry.link.clone().map(Action::CopyLink)),
+                (copy_links.as_str(), copy_link),
                 ("Pin to screen", Some(Action::Pin(path.to_owned()))),
                 ("Show in folder", Some(Action::ShowInFolder(path.to_owned()))),
                 ("Delete", Some(Action::Delete(path.to_owned()))),
@@ -1149,6 +1168,15 @@ fn clock(secs: f64) -> String {
     }
 }
 
+/// "Copy link", or "Copy 3 links" for a selection.
+fn copy_links_label(count: usize) -> String {
+    if count > 1 {
+        format!("Copy {count} links")
+    } else {
+        "Copy link".to_owned()
+    }
+}
+
 fn details(path: &Path, size: Option<[u32; 2]>) -> String {
     let mut parts = Vec::new();
     if let Some([w, h]) = size {
@@ -1284,6 +1312,24 @@ mod tests {
             g.picked,
             vec![names[0].clone(), names[2].clone(), names[1].clone()]
         );
+    }
+
+    #[test]
+    fn copy_link_copies_the_selections_links() {
+        let mut g = test_gallery();
+        let names = g.items.iter().map(|e| e.path.clone()).collect::<Vec<_>>();
+        g.items[0].link = Some("https://x/red".into());
+        g.items[2].link = Some("https://x/blue".into());
+        // Not part of a selection: just its own link.
+        assert_eq!(g.links_with(&names[0]), ["https://x/red"]);
+        assert!(g.links_with(&names[1]).is_empty());
+        // Picked blue, green, red: the ones uploaded, in that order.
+        g.picked = vec![names[2].clone(), names[1].clone(), names[0].clone()];
+        for p in &names {
+            assert_eq!(g.links_with(p), ["https://x/blue", "https://x/red"]);
+        }
+        assert_eq!(copy_links_label(2), "Copy 2 links");
+        assert_eq!(copy_links_label(1), "Copy link");
     }
 
     /// Runs a first frame to lay the gallery out, then one per step.

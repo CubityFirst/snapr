@@ -61,8 +61,10 @@ or *Display*, *Fullscreen*, or *Record region…*.
   default) with *Open*, *Copy*, *Pin*, *Copy link* (once uploaded), *Show in
   folder* and *Delete* (to the Recycle Bin), and a grid of earlier ones: click
   to preview, double-click to open, right-click for the same actions, or drag
-  one out into another app. Files dropped on the window are uploaded. Saved
-  screenshots are remembered in `history.txt` next to the settings.
+  one out into another app. With several Ctrl- or Shift-clicked, *Copy link*
+  copies all of their links, one per line. Files dropped on the window are
+  uploaded. Saved screenshots are remembered in `history.txt` next to the
+  settings.
 - **Upload the clipboard** (in the tray's *Tools* menu, or give it a hotkey
   under *Settings → Hotkeys → Tool hotkeys*) uploads what's on the clipboard
   to the ticked destinations: files copied in a file manager as they are, an
